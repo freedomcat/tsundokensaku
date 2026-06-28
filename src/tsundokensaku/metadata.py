@@ -18,7 +18,8 @@ _ENV_LOADED = False
 @dataclass(frozen=True)
 class BookMetadata:
     title: str
-    scrapbox_url: str
+    scrapbox_url: str | None = None
+    cover_url: str | None = None
 
 
 def load_env_file(path: Path = ENV_FILE) -> None:
@@ -66,15 +67,15 @@ def load_metadata_by_pdf_stem(export_json: Path | None, *, project_url: str | No
         return {}
 
     base_url = (project_url or get_scrapbox_project_url())
-    if not base_url:
-        return {}
-    base_url = base_url.rstrip("/")
+    if base_url:
+        base_url = base_url.rstrip("/")
     data = json.loads(export_json.read_text(encoding="utf-8"))
     metadata: dict[str, BookMetadata] = {}
 
     for page in data.get("pages", []):
         title = page.get("title", "")
-        text = "\n".join(line.get("text", "") for line in page.get("lines", []))
+        lines = page.get("lines", [])
+        text = "\n".join(line.get("text", "") for line in lines)
         if BOOKSCAN_TAG not in text or TECH_BOOK_TAG not in text:
             continue
 
@@ -83,7 +84,9 @@ def load_metadata_by_pdf_stem(export_json: Path | None, *, project_url: str | No
             continue
 
         stem = make_destination_stem(title, source_filename)
-        metadata[stem] = BookMetadata(title=title, scrapbox_url=f"{base_url}/{quote(title, safe='')}")
+        cover_url = extract_cover_image_url(lines)
+        scrapbox_url = f"{base_url}/{quote(title, safe='')}" if base_url else None
+        metadata[stem] = BookMetadata(title=title, scrapbox_url=scrapbox_url, cover_url=cover_url)
 
     return metadata
 
@@ -126,6 +129,16 @@ def extract_freedomcat_filename(text: str) -> str | None:
         filename = unquote(Path(parsed.path).name)
         if filename.lower().endswith(".pdf"):
             return filename
+    return None
+
+
+def extract_cover_image_url(lines: list[dict[str, str]]) -> str | None:
+    image_pattern = re.compile(r"\[(https?://[^\s\]]+\.(?:png|jpe?g|gif|webp))(?:\s+[^\]]+)?\]", re.IGNORECASE)
+    for line in lines:
+        text = line.get("text", "")
+        match = image_pattern.search(text)
+        if match:
+            return match.group(1)
     return None
 
 

@@ -157,6 +157,11 @@ def search_page(request: Request, q: str = "", sort: str = "rank", scope: str = 
             "path": result.path,
             "page_number": result.page_number,
             "snippet": result.snippet,
+            "cover_url": (
+                metadata.cover_url
+                if (metadata := metadata_for_pdf(result.path, metadata_by_stem))
+                else None
+            ),
             "open_url": raw_pdf_url(result.path, books_dir, page_number=result.page_number),
             "scrapbox_url": (
                 metadata.scrapbox_url
@@ -206,6 +211,11 @@ def manage_index(request: Request, message: str = "") -> HTMLResponse:
             "path": pdf_path,
             "title": pdf_path.stem,
             "indexed": str(pdf_path.resolve()) in indexed_paths or str(pdf_path) in indexed_paths,
+            "cover_url": (
+                metadata.cover_url
+                if (metadata := metadata_for_pdf(pdf_path, metadata_by_stem))
+                else None
+            ),
             "open_url": raw_pdf_url(pdf_path, books_dir),
             "scrapbox_url": (
                 metadata.scrapbox_url

@@ -19,6 +19,7 @@ class MetadataTest(unittest.TestCase):
                                 "title": "テスト駆動開発 Kent Beck",
                                 "lines": [
                                     {"text": "テスト駆動開発 Kent Beck"},
+                                    {"text": "[https://images-na.ssl-images-amazon.com/images/P/4274217884.09.MZZZZZZZ.jpg https://www.amazon.co.jp/dp/4274217884]"},
                                     {"text": "#Bookscan #技術書"},
                                     {"text": "https://system.bookscan.co.jp/sample?f=book_4274217884.pdf"},
                                 ],
@@ -41,7 +42,10 @@ class MetadataTest(unittest.TestCase):
             with patch.dict("os.environ", {}, clear=True):
                 metadata = load_metadata_by_pdf_stem(export_json)
 
-            self.assertEqual(metadata, {})
+            item = metadata_for_pdf("/books/tech/4274217884_テスト駆動開発 Kent Beck.pdf", metadata)
+            self.assertIsNotNone(item)
+            self.assertIsNone(item.scrapbox_url)
+            self.assertEqual(item.cover_url, "https://images-na.ssl-images-amazon.com/images/P/4274217884.09.MZZZZZZZ.jpg")
 
     def test_scrapbox_base_url_can_be_overridden(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -54,6 +58,7 @@ class MetadataTest(unittest.TestCase):
                                 "title": "テスト駆動開発 Kent Beck",
                                 "lines": [
                                     {"text": "テスト駆動開発 Kent Beck"},
+                                    {"text": "[https://images-na.ssl-images-amazon.com/images/P/4274217884.09.MZZZZZZZ.jpg https://www.amazon.co.jp/dp/4274217884]"},
                                     {"text": "#Bookscan #技術書"},
                                     {"text": "https://system.bookscan.co.jp/sample?f=book_4274217884.pdf"},
                                 ],
@@ -74,6 +79,7 @@ class MetadataTest(unittest.TestCase):
                 item.scrapbox_url,
                 "https://scrapbox.io/custom-project/%E3%83%86%E3%82%B9%E3%83%88%E9%A7%86%E5%8B%95%E9%96%8B%E7%99%BA%20Kent%20Beck",
             )
+            self.assertEqual(item.cover_url, "https://images-na.ssl-images-amazon.com/images/P/4274217884.09.MZZZZZZZ.jpg")
 
 
 if __name__ == "__main__":
