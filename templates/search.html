@@ -17,9 +17,14 @@
       {% for result in results %}
         <article class="result">
           <h3>{{ result.title }} <span class="pill">p.{{ result.page_number }}</span></h3>
-          {% if result.open_url %}
+          {% if result.open_url or result.scrapbox_url %}
             <div style="margin: 8px 0 6px;">
-              <a class="button" href="{{ result.open_url }}" target="_blank" rel="noreferrer">このページを開く</a>
+              {% if result.open_url %}
+                <a class="button" href="{{ result.open_url }}" target="_blank" rel="noreferrer">このページを開く</a>
+              {% endif %}
+              {% if result.scrapbox_url %}
+                <a class="button" href="{{ result.scrapbox_url }}" target="_blank" rel="noreferrer">Scrapbox</a>
+              {% endif %}
             </div>
           {% endif %}
           <div class="meta"><code>{{ result.path }}</code></div>
