@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block title %}つんどけんさく | 検索{% endblock %}
+{% block content %}
+<section class="card">
+  <form class="search" action="/search" method="get">
+    <input type="search" name="q" value="{{ query }}" placeholder="キーワードを入力して検索">
+    <button class="primary" type="submit">検索</button>
+  </form>
+  <p class="muted" style="margin-top: 12px;">
+    検索語: <span class="pill">{{ query or "未入力" }}</span> / 結果: {{ result_count }}
+  </p>
+</section>
+
+<section class="card">
+  {% if results %}
+    <div class="results">
+      {% for result in results %}
+        <article class="result">
+          <h3>{{ result.title }} <span class="pill">p.{{ result.page_number }}</span></h3>
+          {% if result.open_url %}
+            <div style="margin: 8px 0 6px;">
+              <a class="button" href="{{ result.open_url }}" target="_blank" rel="noreferrer">このページを開く</a>
+            </div>
+          {% endif %}
+          <div class="meta"><code>{{ result.path }}</code></div>
+          <div class="snippet">{{ result.snippet }}</div>
+        </article>
+      {% endfor %}
+    </div>
+  {% else %}
+    <p class="muted">検索結果はありません。</p>
+  {% endif %}
+</section>
+{% endblock %}

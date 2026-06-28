@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block title %}つんどけんさく | PDF{% endblock %}
+{% block content %}
+<section class="viewer-header">
+  <div>
+    <div class="muted">p.{{ page }}</div>
+    <h2>{{ pdf_path }}</h2>
+  </div>
+  <a class="button" href="{{ pdf_src }}" target="_blank" rel="noreferrer">別タブで開く</a>
+</section>
+
+<section class="viewer-frame">
+  <iframe title="PDF viewer" src="{{ pdf_src }}"></iframe>
+</section>
+{% endblock %}

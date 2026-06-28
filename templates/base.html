@@ -1,0 +1,246 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}つんどけんさく{% endblock %}</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f5f1e8;
+        --panel: #fffaf0;
+        --text: #1f2328;
+        --muted: #5f6b7a;
+        --accent: #0f766e;
+        --accent-strong: #115e59;
+        --border: #d7d2c8;
+        --shadow: 0 12px 32px rgba(20, 30, 40, 0.08);
+      }
+
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        color: var(--text);
+        background:
+          radial-gradient(circle at top left, rgba(15, 118, 110, 0.12), transparent 30%),
+          radial-gradient(circle at top right, rgba(180, 83, 9, 0.10), transparent 24%),
+          var(--bg);
+      }
+
+      a { color: var(--accent-strong); text-decoration: none; }
+      a:hover { text-decoration: underline; }
+
+      .shell {
+        max-width: 1080px;
+        margin: 0 auto;
+        padding: 24px 16px 48px;
+      }
+
+      .topbar {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 24px;
+      }
+
+      .brand {
+        display: grid;
+        gap: 4px;
+      }
+
+      .brand h1 {
+        margin: 0;
+        font-size: clamp(1.4rem, 2vw, 2.2rem);
+        letter-spacing: 0.02em;
+      }
+
+      .brand p,
+      .meta,
+      .muted {
+        margin: 0;
+        color: var(--muted);
+      }
+
+      .nav {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+
+      .nav a,
+      button,
+      .button {
+        border: 1px solid var(--border);
+        background: var(--panel);
+        color: var(--text);
+        padding: 10px 14px;
+        border-radius: 999px;
+        box-shadow: var(--shadow);
+        font: inherit;
+        cursor: pointer;
+      }
+
+      .nav a.active,
+      button.primary,
+      .button.primary {
+        background: var(--accent);
+        color: white;
+        border-color: transparent;
+      }
+
+      .card {
+        background: rgba(255, 250, 240, 0.88);
+        backdrop-filter: blur(6px);
+        border: 1px solid rgba(215, 210, 200, 0.9);
+        border-radius: 24px;
+        box-shadow: var(--shadow);
+        padding: 20px;
+        margin-bottom: 20px;
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 16px;
+      }
+
+      .stat {
+        padding: 18px;
+        border-radius: 18px;
+        background: rgba(255, 255, 255, 0.75);
+        border: 1px solid var(--border);
+      }
+
+      .stat .label { color: var(--muted); font-size: 0.92rem; }
+      .stat .value { font-size: 2rem; font-weight: 700; margin-top: 6px; }
+
+      form.search {
+        display: flex;
+        gap: 12px;
+        flex-wrap: wrap;
+      }
+
+      input[type="search"] {
+        flex: 1 1 280px;
+        border: 1px solid var(--border);
+        background: white;
+        border-radius: 16px;
+        padding: 14px 16px;
+        font: inherit;
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+      }
+
+      th, td {
+        text-align: left;
+        border-bottom: 1px solid var(--border);
+        padding: 12px 8px;
+        vertical-align: top;
+      }
+
+      th { color: var(--muted); font-weight: 600; }
+
+      .pill {
+        display: inline-block;
+        padding: 4px 10px;
+        border-radius: 999px;
+        background: rgba(15, 118, 110, 0.1);
+        color: var(--accent-strong);
+        font-size: 0.88rem;
+      }
+
+      .results {
+        display: grid;
+        gap: 14px;
+      }
+
+      .result {
+        padding: 16px;
+        border: 1px solid var(--border);
+        border-radius: 18px;
+        background: rgba(255,255,255,0.74);
+      }
+
+      .result h3 {
+        margin: 0 0 6px;
+        font-size: 1.04rem;
+      }
+
+      .snippet {
+        white-space: pre-wrap;
+        line-height: 1.55;
+        margin-top: 10px;
+      }
+
+      .footer {
+        margin-top: 28px;
+        color: var(--muted);
+        font-size: 0.92rem;
+      }
+
+      .viewer-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        margin-bottom: 14px;
+      }
+
+      .viewer-header h2 {
+        margin: 4px 0 0;
+        font-size: 1rem;
+        overflow-wrap: anywhere;
+      }
+
+      .viewer-frame {
+        height: calc(100vh - 190px);
+        min-height: 520px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        overflow: hidden;
+        background: white;
+        box-shadow: var(--shadow);
+      }
+
+      .viewer-frame iframe {
+        width: 100%;
+        height: 100%;
+        border: 0;
+        display: block;
+      }
+
+      @media (max-width: 640px) {
+        .shell { padding: 16px 12px 32px; }
+        .card { padding: 16px; border-radius: 18px; }
+        th, td { padding: 10px 6px; }
+        .viewer-header { align-items: flex-start; flex-direction: column; }
+        .viewer-frame { height: calc(100vh - 230px); min-height: 420px; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="shell">
+      <div class="topbar">
+        <div class="brand">
+          <h1>つんどけんさく</h1>
+          <p>ローカルPDF全文検索</p>
+        </div>
+        <nav class="nav">
+          <a href="/" class="{% if request.url.path == '/' %}active{% endif %}">ホーム</a>
+          <a href="/manage" class="{% if request.url.path == '/manage' %}active{% endif %}">インデックス管理</a>
+        </nav>
+      </div>
+      {% block content %}{% endblock %}
+      <div class="footer">
+        <div>Books: <code>{{ books_dir if books_dir is defined else '' }}</code></div>
+        <div>DB: <code>{{ db_path if db_path is defined else '' }}</code></div>
+      </div>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}つんどけんさく | インデックス管理{% endblock %}
+{% block content %}
+<section class="card">
+  <div class="grid">
+    <div class="stat">
+      <div class="label">PDF一覧</div>
+      <div class="value">{{ pdf_count }}</div>
+    </div>
+  </div>
+  <form action="/manage/index" method="post" style="margin-top: 16px;">
+    <button class="primary" type="submit">インデックス実行</button>
+  </form>
+  {% if message %}
+    <p style="margin-top: 14px;"><span class="pill">{{ message }}</span></p>
+  {% endif %}
+</section>
+
+<section class="card">
+  <table>
+    <thead>
+      <tr>
+        <th>PDF</th>
+        <th>状態</th>
+        <th>開く</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for item in items %}
+        <tr>
+          <td>{{ item.title }}</td>
+          <td>{% if item.indexed %}<span class="pill">indexed</span>{% else %}<span class="muted">not indexed</span>{% endif %}</td>
+          <td>{% if item.open_url %}<a class="button" href="{{ item.open_url }}" target="_blank" rel="noreferrer">Open</a>{% endif %}</td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}
