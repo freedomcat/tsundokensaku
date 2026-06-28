@@ -1,7 +1,7 @@
 BOOKS_DIR ?= /mnt/c/tsundokensaku-books/tech
 DB_PATH ?= data/index.db
 
-.PHONY: build run index search test shell
+.PHONY: build run index reindex clean-index search test shell
 
 build:
 	docker compose build
@@ -10,7 +10,13 @@ run:
 	docker compose run --rm app index --books-dir /books/tech --db $(DB_PATH)
 
 index:
-	docker compose run --rm app index --books-dir /books/tech --db $(DB_PATH)
+	$(MAKE) run
+
+clean-index:
+	rm -f $(DB_PATH)
+
+reindex: clean-index
+	$(MAKE) run
 
 search:
 	docker compose run --rm app search --db $(DB_PATH) "$(QUERY)"

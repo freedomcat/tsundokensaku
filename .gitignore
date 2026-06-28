@@ -10,3 +10,4 @@ __pycache__/
 .env
 data/index.db
 books/tech/*.pdf
+shino-books_imported.json
