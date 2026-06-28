@@ -23,6 +23,12 @@ def main(argv: list[str] | None = None) -> int:
     search_parser.add_argument("query")
     search_parser.add_argument("--db", type=Path, default=DEFAULT_DB_PATH)
     search_parser.add_argument("--limit", type=int, default=20)
+    search_parser.add_argument(
+        "--scope",
+        choices=("all", "title", "body"),
+        default="all",
+        help="Search scope: all, title, or body.",
+    )
 
     args = parser.parse_args(argv)
 
@@ -33,7 +39,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "search":
         connection = connect(args.db)
         initialize(connection)
-        results = search(connection, args.query, limit=args.limit)
+        results = search(connection, args.query, limit=args.limit, scope=args.scope)
         connection.close()
 
         if not results:

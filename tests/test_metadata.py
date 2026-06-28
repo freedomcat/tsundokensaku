@@ -38,7 +38,9 @@ class MetadataTest(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            metadata = load_metadata_by_pdf_stem(export_json)
+            with patch.dict("os.environ", {}, clear=True):
+                metadata = load_metadata_by_pdf_stem(export_json)
+
             self.assertEqual(metadata, {})
 
     def test_scrapbox_base_url_can_be_overridden(self) -> None:

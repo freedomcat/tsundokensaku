@@ -13,7 +13,7 @@ from tsundokensaku.database import (
 
 
 class DatabaseSearchTest(unittest.TestCase):
-    def test_search_returns_book_page_and_snippet(self) -> None:
+    def test_search_all_scope_returns_book_page_and_snippet(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / "index.db"
             connection = connect(db_path)
@@ -35,7 +35,7 @@ class DatabaseSearchTest(unittest.TestCase):
                 ],
             )
 
-            results = search(connection, "FTS5")
+            results = search(connection, "FTS5", scope="all")
 
             self.assertEqual(len(results), 1)
             self.assertEqual(results[0].title, "sqlite-guide")
@@ -43,7 +43,7 @@ class DatabaseSearchTest(unittest.TestCase):
             self.assertIn("FTS5", results[0].snippet)
             connection.close()
 
-    def test_search_falls_back_to_like_for_substring(self) -> None:
+    def test_search_title_scope_returns_one_result_per_book(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / "index.db"
             connection = connect(db_path)
@@ -51,21 +51,81 @@ class DatabaseSearchTest(unittest.TestCase):
             book_id = upsert_book(
                 connection,
                 path=Path("books/tech/python.pdf"),
-                title="python",
+                title="python dataclasses",
                 size_bytes=123,
                 modified_at=1.0,
             )
             replace_pages(
                 connection,
                 book_id=book_id,
-                title="python",
-                pages=[PageRecord(page_number=3, text="dataclasses make records simple")],
+                title="python dataclasses",
+                pages=[
+                    PageRecord(page_number=3, text="dataclasses make records simple"),
+                    PageRecord(page_number=4, text="another page"),
+                ],
             )
 
-            results = search(connection, "class")
+            results = search(connection, "python", scope="title")
 
             self.assertEqual(len(results), 1)
-            self.assertEqual(results[0].page_number, 3)
+            self.assertEqual(results[0].snippet, "python dataclasses")
+            self.assertEqual(results[0].page_number, 1)
+            connection.close()
+
+    def test_search_all_scope_includes_title_and_body_results(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "index.db"
+            connection = connect(db_path)
+            initialize(connection)
+            book_id = upsert_book(
+                connection,
+                path=Path("books/tech/python.pdf"),
+                title="python dataclasses",
+                size_bytes=123,
+                modified_at=1.0,
+            )
+            replace_pages(
+                connection,
+                book_id=book_id,
+                title="python dataclasses",
+                pages=[
+                    PageRecord(page_number=3, text="dataclasses make records simple"),
+                    PageRecord(page_number=4, text="python appears in body too"),
+                ],
+            )
+
+            results = search(connection, "python", scope="all")
+
+            self.assertGreaterEqual(len(results), 2)
+            self.assertEqual(results[0].snippet, "python dataclasses")
+            self.assertEqual(results[0].page_number, 1)
+            self.assertTrue(any(result.page_number == 4 for result in results))
+            connection.close()
+
+    def test_search_body_scope_ignores_title_and_uses_page_text(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "index.db"
+            connection = connect(db_path)
+            initialize(connection)
+            book_id = upsert_book(
+                connection,
+                path=Path("books/tech/body-only.pdf"),
+                title="body-only",
+                size_bytes=123,
+                modified_at=1.0,
+            )
+            replace_pages(
+                connection,
+                book_id=book_id,
+                title="body-only",
+                pages=[PageRecord(page_number=7, text="bookscan style body query")],
+            )
+
+            results = search(connection, "style", scope="body")
+
+            self.assertEqual(len(results), 1)
+            self.assertEqual(results[0].page_number, 7)
+            self.assertIn("style", results[0].snippet)
             connection.close()
 
 

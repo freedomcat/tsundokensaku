@@ -92,8 +92,21 @@ uvicorn tsundokensaku.web:app --reload
 - `http://127.0.0.1:8000/manage`
 
 Web UI でも `BOOKS_DIR` と `DB_DIR` を使えます。
-Scrapbox を使う場合は、`.env` などに `SCRAPBOX_BASE_URL` を置けます。
+設定をまとめて書くなら、まず `.env.example` を `.env` にコピーして使えます。
+
+```bash
+cp .env.example .env
+```
+
+`.env` には `BOOKS_DIR`、`DB_DIR`、Scrapbox を使う場合は `SCRAPBOX_BASE_URL` などを入れます。
 `BASE_URL` や `SCRAPBOX_PROJECT_URL` も読みます。未設定なら Scrapbox リンクは表示しません。
+
+検索範囲は `all` / `title` / `body` の3種類です。
+- `all`: タイトルと本文の両方を検索します。
+- `title`: 書籍タイトルのみを検索します。
+- `body`: 本文だけを検索します。
+
+CLI では `--scope`、Web UI では検索フォームのプルダウンで切り替えられます。
 
 検索結果の並び順は、画面上のセレクトボックスで切り替えられます。
 

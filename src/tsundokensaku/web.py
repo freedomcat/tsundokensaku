@@ -9,7 +9,7 @@ from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from tsundokensaku.database import connect, initialize, list_books, search
+from tsundokensaku.database import SEARCH_SCOPES, connect, initialize, list_books, search
 from tsundokensaku.indexer import find_pdfs, index_books
 from tsundokensaku.metadata import BookMetadata, find_export_json, load_metadata_by_pdf_stem, metadata_for_pdf
 
@@ -111,6 +111,13 @@ def get_db_stats(db_path: Path) -> dict[str, int]:
     return {"book_count": len(books), "page_count": int(page_count)}
 
 
+SEARCH_SCOPE_OPTIONS = [
+    {"value": "all", "label": "すべて"},
+    {"value": "title", "label": "タイトルのみ"},
+    {"value": "body", "label": "本文のみ"},
+]
+
+
 @app.get("/", response_class=HTMLResponse)
 def home(request: Request) -> HTMLResponse:
     books_dir = get_books_dir()
@@ -128,18 +135,21 @@ def home(request: Request) -> HTMLResponse:
             "pdf_count": pdf_stats["pdf_count"],
             "book_count": db_stats["book_count"],
             "page_count": db_stats["page_count"],
+            "scope": "all",
+            "scope_options": SEARCH_SCOPE_OPTIONS,
         },
     )
 
 
 @app.get("/search", response_class=HTMLResponse)
-def search_page(request: Request, q: str = "", sort: str = "rank") -> HTMLResponse:
+def search_page(request: Request, q: str = "", sort: str = "rank", scope: str = "all") -> HTMLResponse:
     books_dir = get_books_dir()
     db_path = get_db_path()
     metadata_by_stem = get_metadata()
     connection = connect(db_path)
     initialize(connection)
-    results = search(connection, q, limit=50) if q.strip() else []
+    normalized_scope = scope if scope in SEARCH_SCOPES else "all"
+    results = search(connection, q, limit=50, scope=normalized_scope) if q.strip() else []
     connection.close()
     rendered_results = [
         {
@@ -171,6 +181,8 @@ def search_page(request: Request, q: str = "", sort: str = "rank") -> HTMLRespon
             "query": q,
             "sort": sort,
             "sort_options": sort_options,
+            "scope": normalized_scope,
+            "scope_options": SEARCH_SCOPE_OPTIONS,
             "books_dir": books_dir,
             "db_path": db_path,
             "results": rendered_results,
