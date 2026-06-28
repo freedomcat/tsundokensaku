@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sqlite3
 from urllib.parse import quote
 from pathlib import Path
 
@@ -9,9 +10,9 @@ from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from tsundokensaku.database import SEARCH_SCOPES, connect, initialize, list_books, search
+from tsundokensaku.database import SEARCH_SCOPES, connect, list_books, search
 from tsundokensaku.indexer import find_pdfs, index_books
-from tsundokensaku.metadata import BookMetadata, find_export_json, load_metadata_by_pdf_stem, metadata_for_pdf
+from tsundokensaku.metadata import BookMetadata, find_export_json, load_metadata_by_pdf_stem, load_scrapbox_memos, metadata_for_pdf, search_scrapbox_memos
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -94,27 +95,30 @@ def get_pdf_stats(books_dir: Path) -> dict[str, int]:
 
 def sort_results(results: list[dict], sort: str) -> list[dict]:
     if sort == "title":
-        return sorted(results, key=lambda result: (result["title"], result["page_number"]))
+        return sorted(results, key=lambda result: (result["title"], result["page_number"] is None, result["page_number"] or 0))
     if sort == "page":
-        return sorted(results, key=lambda result: (result["page_number"], result["title"]))
+        return sorted(results, key=lambda result: (result["page_number"] is None, result["page_number"] or 0, result["title"]))
     if sort == "scrapbox":
-        return sorted(results, key=lambda result: (result["scrapbox_url"] is None, result["title"], result["page_number"]))
+        return sorted(results, key=lambda result: (result["scrapbox_url"] is None, result["title"], result["page_number"] is None, result["page_number"] or 0))
     return results
 
 
 def get_db_stats(db_path: Path) -> dict[str, int]:
-    connection = connect(db_path)
-    initialize(connection)
-    books = list_books(connection)
-    page_count = connection.execute("SELECT COUNT(*) AS count FROM pages").fetchone()["count"]
-    connection.close()
-    return {"book_count": len(books), "page_count": int(page_count)}
+    try:
+        connection = connect(db_path)
+        books = list_books(connection)
+        page_count = connection.execute("SELECT COUNT(*) AS count FROM pages").fetchone()["count"]
+        connection.close()
+        return {"book_count": len(books), "page_count": int(page_count)}
+    except sqlite3.OperationalError:
+        return {"book_count": 0, "page_count": 0}
 
 
 SEARCH_SCOPE_OPTIONS = [
     {"value": "all", "label": "すべて"},
     {"value": "title", "label": "タイトルのみ"},
     {"value": "body", "label": "本文のみ"},
+    {"value": "memo", "label": "メモのみ"},
 ]
 
 
@@ -145,32 +149,51 @@ def home(request: Request) -> HTMLResponse:
 def search_page(request: Request, q: str = "", sort: str = "rank", scope: str = "all") -> HTMLResponse:
     books_dir = get_books_dir()
     db_path = get_db_path()
-    metadata_by_stem = get_metadata()
-    connection = connect(db_path)
-    initialize(connection)
+    export_json = find_export_json(PROJECT_ROOT)
+    metadata_by_stem = load_metadata_by_pdf_stem(export_json)
     normalized_scope = scope if scope in SEARCH_SCOPES else "all"
-    results = search(connection, q, limit=50, scope=normalized_scope) if q.strip() else []
+    connection = connect(db_path)
+    title_results = search(connection, q, limit=50, scope="title") if q.strip() and normalized_scope in {"all", "title"} else []
+    body_results = search(connection, q, limit=50, scope="body") if q.strip() and normalized_scope in {"all", "body"} else []
     connection.close()
-    rendered_results = [
-        {
-            "title": result.title,
-            "path": result.path,
-            "page_number": result.page_number,
-            "snippet": result.snippet,
-            "cover_url": (
-                metadata.cover_url
-                if (metadata := metadata_for_pdf(result.path, metadata_by_stem))
-                else None
-            ),
-            "open_url": raw_pdf_url(result.path, books_dir, page_number=result.page_number),
-            "scrapbox_url": (
-                metadata.scrapbox_url
-                if (metadata := metadata_for_pdf(result.path, metadata_by_stem))
-                else None
-            ),
-        }
-        for result in results
-    ]
+    memo_results = search_scrapbox_memos(export_json, q, limit=50) if q.strip() and normalized_scope in {"all", "memo"} else []
+    rendered_results = []
+    if normalized_scope in {"all", "title", "body"}:
+        rendered_results.extend(
+            {
+                "title": result.title,
+                "path": result.path,
+                "page_number": result.page_number,
+                "snippet": result.snippet,
+                "result_type": "pdf",
+                "cover_url": (
+                    metadata.cover_url
+                    if (metadata := metadata_for_pdf(result.path, metadata_by_stem))
+                    else None
+                ),
+                "open_url": raw_pdf_url(result.path, books_dir, page_number=result.page_number),
+                "scrapbox_url": (
+                    metadata.scrapbox_url
+                    if (metadata := metadata_for_pdf(result.path, metadata_by_stem))
+                    else None
+                ),
+            }
+            for result in title_results + body_results
+        )
+    if normalized_scope in {"all", "memo"}:
+        rendered_results.extend(
+            {
+                "title": memo.title,
+                "path": memo.title,
+                "page_number": None,
+                "snippet": memo.body,
+                "result_type": "memo",
+                "cover_url": memo.cover_url,
+                "open_url": memo.scrapbox_url,
+                "scrapbox_url": memo.scrapbox_url,
+            }
+            for memo in memo_results
+        )
     rendered_results = sort_results(rendered_results, sort)
     sort_options = [
         {"value": "rank", "label": "関連度順"},
@@ -202,10 +225,12 @@ def manage_index(request: Request, message: str = "") -> HTMLResponse:
     db_path = get_db_path()
     metadata_by_stem = get_metadata()
     pdf_paths = list(find_pdfs(books_dir))
-    connection = connect(db_path)
-    initialize(connection)
-    indexed_paths = {row["path"] for row in connection.execute("SELECT path FROM books").fetchall()}
-    connection.close()
+    try:
+        connection = connect(db_path)
+        indexed_paths = {row["path"] for row in connection.execute("SELECT path FROM books").fetchall()}
+        connection.close()
+    except sqlite3.OperationalError:
+        indexed_paths = set()
     items = [
         {
             "path": pdf_path,

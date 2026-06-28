@@ -35,22 +35,35 @@
               {% endif %}
             </div>
             <div class="result-body">
-              <h3>{{ result.title }} <span class="pill">p.{{ result.page_number }}</span></h3>
+              <h3>
+                {{ result.title }}
+                {% if result.page_number is not none %}
+                  <span class="pill">p.{{ result.page_number }}</span>
+                {% else %}
+                  <span class="pill">メモ</span>
+                {% endif %}
+              </h3>
               {% if result.open_url or result.scrapbox_url %}
                 <div class="result-actions">
-                  {% if result.open_url %}
-                    <button
-                      type="button"
-                      class="button"
-                      data-pdf-modal-url="{{ result.open_url }}"
-                      data-pdf-modal-title="{{ result.title }} p.{{ result.page_number }}"
-                      data-pdf-modal-scrapbox-url="{{ result.scrapbox_url or '' }}"
-                    >
-                      このページを開く
-                    </button>
-                  {% endif %}
-                  {% if result.scrapbox_url %}
-                    <a class="button" href="{{ result.scrapbox_url }}" target="_blank" rel="noreferrer">Scrapbox</a>
+                  {% if result.result_type == 'memo' %}
+                    {% if result.scrapbox_url %}
+                      <a class="button" href="{{ result.scrapbox_url }}" target="_blank" rel="noreferrer">メモを開く</a>
+                    {% endif %}
+                  {% else %}
+                    {% if result.open_url %}
+                      <button
+                        type="button"
+                        class="button"
+                        data-pdf-modal-url="{{ result.open_url }}"
+                        data-pdf-modal-title="{{ result.title }} p.{{ result.page_number }}"
+                        data-pdf-modal-scrapbox-url="{{ result.scrapbox_url or '' }}"
+                      >
+                        このページを開く
+                      </button>
+                    {% endif %}
+                    {% if result.scrapbox_url %}
+                      <a class="button" href="{{ result.scrapbox_url }}" target="_blank" rel="noreferrer">Scrapbox</a>
+                    {% endif %}
                   {% endif %}
                 </div>
               {% endif %}

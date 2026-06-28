@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from tsundokensaku.metadata import load_metadata_by_pdf_stem, metadata_for_pdf
+from tsundokensaku.metadata import load_metadata_by_pdf_stem, load_scrapbox_memos, metadata_for_pdf
 
 
 class MetadataTest(unittest.TestCase):
@@ -80,6 +80,37 @@ class MetadataTest(unittest.TestCase):
                 "https://scrapbox.io/custom-project/%E3%83%86%E3%82%B9%E3%83%88%E9%A7%86%E5%8B%95%E9%96%8B%E7%99%BA%20Kent%20Beck",
             )
             self.assertEqual(item.cover_url, "https://images-na.ssl-images-amazon.com/images/P/4274217884.09.MZZZZZZZ.jpg")
+
+    def test_loads_scrapbox_memos_from_export(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            export_json = Path(temp_dir) / "shino-books_20260628_000000.json"
+            export_json.write_text(
+                json.dumps(
+                    {
+                        "pages": [
+                            {
+                                "title": "メモ1",
+                                "lines": [
+                                    {"text": "メモ1"},
+                                    {"text": "検索対象のメモ本文"},
+                                    {"text": "[https://example.com/cover.jpg]"},
+                                ],
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            with patch.dict("os.environ", {"SCRAPBOX_BASE_URL": "https://scrapbox.io/custom-project"}, clear=False):
+                memos = load_scrapbox_memos(export_json)
+
+            self.assertEqual(len(memos), 1)
+            self.assertEqual(memos[0].title, "メモ1")
+            self.assertEqual(memos[0].body, "メモ1\n検索対象のメモ本文\n[https://example.com/cover.jpg]")
+            self.assertEqual(memos[0].scrapbox_url, "https://scrapbox.io/custom-project/%E3%83%A1%E3%83%A21")
+            self.assertEqual(memos[0].cover_url, "https://example.com/cover.jpg")
 
 
 if __name__ == "__main__":

@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from tsundokensaku.metadata import ScrapboxMemo, load_scrapbox_memos
+
 
 @dataclass(frozen=True)
 class BookRecord:
@@ -28,11 +30,13 @@ class PageRecord:
 class SearchResult:
     title: str
     path: str
-    page_number: int
+    page_number: int | None
     snippet: str
+    open_url: str | None = None
+    cover_url: str | None = None
 
 
-SEARCH_SCOPES = {"all", "title", "body"}
+SEARCH_SCOPES = {"all", "title", "body", "memo"}
 
 
 def connect(db_path: Path) -> sqlite3.Connection:
@@ -82,6 +86,28 @@ def initialize(connection: sqlite3.Connection) -> None:
             title,
             text,
             tokenize = 'unicode61'
+        );
+
+        CREATE TABLE IF NOT EXISTS memos (
+            id INTEGER PRIMARY KEY,
+            title TEXT NOT NULL,
+            body TEXT NOT NULL,
+            scrapbox_url TEXT,
+            cover_url TEXT
+        );
+
+        CREATE VIRTUAL TABLE IF NOT EXISTS memos_fts USING fts5(
+            memo_id UNINDEXED,
+            title,
+            body,
+            tokenize = 'unicode61'
+        );
+
+        CREATE TABLE IF NOT EXISTS memo_sources (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            source_path TEXT,
+            source_mtime REAL,
+            indexed_at TEXT NOT NULL
         );
         """
     )
@@ -191,6 +217,62 @@ def replace_pages(
     return count
 
 
+def replace_memos(connection: sqlite3.Connection, memos: Iterable[ScrapboxMemo]) -> int:
+    connection.execute("DELETE FROM memos")
+    connection.execute("DELETE FROM memos_fts")
+
+    count = 0
+    for memo in memos:
+        cursor = connection.execute(
+            """
+            INSERT INTO memos(title, body, scrapbox_url, cover_url)
+            VALUES (?, ?, ?, ?)
+            """,
+            (memo.title, memo.body, memo.scrapbox_url, memo.cover_url),
+        )
+        connection.execute(
+            """
+            INSERT INTO memos_fts(rowid, memo_id, title, body)
+            VALUES (?, ?, ?, ?)
+            """,
+            (cursor.lastrowid, cursor.lastrowid, memo.title, memo.body),
+        )
+        count += 1
+
+    connection.commit()
+    return count
+
+
+def sync_memos(connection: sqlite3.Connection, export_json: Path | None, *, project_url: str | None = None) -> int:
+    if export_json is None or not export_json.exists():
+        return 0
+
+    source_path = str(export_json.resolve())
+    source_mtime = export_json.stat().st_mtime
+    current = connection.execute(
+        "SELECT source_path, source_mtime FROM memo_sources WHERE id = 1"
+    ).fetchone()
+    if current and current["source_path"] == source_path and float(current["source_mtime"]) == source_mtime:
+        return 0
+
+    memos = load_scrapbox_memos(export_json, project_url=project_url)
+    replace_memos(connection, memos)
+    indexed_at = datetime.now(timezone.utc).isoformat()
+    connection.execute(
+        """
+        INSERT INTO memo_sources(id, source_path, source_mtime, indexed_at)
+        VALUES (1, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            source_path = excluded.source_path,
+            source_mtime = excluded.source_mtime,
+            indexed_at = excluded.indexed_at
+        """,
+        (source_path, source_mtime, indexed_at),
+    )
+    connection.commit()
+    return len(memos)
+
+
 def search(
     connection: sqlite3.Connection,
     query: str,
@@ -204,21 +286,43 @@ def search(
 
     normalized_scope = scope if scope in SEARCH_SCOPES else "all"
     if normalized_scope == "title":
-        rows = _search_title(connection, normalized_query, limit=limit)
+        try:
+            rows = _search_title(connection, normalized_query, limit=limit)
+        except sqlite3.OperationalError:
+            rows = []
     elif normalized_scope == "body":
-        rows = _search_body(connection, normalized_query, limit=limit)
+        try:
+            rows = _search_body(connection, normalized_query, limit=limit)
+        except sqlite3.OperationalError:
+            rows = []
+    elif normalized_scope == "memo":
+        try:
+            rows = _search_memo(connection, normalized_query, limit=limit)
+        except sqlite3.OperationalError:
+            rows = []
     else:
-        title_rows = _search_title(connection, normalized_query, limit=limit)
-        body_rows = _search_body(connection, normalized_query, limit=limit)
-        rows = title_rows + body_rows
-        rows = rows[:limit]
+        try:
+            title_rows = _search_title(connection, normalized_query, limit=limit)
+        except sqlite3.OperationalError:
+            title_rows = []
+        try:
+            body_rows = _search_body(connection, normalized_query, limit=limit)
+        except sqlite3.OperationalError:
+            body_rows = []
+        try:
+            memo_rows = _search_memo(connection, normalized_query, limit=limit)
+        except sqlite3.OperationalError:
+            memo_rows = []
+        rows = title_rows + body_rows + memo_rows
 
     return [
         SearchResult(
             title=row["title"],
             path=row["path"],
-            page_number=int(row["page_number"]),
+            page_number=(int(row["page_number"]) if row["page_number"] is not None else None),
             snippet=_clean_snippet(row["snippet"]),
+            open_url=row["open_url"] if "open_url" in row.keys() else None,
+            cover_url=row["cover_url"] if "cover_url" in row.keys() else None,
         )
         for row in rows
     ]
@@ -293,6 +397,58 @@ def _search_body_like(connection: sqlite3.Connection, query: str, *, limit: int)
             LIMIT ?
             """,
             (like_query, limit),
+        )
+    )
+
+
+def _search_memo(connection: sqlite3.Connection, query: str, *, limit: int) -> list[sqlite3.Row]:
+    try:
+        return _search_memo_fts(connection, query, limit=limit)
+    except sqlite3.OperationalError:
+        return _search_memo_like(connection, query, limit=limit)
+
+
+def _search_memo_fts(connection: sqlite3.Connection, query: str, *, limit: int) -> list[sqlite3.Row]:
+    fts_query = _to_fts_query(query)
+    return list(
+        connection.execute(
+            """
+            SELECT
+                title,
+                title AS path,
+                NULL AS page_number,
+                snippet(memos_fts, 2, '[', ']', ' ... ', 24) AS snippet,
+                scrapbox_url AS open_url,
+                cover_url
+            FROM memos_fts
+            JOIN memos ON memos.id = memos_fts.memo_id
+            WHERE memos_fts MATCH ?
+            ORDER BY rank
+            LIMIT ?
+            """,
+            (fts_query, limit),
+        )
+    )
+
+
+def _search_memo_like(connection: sqlite3.Connection, query: str, *, limit: int) -> list[sqlite3.Row]:
+    like_query = f"%{query}%"
+    return list(
+        connection.execute(
+            """
+            SELECT
+                title,
+                title AS path,
+                NULL AS page_number,
+                body AS snippet,
+                scrapbox_url AS open_url,
+                cover_url
+            FROM memos
+            WHERE title LIKE ? OR body LIKE ?
+            ORDER BY title
+            LIMIT ?
+            """,
+            (like_query, like_query, limit),
         )
     )
 

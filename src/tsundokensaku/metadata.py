@@ -22,6 +22,14 @@ class BookMetadata:
     cover_url: str | None = None
 
 
+@dataclass(frozen=True)
+class ScrapboxMemo:
+    title: str
+    body: str
+    scrapbox_url: str | None = None
+    cover_url: str | None = None
+
+
 def load_env_file(path: Path = ENV_FILE) -> None:
     global _ENV_LOADED
     if _ENV_LOADED or not path.exists():
@@ -89,6 +97,62 @@ def load_metadata_by_pdf_stem(export_json: Path | None, *, project_url: str | No
         metadata[stem] = BookMetadata(title=title, scrapbox_url=scrapbox_url, cover_url=cover_url)
 
     return metadata
+
+
+def load_scrapbox_memos(export_json: Path | None, *, project_url: str | None = None) -> list[ScrapboxMemo]:
+    if export_json is None or not export_json.exists():
+        return []
+
+    base_url = (project_url or get_scrapbox_project_url())
+    if base_url:
+        base_url = base_url.rstrip("/")
+    data = json.loads(export_json.read_text(encoding="utf-8"))
+    memos: list[ScrapboxMemo] = []
+
+    for page in data.get("pages", []):
+        title = page.get("title", "")
+        lines = page.get("lines", [])
+        body = "\n".join(line.get("text", "") for line in lines)
+        if not title and not body:
+            continue
+
+        cover_url = extract_cover_image_url(lines)
+        scrapbox_url = f"{base_url}/{quote(title, safe='')}" if base_url and title else None
+        memos.append(
+            ScrapboxMemo(
+                title=title,
+                body=body,
+                scrapbox_url=scrapbox_url,
+                cover_url=cover_url,
+            )
+        )
+
+    return memos
+
+
+def search_scrapbox_memos(
+    export_json: Path | None,
+    query: str,
+    *,
+    limit: int = 20,
+    project_url: str | None = None,
+) -> list[ScrapboxMemo]:
+    normalized_query = query.strip()
+    if not normalized_query:
+        return []
+
+    memos = load_scrapbox_memos(export_json, project_url=project_url)
+    terms = [term.strip('"') for term in re.findall(r'"[^"]+"|\S+', normalized_query) if term.strip('"')]
+    if not terms:
+        terms = [normalized_query]
+
+    matches = []
+    for memo in memos:
+        haystack = f"{memo.title}\n{memo.body}".lower()
+        if all(term.lower() in haystack for term in terms):
+            matches.append(memo)
+
+    return matches[:limit]
 
 
 def metadata_for_pdf(path: str | Path, metadata_by_stem: dict[str, BookMetadata]) -> BookMetadata | None:

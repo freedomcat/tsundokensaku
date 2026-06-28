@@ -101,10 +101,11 @@ cp .env.example .env
 `.env` には `BOOKS_DIR`、`DB_DIR`、Scrapbox を使う場合は `SCRAPBOX_BASE_URL` などを入れます。
 `BASE_URL` や `SCRAPBOX_PROJECT_URL` も読みます。未設定なら Scrapbox リンクは表示しません。
 
-検索範囲は `all` / `title` / `body` の3種類です。
-- `all`: タイトルと本文の両方を検索します。
-- `title`: 書籍タイトルのみを検索します。
-- `body`: 本文だけを検索します。
+検索範囲は `all` / `title` / `body` / `memo` の4種類です。
+- `all`: PDF のタイトルと本文に加えて、Scrapbox のメモもまとめて検索します。
+- `title`: PDF の書籍タイトルのみを検索します。
+- `body`: PDF の本文だけを検索します。
+- `memo`: Scrapbox のメモだけを検索します。
 
 CLI では `--scope`、Web UI では検索フォームのプルダウンで切り替えられます。
 

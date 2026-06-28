@@ -4,12 +4,14 @@ from pathlib import Path
 
 from tsundokensaku.database import (
     PageRecord,
+    replace_memos,
     connect,
     initialize,
     replace_pages,
     search,
     upsert_book,
 )
+from tsundokensaku.metadata import ScrapboxMemo
 
 
 class DatabaseSearchTest(unittest.TestCase):
@@ -126,6 +128,54 @@ class DatabaseSearchTest(unittest.TestCase):
             self.assertEqual(len(results), 1)
             self.assertEqual(results[0].page_number, 7)
             self.assertIn("style", results[0].snippet)
+            connection.close()
+
+    def test_search_memo_scope_returns_scrapbox_entries(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "index.db"
+            connection = connect(db_path)
+            initialize(connection)
+            replace_memos(
+                connection,
+                [
+                    ScrapboxMemo(
+                        title="メモ1",
+                        body="検索対象のメモ本文",
+                        scrapbox_url="https://scrapbox.io/custom-project/%E3%83%A1%E3%83%A21",
+                        cover_url="https://example.com/cover.jpg",
+                    )
+                ],
+            )
+
+            results = search(connection, "検索対象", scope="memo")
+
+            self.assertEqual(len(results), 1)
+            self.assertIsNone(results[0].page_number)
+            self.assertEqual(results[0].open_url, "https://scrapbox.io/custom-project/%E3%83%A1%E3%83%A21")
+            self.assertEqual(results[0].cover_url, "https://example.com/cover.jpg")
+            connection.close()
+
+    def test_search_all_scope_includes_memo_results(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "index.db"
+            connection = connect(db_path)
+            initialize(connection)
+            replace_memos(
+                connection,
+                [
+                    ScrapboxMemo(
+                        title="メモ1",
+                        body="検索対象のメモ本文",
+                        scrapbox_url="https://scrapbox.io/custom-project/%E3%83%A1%E3%83%A21",
+                        cover_url="https://example.com/cover.jpg",
+                    )
+                ],
+            )
+
+            results = search(connection, "検索対象", scope="all")
+
+            self.assertTrue(any(result.page_number is None for result in results))
+            self.assertTrue(any(result.open_url == "https://scrapbox.io/custom-project/%E3%83%A1%E3%83%A21" for result in results))
             connection.close()
 
 
