@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import sqlite3
 import threading
 from urllib.parse import quote
@@ -10,6 +11,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from markupsafe import Markup, escape
 
 from tsundokensaku.database import SEARCH_SCOPES, connect, list_books, search, sync_memos
 from tsundokensaku.database import initialize
@@ -20,6 +22,7 @@ from tsundokensaku.metadata import (
     load_metadata_by_pdf_stem,
     metadata_for_pdf,
 )
+from tsundokensaku.tokenizer import tokenize_query
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -43,6 +46,7 @@ INDEX_PROGRESS: dict[str, object] = {
 app = FastAPI(title="tsundokensaku")
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+templates.env.filters["highlight_query"] = lambda text, query="": highlight_query(text, query)
 
 
 def get_books_dir() -> Path:
@@ -56,6 +60,32 @@ def get_db_path() -> Path:
 
 def get_metadata() -> dict[str, BookMetadata]:
     return load_metadata_by_pdf_stem(find_export_json(PROJECT_ROOT))
+
+
+def highlight_query(text: str, query: str) -> Markup:
+    if not text:
+        return Markup("")
+
+    normalized_query = query.strip()
+    compact_query = normalized_query.replace(" ", "")
+    terms = [normalized_query, compact_query]
+    terms.extend(term for term in tokenize_query(query) if term)
+    terms = sorted({term for term in terms if term}, key=len, reverse=True)
+    if not terms:
+        return escape(text)
+
+    pattern = re.compile("|".join(re.escape(term) for term in terms), re.IGNORECASE)
+    result = Markup("")
+    last_index = 0
+    for match in pattern.finditer(text):
+        start, end = match.span()
+        if start > last_index:
+            result += escape(text[last_index:start])
+        result += Markup("<mark>") + escape(text[start:end]) + Markup("</mark>")
+        last_index = end
+    if last_index < len(text):
+        result += escape(text[last_index:])
+    return result
 
 
 def _set_index_progress(running: bool, current: int, total: int, title: str = "", message: str = "") -> None:

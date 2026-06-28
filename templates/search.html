@@ -34,9 +34,9 @@
                 <div class="cover-placeholder" aria-hidden="true"></div>
               {% endif %}
             </div>
-            <div class="result-body">
-              <h3>
-                {{ result.title }}
+              <div class="result-body">
+                <h3>
+                {{ result.title | highlight_query(query) }}
                 {% if result.page_number is not none %}
                   <span class="pill">p.{{ result.page_number }}</span>
                 {% elif result.kind == 'kindle' %}
@@ -76,7 +76,7 @@
                 </div>
               {% endif %}
               <div class="meta"><code>{{ result.path or result.title }}</code></div>
-              <div class="snippet">{{ result.snippet }}</div>
+              <div class="snippet">{{ result.snippet | highlight_query(query) }}</div>
             </div>
           </div>
         </article>
