@@ -8,15 +8,47 @@ from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
 
-DEFAULT_SCRAPBOX_PROJECT_URL = "https://scrapbox.io/shino-books"
 BOOKSCAN_TAG = "#Bookscan"
 TECH_BOOK_TAG = "#技術書"
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+ENV_FILE = PROJECT_ROOT / ".env"
+_ENV_LOADED = False
 
 
 @dataclass(frozen=True)
 class BookMetadata:
     title: str
     scrapbox_url: str
+
+
+def load_env_file(path: Path = ENV_FILE) -> None:
+    global _ENV_LOADED
+    if _ENV_LOADED or not path.exists():
+        return
+
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, value = stripped.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip("'\"")
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+    _ENV_LOADED = True
+
+
+load_env_file()
+
+
+def get_scrapbox_project_url() -> str | None:
+    configured = (
+        os.environ.get("SCRAPBOX_BASE_URL")
+        or os.environ.get("BASE_URL")
+        or os.environ.get("SCRAPBOX_PROJECT_URL")
+    )
+    return configured.rstrip("/") if configured else None
 
 
 def find_export_json(project_root: Path) -> Path | None:
@@ -33,7 +65,10 @@ def load_metadata_by_pdf_stem(export_json: Path | None, *, project_url: str | No
     if export_json is None or not export_json.exists():
         return {}
 
-    base_url = (project_url or os.environ.get("SCRAPBOX_PROJECT_URL") or DEFAULT_SCRAPBOX_PROJECT_URL).rstrip("/")
+    base_url = (project_url or get_scrapbox_project_url())
+    if not base_url:
+        return {}
+    base_url = base_url.rstrip("/")
     data = json.loads(export_json.read_text(encoding="utf-8"))
     metadata: dict[str, BookMetadata] = {}
 

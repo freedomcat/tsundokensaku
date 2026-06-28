@@ -142,16 +142,16 @@ def search_page(request: Request, q: str = "", sort: str = "rank") -> HTMLRespon
     results = search(connection, q, limit=50) if q.strip() else []
     connection.close()
     rendered_results = [
-            {
-                "title": result.title,
-                "path": result.path,
-                "page_number": result.page_number,
-                "snippet": result.snippet,
-                "open_url": raw_pdf_url(result.path, books_dir, page_number=result.page_number),
-                "scrapbox_url": (
-                    metadata.scrapbox_url
-                    if (metadata := metadata_for_pdf(result.path, metadata_by_stem))
-                    else None
+        {
+            "title": result.title,
+            "path": result.path,
+            "page_number": result.page_number,
+            "snippet": result.snippet,
+            "open_url": raw_pdf_url(result.path, books_dir, page_number=result.page_number),
+            "scrapbox_url": (
+                metadata.scrapbox_url
+                if (metadata := metadata_for_pdf(result.path, metadata_by_stem))
+                else None
             ),
         }
         for result in results

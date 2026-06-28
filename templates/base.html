@@ -340,6 +340,7 @@
           <div class="modal-title" id="pdf-modal-title"></div>
           <div style="display:flex; gap:8px;">
             <a class="button" id="pdf-modal-open" href="#" target="_blank" rel="noreferrer">PDFを開く</a>
+            <a class="button" id="pdf-modal-scrapbox" href="#" target="_blank" rel="noreferrer" hidden>Scrapboxで開く</a>
             <button type="button" id="pdf-modal-close">閉じる</button>
           </div>
         </div>
@@ -352,6 +353,7 @@
         const frame = document.getElementById('pdf-modal-frame');
         const title = document.getElementById('pdf-modal-title');
         const openLink = document.getElementById('pdf-modal-open');
+        const scrapboxLink = document.getElementById('pdf-modal-scrapbox');
         const closeButton = document.getElementById('pdf-modal-close');
 
         function closeModal() {
@@ -360,10 +362,21 @@
           frame.src = 'about:blank';
         }
 
-        function openModal(url, label) {
+        function setScrapboxLink(url) {
+          if (url) {
+            scrapboxLink.href = url;
+            scrapboxLink.hidden = false;
+          } else {
+            scrapboxLink.hidden = true;
+            scrapboxLink.removeAttribute('href');
+          }
+        }
+
+        function openModal(url, label, scrapboxUrl) {
           frame.src = url;
           openLink.href = url;
           title.textContent = label || 'PDF';
+          setScrapboxLink(scrapboxUrl);
           modal.classList.add('open');
           modal.setAttribute('aria-hidden', 'false');
         }
@@ -374,7 +387,11 @@
             return;
           }
           event.preventDefault();
-          openModal(trigger.dataset.pdfModalUrl, trigger.dataset.pdfModalTitle);
+          openModal(
+            trigger.dataset.pdfModalUrl,
+            trigger.dataset.pdfModalTitle,
+            trigger.dataset.pdfModalScrapboxUrl,
+          );
         });
 
         closeButton.addEventListener('click', closeModal);
