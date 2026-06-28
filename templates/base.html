@@ -51,6 +51,11 @@
         gap: 4px;
       }
 
+      .brand a {
+        color: var(--text);
+        text-decoration: none;
+      }
+
       .brand h1 {
         margin: 0;
         font-size: clamp(1.4rem, 2vw, 2.2rem);
@@ -236,11 +241,10 @@
     <div class="shell">
       <div class="topbar">
         <div class="brand">
-          <h1>つんどけんさく</h1>
+          <a href="/" aria-label="ホームへ戻る"><h1>つんどけんさく</h1></a>
           <p>ローカルPDF全文検索</p>
         </div>
         <nav class="nav">
-          <a href="/" class="{% if request.url.path == '/' %}active{% endif %}">ホーム</a>
           <a href="/manage" class="{% if request.url.path == '/manage' %}active{% endif %}">インデックス管理</a>
         </nav>
       </div>
