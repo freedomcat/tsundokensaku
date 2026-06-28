@@ -3,11 +3,16 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from tsundokensaku.indexer import index_books
+from tsundokensaku.indexer import _progress_bar, index_books
 from tsundokensaku.pdf_extract import ExtractedPage
 
 
 class IndexerIncrementalTest(unittest.TestCase):
+    def test_progress_bar_uses_fixed_width(self) -> None:
+        self.assertEqual(_progress_bar(0, 10), "[........................] 0/10")
+        self.assertEqual(_progress_bar(5, 10), "[############............] 5/10")
+        self.assertEqual(_progress_bar(10, 10), "[########################] 10/10")
+
     def test_index_books_skips_unchanged_files(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

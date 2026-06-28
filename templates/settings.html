@@ -1,0 +1,180 @@
+{% extends "base.html" %}
+{% block title %}つんどけんさく | 設定{% endblock %}
+{% block content %}
+<section class="card">
+  <div class="grid">
+    <div class="stat">
+      <div class="label">PDF一覧</div>
+      <div class="value">{{ pdf_count }}</div>
+    </div>
+    <div class="stat">
+      <div class="label">Kindle本一覧</div>
+      <div class="value">{{ kindle_count }}</div>
+    </div>
+    <div class="stat">
+      <div class="label">登録済み書籍数</div>
+      <div class="value">{{ book_count }}</div>
+    </div>
+    <div class="stat">
+      <div class="label">インデックス済みページ数</div>
+      <div class="value">{{ page_count }}</div>
+    </div>
+  </div>
+</section>
+
+{% if message %}
+  <section class="card">
+    <p style="margin: 0;"><span class="pill">{{ message }}</span></p>
+  </section>
+{% endif %}
+
+<section class="card" id="index-progress-card">
+  <h2 style="margin-top: 0;">インデックス進捗</h2>
+  <div class="progress-shell">
+    <div class="progress" aria-hidden="true">
+      <div class="progress-fill" id="index-progress-fill" style="width: 0%;"></div>
+    </div>
+    <div class="muted" id="index-progress-text">{{ index_progress.message or '待機中' }}</div>
+    <div class="muted" id="index-progress-count"></div>
+    <div class="muted" id="index-progress-title"></div>
+  </div>
+</section>
+
+<section class="card">
+  <h2 style="margin-top: 0;">scrapbox.json インポート</h2>
+  <p class="muted">Scrapbox の export JSON を指定して、メモを DB に同期します。空欄なら最近の `shino-books_*.json` を使います。</p>
+  <form class="search" action="/settings/scrapbox-import" method="get">
+    <input
+      type="search"
+      name="export_json_path"
+      value="{{ default_export_json or '' }}"
+      placeholder="/path/to/shino-books_20260628_000000.json"
+      aria-label="Scrapbox export JSON"
+    >
+    <button class="primary" type="submit">インポート</button>
+  </form>
+</section>
+
+<section class="card">
+  <h2 style="margin-top: 0;">PDFインポート</h2>
+  <p>PDF はこのフォルダに追加してください。</p>
+  <p><code>{{ books_dir }}</code></p>
+  <p class="muted">ここに追加した PDF を、下の「インデックス実行」で取り込みます。</p>
+</section>
+
+<section class="card">
+  <h2 style="margin-top: 0;">インデックス実行</h2>
+  <form action="/settings/index" method="post">
+    <button class="primary" type="submit" id="index-start-button">インデックス実行</button>
+  </form>
+</section>
+
+<section class="card">
+  <h2 style="margin-top: 0;">PDF一覧</h2>
+  {% if pdf_items %}
+    <table>
+      <thead>
+        <tr>
+          <th>PDF</th>
+          <th>状態</th>
+          <th>開く</th>
+          <th>Scrapbox</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for item in pdf_items %}
+          <tr>
+            <td>{{ item.title }}</td>
+            <td>{% if item.indexed %}<span class="pill">indexed</span>{% else %}<span class="muted">not indexed</span>{% endif %}</td>
+            <td>
+              {% if item.open_url %}
+                <button
+                  type="button"
+                  class="button"
+                  data-pdf-modal-url="{{ item.open_url }}"
+                  data-pdf-modal-title="{{ item.title }}"
+                  data-pdf-modal-scrapbox-url="{{ item.scrapbox_url or '' }}"
+                >
+                  Open
+                </button>
+              {% endif %}
+            </td>
+            <td>
+              {% if item.scrapbox_url %}
+                <a class="button" href="{{ item.scrapbox_url }}" target="_blank" rel="noreferrer">Scrapbox</a>
+              {% endif %}
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p class="muted">PDF が見つかりません。</p>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h2 style="margin-top: 0;">Kindle本一覧</h2>
+  {% if kindle_items %}
+    <table>
+      <thead>
+        <tr>
+          <th>書籍</th>
+          <th>external_id</th>
+          <th>indexed_at</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for item in kindle_items %}
+          <tr>
+            <td>{{ item.title }}</td>
+            <td><code>{{ item.external_id or '' }}</code></td>
+            <td><code>{{ item.indexed_at }}</code></td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p class="muted">Kindle 本はまだ登録されていません。</p>
+  {% endif %}
+</section>
+
+<script>
+  (() => {
+    const card = document.getElementById('index-progress-card');
+    const fill = document.getElementById('index-progress-fill');
+    const text = document.getElementById('index-progress-text');
+    const count = document.getElementById('index-progress-count');
+    const title = document.getElementById('index-progress-title');
+    const startButton = document.getElementById('index-start-button');
+
+    function render(progress) {
+      const total = Number(progress.total || 0);
+      const current = Number(progress.current || 0);
+      const running = Boolean(progress.running);
+      const ratio = total > 0 ? Math.min(100, Math.round((current / total) * 100)) : (running ? 15 : 0);
+      fill.style.width = `${ratio}%`;
+      text.textContent = progress.message || (running ? '処理中' : '待機中');
+      count.textContent = total > 0 ? `${current} / ${total}` : '';
+      title.textContent = progress.title ? `対象: ${progress.title}` : '';
+      startButton.disabled = running;
+      startButton.textContent = running ? 'インデックス中...' : 'インデックス実行';
+    }
+
+    async function refresh() {
+      try {
+        const response = await fetch('/settings/progress', { cache: 'no-store' });
+        if (!response.ok) {
+          return;
+        }
+        render(await response.json());
+      } catch (error) {
+        console.warn('Failed to refresh progress', error);
+      }
+    }
+
+    refresh();
+    setInterval(refresh, 1000);
+  })();
+</script>
+{% endblock %}

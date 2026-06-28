@@ -2,17 +2,24 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import threading
 from urllib.parse import quote
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from tsundokensaku.database import SEARCH_SCOPES, connect, list_books, search
+from tsundokensaku.database import SEARCH_SCOPES, connect, list_books, search, sync_memos
+from tsundokensaku.database import initialize
 from tsundokensaku.indexer import find_pdfs, index_books
-from tsundokensaku.metadata import BookMetadata, find_export_json, load_metadata_by_pdf_stem, load_scrapbox_memos, metadata_for_pdf, search_scrapbox_memos
+from tsundokensaku.metadata import (
+    BookMetadata,
+    find_export_json,
+    load_metadata_by_pdf_stem,
+    metadata_for_pdf,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -21,6 +28,17 @@ CONTAINER_BOOKS_DIR = Path("/books/tech")
 DEFAULT_DB_PATH = Path("data/index.db")
 TEMPLATES_DIR = PROJECT_ROOT / "templates"
 STATIC_DIR = PROJECT_ROOT / "static"
+SCRAPBOX_EXPORT_CACHE = PROJECT_ROOT / "shino-books_imported.json"
+
+INDEX_PROGRESS_LOCK = threading.Lock()
+INDEX_PROGRESS: dict[str, object] = {
+    "running": False,
+    "current": 0,
+    "total": 0,
+    "title": "",
+    "message": "",
+    "updated_at": "",
+}
 
 app = FastAPI(title="tsundokensaku")
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
@@ -38,6 +56,46 @@ def get_db_path() -> Path:
 
 def get_metadata() -> dict[str, BookMetadata]:
     return load_metadata_by_pdf_stem(find_export_json(PROJECT_ROOT))
+
+
+def _set_index_progress(running: bool, current: int, total: int, title: str = "", message: str = "") -> None:
+    with INDEX_PROGRESS_LOCK:
+        INDEX_PROGRESS.update(
+            {
+                "running": running,
+                "current": current,
+                "total": total,
+                "title": title,
+                "message": message,
+            }
+        )
+
+
+def _get_index_progress() -> dict[str, object]:
+    with INDEX_PROGRESS_LOCK:
+        return dict(INDEX_PROGRESS)
+
+
+def _run_index_job() -> None:
+    books_dir = get_books_dir()
+    db_path = get_db_path()
+    try:
+        index_books(books_dir=books_dir, db_path=db_path, progress_callback=_set_index_progress)
+        _set_index_progress(
+            False,
+            int(_get_index_progress().get("current", 0)),
+            int(_get_index_progress().get("total", 0)),
+            "",
+            f"Indexed books under {books_dir}",
+        )
+    except Exception as exc:  # pragma: no cover - surfaced in browser
+        _set_index_progress(
+            False,
+            int(_get_index_progress().get("current", 0)),
+            int(_get_index_progress().get("total", 0)),
+            "",
+            f"Error: {exc}",
+        )
 
 
 def resolve_pdf_path(pdf_path: str | Path, books_dir: Path) -> Path | None:
@@ -104,14 +162,79 @@ def sort_results(results: list[dict], sort: str) -> list[dict]:
 
 
 def get_db_stats(db_path: Path) -> dict[str, int]:
+    connection = None
     try:
         connection = connect(db_path)
         books = list_books(connection)
         page_count = connection.execute("SELECT COUNT(*) AS count FROM pages").fetchone()["count"]
-        connection.close()
-        return {"book_count": len(books), "page_count": int(page_count)}
+        grouped = {row["source_type"]: int(row["count"]) for row in connection.execute(
+            "SELECT source_type, COUNT(*) AS count FROM books GROUP BY source_type"
+        ).fetchall()}
+        return {
+            "book_count": len(books),
+            "pdf_count": grouped.get("pdf", 0),
+            "kindle_count": grouped.get("kindle", 0),
+            "page_count": int(page_count),
+        }
     except sqlite3.OperationalError:
-        return {"book_count": 0, "page_count": 0}
+        return {"book_count": 0, "pdf_count": 0, "kindle_count": 0, "page_count": 0}
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def get_library_items(books_dir: Path, db_path: Path) -> dict[str, object]:
+    metadata_by_stem = get_metadata()
+    pdf_paths = list(find_pdfs(books_dir))
+    indexed_paths: set[str] = set()
+    kindle_books = []
+    connection = None
+    try:
+        connection = connect(db_path)
+        books = list_books(connection)
+        indexed_paths = {row["path"] for row in connection.execute("SELECT path FROM books").fetchall()}
+        kindle_books = [book for book in books if book.source_type == "kindle"]
+    except sqlite3.OperationalError:
+        books = []
+    finally:
+        if connection is not None:
+            connection.close()
+
+    pdf_items = [
+        {
+            "path": pdf_path,
+            "title": pdf_path.stem,
+            "indexed": str(pdf_path.resolve()) in indexed_paths or str(pdf_path) in indexed_paths,
+            "cover_url": (
+                metadata.cover_url
+                if (metadata := metadata_for_pdf(pdf_path, metadata_by_stem))
+                else None
+            ),
+            "open_url": raw_pdf_url(pdf_path, books_dir),
+            "scrapbox_url": (
+                metadata.scrapbox_url
+                if (metadata := metadata_for_pdf(pdf_path, metadata_by_stem))
+                else None
+            ),
+        }
+        for pdf_path in pdf_paths
+    ]
+    kindle_items = [
+        {
+            "title": book.title,
+            "external_id": book.external_id,
+            "indexed_at": book.indexed_at,
+            "path": book.external_id or book.title,
+        }
+        for book in kindle_books
+    ]
+    return {
+        "pdf_count": len(pdf_paths),
+        "books_count": len(books),
+        "kindle_count": len(kindle_books),
+        "pdf_items": pdf_items,
+        "kindle_items": kindle_items,
+    }
 
 
 SEARCH_SCOPE_OPTIONS = [
@@ -138,6 +261,8 @@ def home(request: Request) -> HTMLResponse:
             "db_path": db_path,
             "pdf_count": pdf_stats["pdf_count"],
             "book_count": db_stats["book_count"],
+            "pdf_db_count": db_stats["pdf_count"],
+            "kindle_count": db_stats["kindle_count"],
             "page_count": db_stats["page_count"],
             "scope": "all",
             "scope_options": SEARCH_SCOPE_OPTIONS,
@@ -153,47 +278,44 @@ def search_page(request: Request, q: str = "", sort: str = "rank", scope: str = 
     metadata_by_stem = load_metadata_by_pdf_stem(export_json)
     normalized_scope = scope if scope in SEARCH_SCOPES else "all"
     connection = connect(db_path)
-    title_results = search(connection, q, limit=50, scope="title") if q.strip() and normalized_scope in {"all", "title"} else []
-    body_results = search(connection, q, limit=50, scope="body") if q.strip() and normalized_scope in {"all", "body"} else []
+    results = search(connection, q, limit=50, scope=normalized_scope) if q.strip() else []
     connection.close()
-    memo_results = search_scrapbox_memos(export_json, q, limit=50) if q.strip() and normalized_scope in {"all", "memo"} else []
     rendered_results = []
-    if normalized_scope in {"all", "title", "body"}:
-        rendered_results.extend(
-            {
-                "title": result.title,
-                "path": result.path,
-                "page_number": result.page_number,
-                "snippet": result.snippet,
-                "result_type": "pdf",
-                "cover_url": (
-                    metadata.cover_url
-                    if (metadata := metadata_for_pdf(result.path, metadata_by_stem))
-                    else None
-                ),
-                "open_url": raw_pdf_url(result.path, books_dir, page_number=result.page_number),
-                "scrapbox_url": (
-                    metadata.scrapbox_url
-                    if (metadata := metadata_for_pdf(result.path, metadata_by_stem))
-                    else None
-                ),
-            }
-            for result in title_results + body_results
-        )
-    if normalized_scope in {"all", "memo"}:
-        rendered_results.extend(
-            {
-                "title": memo.title,
-                "path": memo.title,
-                "page_number": None,
-                "snippet": memo.body,
-                "result_type": "memo",
-                "cover_url": memo.cover_url,
-                "open_url": memo.scrapbox_url,
-                "scrapbox_url": memo.scrapbox_url,
-            }
-            for memo in memo_results
-        )
+    for result in results:
+        if result.kind == "pdf":
+            rendered_results.append(
+                {
+                    "title": result.title,
+                    "path": result.path,
+                    "page_number": result.page_number,
+                    "snippet": result.snippet,
+                    "kind": "pdf",
+                    "cover_url": (
+                        metadata.cover_url
+                        if (metadata := metadata_for_pdf(result.path or "", metadata_by_stem))
+                        else None
+                    ),
+                    "open_url": raw_pdf_url(result.path or "", books_dir, page_number=result.page_number),
+                    "scrapbox_url": (
+                        metadata.scrapbox_url
+                        if (metadata := metadata_for_pdf(result.path or "", metadata_by_stem))
+                        else None
+                    ),
+                }
+            )
+        else:
+            rendered_results.append(
+                {
+                    "title": result.title,
+                    "path": result.path,
+                    "page_number": result.page_number,
+                    "snippet": result.snippet,
+                    "kind": result.kind,
+                    "cover_url": result.cover_url,
+                    "open_url": result.open_url,
+                    "scrapbox_url": result.open_url,
+                }
+            )
     rendered_results = sort_results(rendered_results, sort)
     sort_options = [
         {"value": "rank", "label": "関連度順"},
@@ -219,58 +341,83 @@ def search_page(request: Request, q: str = "", sort: str = "rank", scope: str = 
     )
 
 
-@app.get("/manage", response_class=HTMLResponse)
-def manage_index(request: Request, message: str = "") -> HTMLResponse:
+@app.get("/settings", response_class=HTMLResponse)
+def settings_page(request: Request, message: str = "") -> HTMLResponse:
     books_dir = get_books_dir()
     db_path = get_db_path()
-    metadata_by_stem = get_metadata()
-    pdf_paths = list(find_pdfs(books_dir))
-    try:
-        connection = connect(db_path)
-        indexed_paths = {row["path"] for row in connection.execute("SELECT path FROM books").fetchall()}
-        connection.close()
-    except sqlite3.OperationalError:
-        indexed_paths = set()
-    items = [
-        {
-            "path": pdf_path,
-            "title": pdf_path.stem,
-            "indexed": str(pdf_path.resolve()) in indexed_paths or str(pdf_path) in indexed_paths,
-            "cover_url": (
-                metadata.cover_url
-                if (metadata := metadata_for_pdf(pdf_path, metadata_by_stem))
-                else None
-            ),
-            "open_url": raw_pdf_url(pdf_path, books_dir),
-            "scrapbox_url": (
-                metadata.scrapbox_url
-                if (metadata := metadata_for_pdf(pdf_path, metadata_by_stem))
-                else None
-            ),
-        }
-        for pdf_path in pdf_paths
-    ]
+    db_stats = get_db_stats(db_path)
+    library = get_library_items(books_dir, db_path)
     return templates.TemplateResponse(
         request,
-        "manage.html",
+        "settings.html",
         {
             "request": request,
             "books_dir": books_dir,
             "db_path": db_path,
-            "pdf_count": len(pdf_paths),
-            "items": items,
+            "pdf_count": library["pdf_count"],
+            "book_count": db_stats["book_count"],
+            "kindle_count": db_stats["kindle_count"],
+            "page_count": db_stats["page_count"],
+            "pdf_items": library["pdf_items"],
+            "kindle_items": library["kindle_items"],
+            "default_export_json": find_export_json(PROJECT_ROOT),
             "message": message,
+            "index_progress": _get_index_progress(),
         },
     )
 
 
-@app.post("/manage/index")
-def run_index() -> RedirectResponse:
-    books_dir = get_books_dir()
+@app.get("/manage")
+def manage_index(message: str = "") -> RedirectResponse:
+    target = "/settings"
+    if message:
+        target = f"{target}?message={message}"
+    return RedirectResponse(url=target, status_code=302)
+
+
+@app.get("/settings/scrapbox-import")
+def import_scrapbox_json(export_json_path: str = "") -> RedirectResponse:
     db_path = get_db_path()
-    indexed = index_books(books_dir=books_dir, db_path=db_path)
-    message = quote(f"Indexed {len(indexed)} books under {books_dir}")
-    return RedirectResponse(url=f"/manage?message={message}", status_code=303)
+    connection = connect(db_path)
+    initialize(connection)
+    source = Path(export_json_path).expanduser() if export_json_path.strip() else find_export_json(PROJECT_ROOT)
+    if source is None or not source.exists():
+        connection.close()
+        message = quote("Scrapbox の export JSON が見つかりませんでした")
+        return RedirectResponse(url=f"/settings?message={message}", status_code=303)
+
+    source = source.resolve()
+    target = SCRAPBOX_EXPORT_CACHE
+    if source != target:
+        target.write_bytes(source.read_bytes())
+    imported = sync_memos(connection, target)
+    connection.close()
+    message = quote(f"Scrapbox JSON を同期しました: {imported} 件 ({source.name})")
+    return RedirectResponse(url=f"/settings?message={message}", status_code=303)
+
+
+@app.post("/settings/index")
+def run_index() -> RedirectResponse:
+    progress = _get_index_progress()
+    if bool(progress.get("running")):
+        message = quote("インデックス実行中です")
+        return RedirectResponse(url=f"/settings?message={message}", status_code=303)
+
+    _set_index_progress(True, 0, 0, "", "準備中")
+    thread = threading.Thread(target=_run_index_job, daemon=True)
+    thread.start()
+    message = quote("インデックスを開始しました")
+    return RedirectResponse(url=f"/settings?message={message}", status_code=303)
+
+
+@app.post("/manage/index")
+def manage_run_index() -> RedirectResponse:
+    return run_index()
+
+
+@app.get("/settings/progress")
+def settings_progress() -> JSONResponse:
+    return JSONResponse(_get_index_progress())
 
 
 @app.get("/pdf/{pdf_path:path}")

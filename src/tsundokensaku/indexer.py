@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Iterator
+import sys
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -24,13 +25,47 @@ class IndexedBook:
     page_count: int
 
 
+def _progress_bar(current: int, total: int, *, width: int = 24) -> str:
+    total = max(total, 1)
+    current = min(max(current, 0), total)
+    filled = round(width * current / total)
+    return f"[{'#' * filled}{'.' * (width - filled)}] {current}/{total}"
+
+
+def _emit_progress(current: int, total: int, message: str) -> None:
+    line = f"{_progress_bar(current, total)} {message}"
+    if sys.stdout.isatty():
+        end = "\r" if current < total else "\n"
+        print(line, end=end, flush=True)
+    else:
+        print(line)
+
+
 def find_pdfs(books_dir: Path) -> Iterator[Path]:
     if not books_dir.exists():
         return
     yield from sorted(path for path in books_dir.rglob("*.pdf") if path.is_file())
 
 
-def index_books(*, books_dir: Path, db_path: Path) -> list[IndexedBook]:
+def index_books(
+    *,
+    books_dir: Path,
+    db_path: Path,
+    progress_callback: Callable[[bool, int, int, str, str], None] | None = None,
+) -> list[IndexedBook]:
+    return index_books_with_progress(
+        books_dir=books_dir,
+        db_path=db_path,
+        progress_callback=progress_callback,
+    )
+
+
+def index_books_with_progress(
+    *,
+    books_dir: Path,
+    db_path: Path,
+    progress_callback: Callable[[bool, int, int, str, str], None] | None = None,
+) -> list[IndexedBook]:
     connection = connect(db_path)
     initialize(connection)
 
@@ -43,6 +78,8 @@ def index_books(*, books_dir: Path, db_path: Path) -> list[IndexedBook]:
 
     total = len(pdf_paths)
     print(f"Indexing {total} PDF files under {books_dir}")
+    if progress_callback is not None:
+        progress_callback(True, 0, total, "", "準備中")
 
     current_paths = {str(path.resolve()) for path in pdf_paths}
     skipped = 0
@@ -52,15 +89,18 @@ def index_books(*, books_dir: Path, db_path: Path) -> list[IndexedBook]:
         stat = pdf_path.stat()
         title = pdf_path.stem
         existing = get_book(connection, path=pdf_path)
-        resolved_path = str(pdf_path.resolve())
 
         if existing and existing.size_bytes == stat.st_size and existing.modified_at == stat.st_mtime:
             skipped += 1
-            print(f"[{index}/{total}] SKIP {title}")
+            _emit_progress(index, total, f"SKIP {title}")
+            if progress_callback is not None:
+                progress_callback(True, index, total, title, f"SKIP {title}")
             continue
 
         action = "UPDATE" if existing else "INDEX"
-        print(f"[{index}/{total}] {action} {title}")
+        _emit_progress(index, total, f"{action} {title}")
+        if progress_callback is not None:
+            progress_callback(True, index, total, title, f"{action} {title}")
 
         book_id = upsert_book(
             connection,
@@ -76,10 +116,14 @@ def index_books(*, books_dir: Path, db_path: Path) -> list[IndexedBook]:
         page_count = replace_pages(connection, book_id=book_id, title=title, pages=pages)
         indexed.append(IndexedBook(path=pdf_path, title=title, page_count=page_count))
         updated += 1
-        print(f"[{index}/{total}] DONE {title} ({page_count} pages)")
+        _emit_progress(index, total, f"DONE {title} ({page_count} pages)")
+        if progress_callback is not None:
+            progress_callback(True, index, total, title, f"DONE {title} ({page_count} pages)")
 
     removed = 0
     for book in list_books(connection):
+        if book.source_type != "pdf" or book.path is None:
+            continue
         if str(Path(book.path).resolve()) in current_paths:
             continue
         delete_book(connection, book_id=book.id)
@@ -87,6 +131,8 @@ def index_books(*, books_dir: Path, db_path: Path) -> list[IndexedBook]:
         print(f"REMOVE {book.title}")
 
     print(f"Done: indexed={updated}, skipped={skipped}, removed={removed}")
+    if progress_callback is not None:
+        progress_callback(False, total, total, "", f"Done: indexed={updated}, skipped={skipped}, removed={removed}")
 
     connection.close()
     return indexed

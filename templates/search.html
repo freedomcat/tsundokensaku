@@ -39,15 +39,23 @@
                 {{ result.title }}
                 {% if result.page_number is not none %}
                   <span class="pill">p.{{ result.page_number }}</span>
+                {% elif result.kind == 'kindle' %}
+                  <span class="pill">Kindle</span>
+                {% elif result.kind == 'note' %}
+                  <span class="pill">ノート</span>
                 {% else %}
                   <span class="pill">メモ</span>
                 {% endif %}
               </h3>
               {% if result.open_url or result.scrapbox_url %}
                 <div class="result-actions">
-                  {% if result.result_type == 'memo' %}
+                  {% if result.kind == 'memo' %}
                     {% if result.scrapbox_url %}
                       <a class="button" href="{{ result.scrapbox_url }}" target="_blank" rel="noreferrer">メモを開く</a>
+                    {% endif %}
+                  {% elif result.kind == 'note' %}
+                    {% if result.scrapbox_url %}
+                      <a class="button" href="{{ result.scrapbox_url }}" target="_blank" rel="noreferrer">ノートを開く</a>
                     {% endif %}
                   {% else %}
                     {% if result.open_url %}
@@ -67,7 +75,7 @@
                   {% endif %}
                 </div>
               {% endif %}
-              <div class="meta"><code>{{ result.path }}</code></div>
+              <div class="meta"><code>{{ result.path or result.title }}</code></div>
               <div class="snippet">{{ result.snippet }}</div>
             </div>
           </div>

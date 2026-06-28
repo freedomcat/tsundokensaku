@@ -144,6 +144,28 @@
       .stat .label { color: var(--muted); font-size: 0.92rem; }
       .stat .value { font-size: 2rem; font-weight: 700; margin-top: 6px; }
 
+      .progress-shell {
+        display: grid;
+        gap: 10px;
+      }
+
+      .progress {
+        width: 100%;
+        height: 14px;
+        border-radius: 999px;
+        background: rgba(95, 107, 122, 0.16);
+        overflow: hidden;
+        border: 1px solid var(--border);
+      }
+
+      .progress-fill {
+        height: 100%;
+        width: 0%;
+        border-radius: inherit;
+        background: linear-gradient(90deg, var(--accent), #2ea99a);
+        transition: width 0.25s ease;
+      }
+
       form.search {
         display: flex;
         gap: 12px;
@@ -346,6 +368,7 @@
         .result-cover,
         .cover-thumb,
         .cover-placeholder { width: 72px; height: 102px; }
+        .progress { height: 12px; }
         .modal { padding: 8px; }
         .modal-panel { height: 96vh; border-radius: 10px; }
       }
@@ -363,7 +386,7 @@
           </a>
         </div>
         <nav class="nav">
-          <a href="/manage" class="{% if request.url.path == '/manage' %}active{% endif %}">インデックス管理</a>
+          <a href="/settings" class="{% if request.url.path.startswith('/settings') or request.url.path == '/manage' %}active{% endif %}">設定</a>
         </nav>
       </div>
       {% block content %}{% endblock %}

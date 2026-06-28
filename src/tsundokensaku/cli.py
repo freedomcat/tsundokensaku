@@ -5,7 +5,7 @@ from pathlib import Path
 
 from tsundokensaku.database import connect, search
 from tsundokensaku.indexer import index_books
-from tsundokensaku.metadata import find_export_json, load_metadata_by_pdf_stem, metadata_for_pdf, search_scrapbox_memos
+from tsundokensaku.metadata import find_export_json, load_metadata_by_pdf_stem, metadata_for_pdf
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -44,50 +44,81 @@ def main(argv: list[str] | None = None) -> int:
         connection = connect(args.db)
         export_json = find_export_json(PROJECT_ROOT)
         metadata_by_stem = load_metadata_by_pdf_stem(export_json)
-        title_results = search(connection, args.query, limit=args.limit, scope="title") if args.scope in {"all", "title"} else []
-        body_results = search(connection, args.query, limit=args.limit, scope="body") if args.scope in {"all", "body"} else []
-        memo_results = search_scrapbox_memos(export_json, args.query, limit=args.limit) if args.scope in {"all", "memo"} else []
+        results = search(connection, args.query, limit=args.limit, scope=args.scope)
         connection.close()
 
-        results = []
-        for result in title_results + body_results:
-            results.append(
-                {
-                    "kind": "pdf",
-                    "title": result.title,
-                    "page_number": result.page_number,
-                    "snippet": result.snippet,
-                    "path": result.path,
-                    "open_url": None,
-                    "scrapbox_url": (
-                        metadata.scrapbox_url
-                        if (metadata := metadata_for_pdf(result.path, metadata_by_stem))
-                        else None
-                    ),
-                }
-            )
-        for memo in memo_results:
-            results.append(
-                {
-                    "kind": "memo",
-                    "title": memo.title,
-                    "page_number": None,
-                    "snippet": memo.body,
-                    "path": memo.title,
-                    "open_url": memo.scrapbox_url,
-                    "scrapbox_url": memo.scrapbox_url,
-                }
-            )
+        rendered_results = []
+        for result in results:
+            if result.kind == "memo":
+                rendered_results.append(
+                    {
+                        "kind": "memo",
+                        "title": result.title,
+                        "page_number": None,
+                        "snippet": result.snippet,
+                        "path": result.path,
+                        "open_url": result.open_url,
+                        "scrapbox_url": result.open_url,
+                    }
+                )
+            elif result.kind == "note":
+                rendered_results.append(
+                    {
+                        "kind": "note",
+                        "title": result.title,
+                        "page_number": None,
+                        "snippet": result.snippet,
+                        "path": result.path,
+                        "open_url": result.open_url,
+                        "scrapbox_url": result.open_url,
+                        "cover_url": result.cover_url,
+                    }
+                )
+            elif result.kind == "kindle":
+                rendered_results.append(
+                    {
+                        "kind": "kindle",
+                        "title": result.title,
+                        "page_number": None,
+                        "snippet": result.snippet,
+                        "path": result.path or result.title,
+                        "open_url": None,
+                        "scrapbox_url": None,
+                    }
+                )
+            else:
+                rendered_results.append(
+                    {
+                        "kind": "pdf",
+                        "title": result.title,
+                        "page_number": result.page_number,
+                        "snippet": result.snippet,
+                        "path": result.path,
+                        "open_url": None,
+                        "scrapbox_url": (
+                            metadata.scrapbox_url
+                            if (metadata := metadata_for_pdf(result.path or "", metadata_by_stem))
+                            else None
+                        ),
+                    }
+                )
 
-        if not results:
+        if not rendered_results:
             print("No results.")
             return 0
 
-        for result in results:
-            if result["kind"] == "memo":
-                print(f"[MEMO] {result['title']}")
+        for result in rendered_results:
+            kind_label = {
+                "pdf": "PDF",
+                "kindle": "KINDLE",
+                "note": "NOTE",
+                "memo": "MEMO",
+            }.get(result["kind"], result["kind"].upper())
+            if result["kind"] == "pdf" and result["page_number"] is not None:
+                header = f"[{kind_label}] {result['title']} p.{result['page_number']}"
             else:
-                print(f"[PDF] {result['title']} p.{result['page_number']}")
+                header = f"[{kind_label}] {result['title']}"
+            print(header)
             print(f"  {result['snippet']}")
             print(f"  {result['open_url'] or result['path']}")
             print()

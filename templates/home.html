@@ -4,16 +4,20 @@
 <section class="card">
   <div class="grid">
     <div class="stat">
-      <div class="label">登録済みPDF数</div>
+      <div class="label">登録済み書籍数</div>
       <div class="value">{{ book_count }}</div>
+    </div>
+    <div class="stat">
+      <div class="label">PDF数</div>
+      <div class="value">{{ pdf_db_count }}</div>
+    </div>
+    <div class="stat">
+      <div class="label">Kindle数</div>
+      <div class="value">{{ kindle_count }}</div>
     </div>
     <div class="stat">
       <div class="label">インデックス済みページ数</div>
       <div class="value">{{ page_count }}</div>
-    </div>
-    <div class="stat">
-      <div class="label">PDFファイル数</div>
-      <div class="value">{{ pdf_count }}</div>
     </div>
   </div>
 </section>

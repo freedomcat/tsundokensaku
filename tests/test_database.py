@@ -1,13 +1,16 @@
 import tempfile
 import unittest
+import sqlite3
 from pathlib import Path
 
 from tsundokensaku.database import (
     PageRecord,
+    BookNoteRecord,
     replace_memos,
     connect,
     initialize,
     replace_pages,
+    replace_book_notes,
     search,
     upsert_book,
 )
@@ -130,6 +133,32 @@ class DatabaseSearchTest(unittest.TestCase):
             self.assertIn("style", results[0].snippet)
             connection.close()
 
+    def test_search_body_scope_finds_japanese_compound_words(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "index.db"
+            connection = connect(db_path)
+            initialize(connection)
+            book_id = upsert_book(
+                connection,
+                path=Path("books/tech/japanese.pdf"),
+                title="japanese",
+                size_bytes=123,
+                modified_at=1.0,
+            )
+            replace_pages(
+                connection,
+                book_id=book_id,
+                title="japanese",
+                pages=[PageRecord(page_number=2, text="伝わるコードレビューには何が必要なんだろう？")],
+            )
+
+            results = search(connection, "コードレビュー", scope="body")
+
+            self.assertEqual(len(results), 1)
+            self.assertEqual(results[0].page_number, 2)
+            self.assertIn("コードレビュー", results[0].snippet.replace(" ", ""))
+            connection.close()
+
     def test_search_memo_scope_returns_scrapbox_entries(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / "index.db"
@@ -176,6 +205,90 @@ class DatabaseSearchTest(unittest.TestCase):
 
             self.assertTrue(any(result.page_number is None for result in results))
             self.assertTrue(any(result.open_url == "https://scrapbox.io/custom-project/%E3%83%A1%E3%83%A21" for result in results))
+            connection.close()
+
+    def test_search_all_scope_includes_book_note_results(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "index.db"
+            connection = connect(db_path)
+            initialize(connection)
+            book_id = upsert_book(
+                connection,
+                path=None,
+                source_type="kindle",
+                external_id="kindle-123",
+                title="Kindle Book",
+            )
+            replace_book_notes(
+                connection,
+                book_id=book_id,
+                notes=[
+                    BookNoteRecord(
+                        title="読書メモ",
+                        body="検索対象のノート本文",
+                        scrapbox_url="https://scrapbox.io/custom-project/読書メモ",
+                        cover_url="https://example.com/cover.jpg",
+                    )
+                ],
+            )
+
+            results = search(connection, "検索対象", scope="all")
+
+            self.assertTrue(any(result.kind == "note" for result in results))
+            self.assertTrue(any(result.open_url == "https://scrapbox.io/custom-project/読書メモ" for result in results))
+            connection.close()
+
+    def test_search_title_scope_returns_kindle_books(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "index.db"
+            connection = connect(db_path)
+            initialize(connection)
+            upsert_book(
+                connection,
+                path=None,
+                source_type="kindle",
+                external_id="kindle-999",
+                title="Kindle Search Book",
+            )
+
+            results = search(connection, "Kindle", scope="title")
+
+            self.assertEqual(len(results), 1)
+            self.assertEqual(results[0].kind, "kindle")
+            self.assertIsNone(results[0].page_number)
+            self.assertEqual(results[0].path, "kindle-999")
+            connection.close()
+
+    def test_initialize_migrates_legacy_books_table(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "index.db"
+            connection = sqlite3.connect(db_path)
+            connection.row_factory = sqlite3.Row
+            connection.execute(
+                """
+                CREATE TABLE books (
+                    id INTEGER PRIMARY KEY,
+                    path TEXT NOT NULL UNIQUE,
+                    title TEXT NOT NULL,
+                    size_bytes INTEGER NOT NULL,
+                    modified_at REAL NOT NULL,
+                    indexed_at TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                "INSERT INTO books(id, path, title, size_bytes, modified_at, indexed_at) VALUES (1, ?, ?, ?, ?, ?)",
+                ("books/tech/legacy.pdf", "legacy", 10, 1.0, "2026-06-28T00:00:00+00:00"),
+            )
+            connection.commit()
+
+            initialize(connection)
+
+            columns = {row[1] for row in connection.execute("PRAGMA table_info(books)").fetchall()}
+            self.assertIn("source_type", columns)
+            row = connection.execute("SELECT source_type, external_id FROM books WHERE id = 1").fetchone()
+            self.assertEqual(row["source_type"], "pdf")
+            self.assertIsNone(row["external_id"])
             connection.close()
 
 
