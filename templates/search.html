@@ -14,6 +14,10 @@
         <option value="{{ option.value }}" {% if option.value == sort %}selected{% endif %}>{{ option.label }}</option>
       {% endfor %}
     </select>
+    <label class="pill" style="display:inline-flex; align-items:center; gap:8px;">
+      <input type="checkbox" name="group" value="book" {% if group == 'book' %}checked{% endif %}>
+      同じ書籍をまとめる
+    </label>
     <button class="primary" type="submit">検索</button>
   </form>
   <p class="muted" style="margin-top: 12px;">
@@ -34,10 +38,12 @@
                 <div class="cover-placeholder" aria-hidden="true"></div>
               {% endif %}
             </div>
-              <div class="result-body">
-                <h3>
+            <div class="result-body">
+              <h3>
                 {{ result.title | highlight_query(query) }}
-                {% if result.page_number is not none %}
+                {% if result.page_summary %}
+                  <span class="pill">{{ result.page_summary }}</span>
+                {% elif result.page_number is not none %}
                   <span class="pill">p.{{ result.page_number }}</span>
                 {% elif result.kind == 'kindle' %}
                   <span class="pill">Kindle</span>
@@ -63,10 +69,10 @@
                         type="button"
                         class="button"
                         data-pdf-modal-url="{{ result.open_url }}"
-                        data-pdf-modal-title="{{ result.title }} p.{{ result.page_number }}"
+                        data-pdf-modal-title="{{ result.title }}{% if result.page_summary %} {{ result.page_summary }}{% elif result.page_number is not none %} p.{{ result.page_number }}{% endif %}"
                         data-pdf-modal-scrapbox-url="{{ result.scrapbox_url or '' }}"
                       >
-                        このページを開く
+                        {% if result.page_summary %}{{ result.page_summary }}を開く{% elif result.page_number is not none %}p.{{ result.page_number }}を開く{% else %}このページを開く{% endif %}
                       </button>
                     {% endif %}
                     {% if result.scrapbox_url %}
@@ -76,7 +82,22 @@
                 </div>
               {% endif %}
               <div class="meta"><code>{{ result.path or result.title }}</code></div>
+              {% if result.page_summary %}
+                <div class="muted" style="margin-top: 8px;">{{ result.page_summary }}</div>
+                {% if result.page_urls %}
+                  <div class="result-actions page-links">
+                    {% for page_url in result.page_urls %}
+                      {% if page_url %}
+                        <a class="button" href="{{ page_url }}" target="_blank" rel="noreferrer">p.{{ result.page_numbers[loop.index0] }}</a>
+                      {% endif %}
+                    {% endfor %}
+                  </div>
+                {% endif %}
+              {% endif %}
               <div class="snippet">{{ result.snippet | highlight_query(query) }}</div>
+              {% if result.hit_count and result.hit_count > 1 %}
+                <div class="muted" style="margin-top: 8px;">{{ result.hit_count }}件をまとめています</div>
+              {% endif %}
             </div>
           </div>
         </article>

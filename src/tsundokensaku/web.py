@@ -191,6 +191,52 @@ def sort_results(results: list[dict], sort: str) -> list[dict]:
     return results
 
 
+def group_pdf_results(results: list[dict]) -> list[dict]:
+    grouped: list[dict] = []
+    pdf_groups: dict[str, dict] = {}
+
+    for result in results:
+        if result.get("kind") != "pdf":
+            grouped.append(result)
+            continue
+
+        title = str(result.get("title") or "")
+        if title not in pdf_groups:
+            pdf_groups[title] = {
+                **result,
+                "page_numbers": [],
+                "snippets": [],
+                "hit_count": 0,
+                "page_summary": "",
+                "page_urls": [],
+            }
+            grouped.append(pdf_groups[title])
+
+        group = pdf_groups[title]
+        page_number = result.get("page_number")
+        if page_number is not None and page_number not in group["page_numbers"]:
+            group["page_numbers"].append(page_number)
+        snippet = result.get("snippet")
+        if snippet:
+            group["snippets"].append(snippet)
+        group["hit_count"] += 1
+
+    for group in pdf_groups.values():
+        group["page_numbers"] = sorted(group["page_numbers"])
+        page_numbers = group["page_numbers"]
+        if page_numbers:
+            if len(page_numbers) <= 4:
+                group["page_summary"] = ", ".join(f"p.{page}" for page in page_numbers)
+            else:
+                group["page_summary"] = ", ".join(f"p.{page}" for page in page_numbers[:4]) + f" +{len(page_numbers) - 4}件"
+        else:
+            group["page_summary"] = ""
+        if group["snippets"]:
+            group["snippet"] = group["snippets"][0]
+
+    return grouped
+
+
 def get_db_stats(db_path: Path) -> dict[str, int]:
     connection = None
     try:
@@ -301,7 +347,13 @@ def home(request: Request) -> HTMLResponse:
 
 
 @app.get("/search", response_class=HTMLResponse)
-def search_page(request: Request, q: str = "", sort: str = "rank", scope: str = "all") -> HTMLResponse:
+def search_page(
+    request: Request,
+    q: str = "",
+    sort: str = "rank",
+    scope: str = "all",
+    group: str = "none",
+) -> HTMLResponse:
     books_dir = get_books_dir()
     db_path = get_db_path()
     export_json = find_export_json(PROJECT_ROOT)
@@ -318,6 +370,13 @@ def search_page(request: Request, q: str = "", sort: str = "rank", scope: str = 
                     "title": result.title,
                     "path": result.path,
                     "page_number": result.page_number,
+                    "page_numbers": [result.page_number] if result.page_number is not None else [],
+                    "page_summary": f"p.{result.page_number}" if result.page_number is not None else "",
+                    "page_urls": [
+                        raw_pdf_url(result.path or "", books_dir, page_number=result.page_number)
+                    ]
+                    if result.page_number is not None
+                    else [],
                     "snippet": result.snippet,
                     "kind": "pdf",
                     "cover_url": (
@@ -347,6 +406,22 @@ def search_page(request: Request, q: str = "", sort: str = "rank", scope: str = 
                 }
             )
     rendered_results = sort_results(rendered_results, sort)
+    if group == "book":
+        rendered_results = group_pdf_results(rendered_results)
+    for result in rendered_results:
+        if result.get("kind") == "pdf":
+            page_numbers = result.get("page_numbers") or []
+            if page_numbers:
+                result["page_urls"] = [
+                    raw_pdf_url(result.get("path") or "", books_dir, page_number=page_number)
+                    for page_number in page_numbers
+                ]
+            elif result.get("page_number") is not None:
+                result["page_urls"] = [
+                    raw_pdf_url(result.get("path") or "", books_dir, page_number=int(result["page_number"]))
+                ]
+            else:
+                result["page_urls"] = []
     sort_options = [
         {"value": "rank", "label": "関連度順"},
         {"value": "title", "label": "書名順"},
@@ -360,6 +435,7 @@ def search_page(request: Request, q: str = "", sort: str = "rank", scope: str = 
             "request": request,
             "query": q,
             "sort": sort,
+            "group": group,
             "sort_options": sort_options,
             "scope": normalized_scope,
             "scope_options": SEARCH_SCOPE_OPTIONS,
