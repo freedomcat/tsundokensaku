@@ -89,6 +89,16 @@ def get_pdf_stats(books_dir: Path) -> dict[str, int]:
     return {"pdf_count": len(pdf_paths)}
 
 
+def sort_results(results: list[dict], sort: str) -> list[dict]:
+    if sort == "title":
+        return sorted(results, key=lambda result: (result["title"], result["page_number"]))
+    if sort == "page":
+        return sorted(results, key=lambda result: (result["page_number"], result["title"]))
+    if sort == "scrapbox":
+        return sorted(results, key=lambda result: (result["scrapbox_url"] is None, result["title"], result["page_number"]))
+    return results
+
+
 def get_db_stats(db_path: Path) -> dict[str, int]:
     connection = connect(db_path)
     initialize(connection)
@@ -120,7 +130,7 @@ def home(request: Request) -> HTMLResponse:
 
 
 @app.get("/search", response_class=HTMLResponse)
-def search_page(request: Request, q: str = "") -> HTMLResponse:
+def search_page(request: Request, q: str = "", sort: str = "rank") -> HTMLResponse:
     books_dir = get_books_dir()
     db_path = get_db_path()
     metadata_by_stem = get_metadata()
@@ -143,12 +153,21 @@ def search_page(request: Request, q: str = "") -> HTMLResponse:
         }
         for result in results
     ]
+    rendered_results = sort_results(rendered_results, sort)
+    sort_options = [
+        {"value": "rank", "label": "関連度順"},
+        {"value": "title", "label": "書名順"},
+        {"value": "page", "label": "ページ番号順"},
+        {"value": "scrapbox", "label": "Scrapboxあり優先"},
+    ]
     return templates.TemplateResponse(
         request,
         "search.html",
         {
             "request": request,
             "query": q,
+            "sort": sort,
+            "sort_options": sort_options,
             "books_dir": books_dir,
             "db_path": db_path,
             "results": rendered_results,
