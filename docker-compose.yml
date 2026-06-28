@@ -1,0 +1,12 @@
+services:
+  app:
+    build:
+      context: .
+    image: tsundokensaku:dev
+    working_dir: /app
+    volumes:
+      - ./:/app
+      - ${BOOKS_DIR:-/mnt/c/tsundokensaku-books/tech}:/books/tech:ro
+      - ${DB_DIR:-./data}:/app/data
+    environment:
+      PYTHONUNBUFFERED: "1"

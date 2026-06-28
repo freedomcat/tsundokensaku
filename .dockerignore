@@ -1,0 +1,13 @@
+.git
+.agents
+.codex
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+data/index.db
+*.pyc
+*.pyo
+*.pyd
+*.log
