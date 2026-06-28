@@ -13,6 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from markupsafe import Markup, escape
 
+from tsundokensaku.actions import build_tomorrow_actions
 from tsundokensaku.database import SEARCH_SCOPES, connect, list_books, search, sync_memos
 from tsundokensaku.database import initialize
 from tsundokensaku.indexer import find_pdfs, index_books
@@ -422,6 +423,7 @@ def search_page(
                 ]
             else:
                 result["page_urls"] = []
+    actions = build_tomorrow_actions(rendered_results, q, limit=3) if q.strip() else []
     sort_options = [
         {"value": "rank", "label": "関連度順"},
         {"value": "title", "label": "書名順"},
@@ -443,6 +445,7 @@ def search_page(
             "db_path": db_path,
             "results": rendered_results,
             "result_count": len(rendered_results),
+            "actions": actions,
         },
     )
 

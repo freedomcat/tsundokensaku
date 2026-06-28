@@ -107,4 +107,30 @@
     <p class="muted">検索結果はありません。</p>
   {% endif %}
 </section>
+
+{% if actions %}
+<section class="card">
+  <h2>次にやること 3件</h2>
+  <div class="results">
+    {% for action in actions %}
+      <article class="result">
+        <div class="result-body">
+          <h3>
+            {{ loop.index }}. {{ action.title }}
+            {% if action.kind %}
+              <span class="pill">{{ action.kind }}</span>
+            {% endif %}
+          </h3>
+          <div class="snippet">{{ action.detail }}</div>
+          {% if action.href %}
+            <div class="result-actions" style="margin-top: 12px;">
+              <a class="button" href="{{ action.href }}" target="_blank" rel="noreferrer">開く</a>
+            </div>
+          {% endif %}
+        </div>
+      </article>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
 {% endblock %}

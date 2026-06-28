@@ -1,6 +1,6 @@
 # つんどけんさく
 
-個人用の技術書PDF全文検索CLIです。MVPでは `books/tech/` 配下のPDFをページ単位で読み取り、SQLite FTS5に保存してキーワード検索します。
+個人用の技術書PDF全文検索CLIです。MVPでは `books/tech/` 配下のPDFをページ単位で読み取り、SQLite FTS5に保存してキーワード検索します。追加課金なしで動きます。
 
 ## 最小構成
 
@@ -141,6 +141,12 @@ make reindex
 make search QUERY=SQLite
 ```
 
+次にやること 3件:
+
+```bash
+make action QUERY=SQLite
+```
+
 直接使う場合:
 
 ```bash
@@ -215,7 +221,6 @@ python -m unittest discover -s tests
 
 - AI要約
 - ベクトル検索
-- Web UI
 - 差分インデックスの細かい最適化
 
 まずはローカルで確実に動く全文検索の芯を作るためです。
