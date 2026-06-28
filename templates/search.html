@@ -25,7 +25,14 @@
           {% if result.open_url or result.scrapbox_url %}
             <div style="margin: 8px 0 6px;">
               {% if result.open_url %}
-                <a class="button" href="{{ result.open_url }}" target="_blank" rel="noreferrer">このページを開く</a>
+                <button
+                  type="button"
+                  class="button"
+                  data-pdf-modal-url="{{ result.open_url }}"
+                  data-pdf-modal-title="{{ result.title }} p.{{ result.page_number }}"
+                >
+                  このページを開く
+                </button>
               {% endif %}
               {% if result.scrapbox_url %}
                 <a class="button" href="{{ result.scrapbox_url }}" target="_blank" rel="noreferrer">Scrapbox</a>

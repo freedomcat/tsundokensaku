@@ -6,6 +6,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from tsundokensaku.database import connect, initialize, list_books, search
@@ -18,8 +19,10 @@ DEFAULT_BOOKS_DIR = Path("books/tech")
 CONTAINER_BOOKS_DIR = Path("/books/tech")
 DEFAULT_DB_PATH = Path("data/index.db")
 TEMPLATES_DIR = PROJECT_ROOT / "templates"
+STATIC_DIR = PROJECT_ROOT / "static"
 
 app = FastAPI(title="tsundokensaku")
+app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
 
@@ -139,16 +142,16 @@ def search_page(request: Request, q: str = "", sort: str = "rank") -> HTMLRespon
     results = search(connection, q, limit=50) if q.strip() else []
     connection.close()
     rendered_results = [
-        {
-            "title": result.title,
-            "path": result.path,
-            "page_number": result.page_number,
-            "snippet": result.snippet,
-            "open_url": pdf_url(result.path, books_dir, page_number=result.page_number),
-            "scrapbox_url": (
-                metadata.scrapbox_url
-                if (metadata := metadata_for_pdf(result.path, metadata_by_stem))
-                else None
+            {
+                "title": result.title,
+                "path": result.path,
+                "page_number": result.page_number,
+                "snippet": result.snippet,
+                "open_url": raw_pdf_url(result.path, books_dir, page_number=result.page_number),
+                "scrapbox_url": (
+                    metadata.scrapbox_url
+                    if (metadata := metadata_for_pdf(result.path, metadata_by_stem))
+                    else None
             ),
         }
         for result in results
@@ -191,7 +194,7 @@ def manage_index(request: Request, message: str = "") -> HTMLResponse:
             "path": pdf_path,
             "title": pdf_path.stem,
             "indexed": str(pdf_path.resolve()) in indexed_paths or str(pdf_path) in indexed_paths,
-            "open_url": pdf_url(pdf_path, books_dir),
+            "open_url": raw_pdf_url(pdf_path, books_dir),
             "scrapbox_url": (
                 metadata.scrapbox_url
                 if (metadata := metadata_for_pdf(pdf_path, metadata_by_stem))

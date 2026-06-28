@@ -31,7 +31,18 @@
         <tr>
           <td>{{ item.title }}</td>
           <td>{% if item.indexed %}<span class="pill">indexed</span>{% else %}<span class="muted">not indexed</span>{% endif %}</td>
-          <td>{% if item.open_url %}<a class="button" href="{{ item.open_url }}" target="_blank" rel="noreferrer">Open</a>{% endif %}</td>
+          <td>
+            {% if item.open_url %}
+              <button
+                type="button"
+                class="button"
+                data-pdf-modal-url="{{ item.open_url }}"
+                data-pdf-modal-title="{{ item.title }}"
+              >
+                Open
+              </button>
+            {% endif %}
+          </td>
           <td>{% if item.scrapbox_url %}<a class="button" href="{{ item.scrapbox_url }}" target="_blank" rel="noreferrer">Scrapbox</a>{% endif %}</td>
         </tr>
       {% endfor %}

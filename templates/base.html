@@ -4,6 +4,8 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{% block title %}つんどけんさく{% endblock %}</title>
+    <link rel="icon" href="/static/favicon.ico" sizes="any">
+    <link rel="apple-touch-icon" href="/static/tsundokensaku-logo.png">
     <style>
       :root {
         color-scheme: light;
@@ -47,13 +49,34 @@
       }
 
       .brand {
-        display: grid;
-        gap: 4px;
+        display: flex;
+        align-items: center;
+        gap: 12px;
       }
 
-      .brand a {
+      .brand-link {
+        display: flex;
+        align-items: center;
+        gap: 12px;
         color: var(--text);
         text-decoration: none;
+      }
+
+      .brand-link:hover {
+        text-decoration: none;
+      }
+
+      .brand-mark {
+        width: 56px;
+        height: 56px;
+        border-radius: 12px;
+        object-fit: cover;
+        box-shadow: var(--shadow);
+      }
+
+      .brand-text {
+        display: grid;
+        gap: 4px;
       }
 
       .brand h1 {
@@ -62,7 +85,6 @@
         letter-spacing: 0.02em;
       }
 
-      .brand p,
       .meta,
       .muted {
         margin: 0;
@@ -228,12 +250,66 @@
         display: block;
       }
 
+      .modal {
+        position: fixed;
+        inset: 0;
+        display: none;
+        align-items: center;
+        justify-content: center;
+        padding: 18px;
+        background: rgba(17, 24, 39, 0.58);
+        z-index: 1000;
+      }
+
+      .modal.open {
+        display: flex;
+      }
+
+      .modal-panel {
+        width: min(1200px, 100%);
+        height: min(92vh, 980px);
+        background: white;
+        border-radius: 14px;
+        overflow: hidden;
+        box-shadow: 0 24px 80px rgba(15, 23, 42, 0.35);
+        display: grid;
+        grid-template-rows: auto 1fr;
+      }
+
+      .modal-bar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 10px 12px;
+        border-bottom: 1px solid var(--border);
+        background: var(--panel);
+      }
+
+      .modal-title {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .modal-viewport {
+        width: 100%;
+        height: 100%;
+        border: 0;
+        display: block;
+        background: white;
+      }
+
       @media (max-width: 640px) {
         .shell { padding: 16px 12px 32px; }
+        .brand-mark { width: 48px; height: 48px; }
         .card { padding: 16px; border-radius: 18px; }
         th, td { padding: 10px 6px; }
         .viewer-header { align-items: flex-start; flex-direction: column; }
         .viewer-frame { height: calc(100vh - 230px); min-height: 420px; }
+        .modal { padding: 8px; }
+        .modal-panel { height: 96vh; border-radius: 10px; }
       }
     </style>
   </head>
@@ -241,8 +317,12 @@
     <div class="shell">
       <div class="topbar">
         <div class="brand">
-          <a href="/" aria-label="ホームへ戻る"><h1>つんどけんさく</h1></a>
-          <p>ローカルPDF全文検索</p>
+          <a class="brand-link" href="/" aria-label="ホームへ戻る">
+            <img class="brand-mark" src="/static/tsundokensaku-logo.png" alt="">
+            <div class="brand-text">
+              <h1>つんどけんさく</h1>
+            </div>
+          </a>
         </div>
         <nav class="nav">
           <a href="/manage" class="{% if request.url.path == '/manage' %}active{% endif %}">インデックス管理</a>
@@ -254,5 +334,61 @@
         <div>DB: <code>{{ db_path if db_path is defined else '' }}</code></div>
       </div>
     </div>
+    <div class="modal" id="pdf-modal" aria-hidden="true">
+      <div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="pdf-modal-title">
+        <div class="modal-bar">
+          <div class="modal-title" id="pdf-modal-title"></div>
+          <div style="display:flex; gap:8px;">
+            <a class="button" id="pdf-modal-open" href="#" target="_blank" rel="noreferrer">PDFを開く</a>
+            <button type="button" id="pdf-modal-close">閉じる</button>
+          </div>
+        </div>
+        <iframe class="modal-viewport" id="pdf-modal-frame" title="PDF viewer"></iframe>
+      </div>
+    </div>
+    <script>
+      (() => {
+        const modal = document.getElementById('pdf-modal');
+        const frame = document.getElementById('pdf-modal-frame');
+        const title = document.getElementById('pdf-modal-title');
+        const openLink = document.getElementById('pdf-modal-open');
+        const closeButton = document.getElementById('pdf-modal-close');
+
+        function closeModal() {
+          modal.classList.remove('open');
+          modal.setAttribute('aria-hidden', 'true');
+          frame.src = 'about:blank';
+        }
+
+        function openModal(url, label) {
+          frame.src = url;
+          openLink.href = url;
+          title.textContent = label || 'PDF';
+          modal.classList.add('open');
+          modal.setAttribute('aria-hidden', 'false');
+        }
+
+        document.addEventListener('click', (event) => {
+          const trigger = event.target.closest('[data-pdf-modal-url]');
+          if (!trigger) {
+            return;
+          }
+          event.preventDefault();
+          openModal(trigger.dataset.pdfModalUrl, trigger.dataset.pdfModalTitle);
+        });
+
+        closeButton.addEventListener('click', closeModal);
+        modal.addEventListener('click', (event) => {
+          if (event.target === modal) {
+            closeModal();
+          }
+        });
+        document.addEventListener('keydown', (event) => {
+          if (event.key === 'Escape' && modal.classList.contains('open')) {
+            closeModal();
+          }
+        });
+      })();
+    </script>
   </body>
 </html>
