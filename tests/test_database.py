@@ -159,6 +159,44 @@ class DatabaseSearchTest(unittest.TestCase):
             self.assertIn("コードレビュー", results[0].snippet.replace(" ", ""))
             connection.close()
 
+    def test_search_body_scope_matches_server_long_vowel_variants(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "index.db"
+            connection = connect(db_path)
+            initialize(connection)
+            short_book_id = upsert_book(
+                connection,
+                path=Path("books/tech/server-short.pdf"),
+                title="server-short",
+                size_bytes=123,
+                modified_at=1.0,
+            )
+            long_book_id = upsert_book(
+                connection,
+                path=Path("books/tech/server-long.pdf"),
+                title="server-long",
+                size_bytes=123,
+                modified_at=1.0,
+            )
+            replace_pages(
+                connection,
+                book_id=short_book_id,
+                title="server-short",
+                pages=[PageRecord(page_number=1, text="サーバ構成を確認する")],
+            )
+            replace_pages(
+                connection,
+                book_id=long_book_id,
+                title="server-long",
+                pages=[PageRecord(page_number=1, text="サーバー構成を確認する")],
+            )
+
+            results = search(connection, "サーバー", scope="body", limit=10)
+
+            self.assertEqual(len(results), 2)
+            self.assertEqual({result.title for result in results}, {"server-short", "server-long"})
+            connection.close()
+
     def test_search_memo_scope_returns_scrapbox_entries(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / "index.db"

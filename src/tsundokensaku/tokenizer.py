@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from functools import lru_cache
 
 _WHITESPACE_RE = re.compile(r"\s+")
 _TOKEN_RE = re.compile(r"[A-Za-z0-9_]+|[ぁ-んァ-ヴー一-龥々]+")
+_PROLONGED_SOUND_MARK = "ー"
 
 
 def normalize_text(text: str) -> str:
-    return _WHITESPACE_RE.sub(" ", text.replace("\x00", "")).strip()
+    normalized = unicodedata.normalize("NFKC", text.replace("\x00", ""))
+    return _WHITESPACE_RE.sub(" ", normalized).strip()
 
 
 @lru_cache(maxsize=1)
@@ -18,7 +21,7 @@ def _sudachi_tokenizer():
     except ImportError:
         return None
 
-    return dictionary.Dictionary().create(), sudachi_tokenizer_module.Tokenizer.SplitMode.C
+    return dictionary.Dictionary().create(), sudachi_tokenizer_module.Tokenizer.SplitMode.A
 
 
 def tokenize_text(text: str) -> list[str]:
@@ -31,9 +34,9 @@ def tokenize_text(text: str) -> list[str]:
         tokenizer, mode = sudachi
         tokens = []
         for morpheme in tokenizer.tokenize(normalized, mode):
-            surface = morpheme.surface().strip()
-            if surface:
-                tokens.append(surface)
+            token = _normalize_token(_morpheme_dictionary_form(morpheme))
+            if token:
+                tokens.append(token)
         return tokens
 
     return _fallback_tokens(normalized)
@@ -98,11 +101,31 @@ def build_excerpt(text: str, query: str, *, width: int = 120) -> str:
 def _fallback_tokens(text: str) -> list[str]:
     tokens: list[str] = []
     for chunk in _TOKEN_RE.findall(text):
-        if chunk.isascii():
-            tokens.append(chunk.lower())
+        normalized_chunk = _normalize_token(chunk)
+        if not normalized_chunk:
             continue
-        if len(chunk) <= 2:
-            tokens.append(chunk)
+        if normalized_chunk.isascii():
+            tokens.append(normalized_chunk)
             continue
-        tokens.extend(chunk[index : index + 2] for index in range(len(chunk) - 1))
+        if len(normalized_chunk) <= 2:
+            tokens.append(normalized_chunk)
+            continue
+        tokens.extend(normalized_chunk[index : index + 2] for index in range(len(normalized_chunk) - 1))
     return tokens
+
+
+def _morpheme_dictionary_form(morpheme) -> str:
+    dictionary_form = morpheme.dictionary_form().strip()
+    if dictionary_form and dictionary_form != "*":
+        return dictionary_form
+    return morpheme.surface().strip()
+
+
+def _normalize_token(token: str) -> str:
+    normalized = unicodedata.normalize("NFKC", token).casefold().strip()
+    normalized = _WHITESPACE_RE.sub("", normalized)
+    if len(normalized) > 1:
+        without_trailing_marks = normalized.rstrip(_PROLONGED_SOUND_MARK)
+        if without_trailing_marks:
+            normalized = without_trailing_marks
+    return normalized
