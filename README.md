@@ -145,12 +145,6 @@ make reindex
 make search QUERY=SQLite
 ```
 
-次にやること 3件:
-
-```bash
-make action QUERY=SQLite
-```
-
 直接使う場合:
 
 ```bash

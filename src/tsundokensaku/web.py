@@ -7,7 +7,8 @@ import threading
 import shutil
 from datetime import datetime, timezone
 from typing import Iterable
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
+from urllib.parse import unquote, urlparse
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -17,7 +18,6 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from markupsafe import Markup, escape
 
-from tsundokensaku.actions import build_tomorrow_actions
 from tsundokensaku.database import SEARCH_SCOPES, connect, list_books, search, sync_kindle_books, sync_memos
 from tsundokensaku.database import initialize
 from tsundokensaku.indexer import find_pdfs, index_books
@@ -26,6 +26,7 @@ from tsundokensaku.metadata import (
     find_export_json,
     load_metadata_by_pdf_stem,
     metadata_for_pdf,
+    get_scrapbox_project_url,
 )
 from tsundokensaku.tokenizer import tokenize_query
 
@@ -101,6 +102,172 @@ def format_indexed_at(value: str | None) -> str:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(ZoneInfo("Asia/Tokyo")).strftime("%Y/%m/%d %H:%M")
+
+
+def _now_jst() -> datetime:
+    return datetime.now(ZoneInfo("Asia/Tokyo"))
+
+
+def _sanitize_scrapbox_title(value: str, *, max_length: int = 80) -> str:
+    cleaned = re.sub(r"\s+", " ", value).strip()
+    cleaned = cleaned.replace("\n", " ").replace("\r", " ")
+    cleaned = cleaned.replace("/", "／")
+    return cleaned[:max_length].strip() or "検索結果"
+
+
+def build_scrapbox_page_url(title: str, body: str) -> str | None:
+    base_url = get_scrapbox_project_url()
+    if not base_url:
+        return None
+    return f"{base_url}/{quote(title, safe='')}?body={quote(body, safe='')}"
+
+
+def _scrapbox_page_label(scrapbox_url: str | None, fallback: str) -> str:
+    if not scrapbox_url:
+        return fallback
+    page_name = unquote(Path(urlparse(scrapbox_url).path).name)
+    return page_name or fallback
+
+
+def build_search_result_rows(
+    results,
+    *,
+    books_dir: Path,
+    metadata_by_stem: dict[str, BookMetadata],
+) -> list[dict[str, object]]:
+    rendered_results: list[dict[str, object]] = []
+    for result in results:
+        if result.kind == "pdf":
+            rendered_results.append(
+                {
+                    "title": result.title,
+                    "path": result.path,
+                    "page_number": result.page_number,
+                    "page_numbers": [result.page_number] if result.page_number is not None else [],
+                    "page_summary": f"p.{result.page_number}" if result.page_number is not None else "",
+                    "page_urls": [
+                        raw_pdf_url(result.path or "", books_dir, page_number=result.page_number)
+                    ]
+                    if result.page_number is not None
+                    else [],
+                    "snippet": result.snippet,
+                    "kind": "pdf",
+                    "cover_url": (
+                        metadata.cover_url
+                        if (metadata := metadata_for_pdf(result.path or "", metadata_by_stem))
+                        else None
+                    ),
+                    "open_url": raw_pdf_url(result.path or "", books_dir, page_number=result.page_number),
+                    "scrapbox_url": (
+                        metadata.scrapbox_url
+                        if (metadata := metadata_for_pdf(result.path or "", metadata_by_stem))
+                        else None
+                    ),
+                }
+            )
+        else:
+            rendered_results.append(
+                {
+                    "title": result.title,
+                    "path": result.path,
+                    "page_number": result.page_number,
+                    "snippet": result.snippet,
+                    "kind": result.kind,
+                    "cover_url": result.cover_url,
+                    "open_url": result.open_url,
+                    "scrapbox_url": result.scrapbox_url or result.open_url,
+                }
+            )
+
+    return rendered_results
+
+
+def finalize_search_result_rows(rendered_results: list[dict[str, object]], *, books_dir: Path, sort: str, group: str) -> list[dict[str, object]]:
+    sorted_results = sort_results(rendered_results, sort)
+    if group == "book":
+        sorted_results = group_pdf_results(sorted_results)
+
+    for result in sorted_results:
+        if result.get("kind") == "pdf":
+            page_numbers = result.get("page_numbers") or []
+            if page_numbers:
+                result["page_urls"] = [
+                    raw_pdf_url(result.get("path") or "", books_dir, page_number=page_number)
+                    for page_number in page_numbers
+                ]
+            elif result.get("page_number") is not None:
+                result["page_urls"] = [
+                    raw_pdf_url(result.get("path") or "", books_dir, page_number=int(result["page_number"]))
+                ]
+            else:
+                result["page_urls"] = []
+    return sorted_results
+
+
+def build_search_result_rows_context(
+    query: str,
+    *,
+    sort: str,
+    scope: str,
+    group: str,
+    books_dir: Path,
+    db_path: Path,
+) -> tuple[list[dict[str, object]], str]:
+    export_json = find_export_json(PROJECT_ROOT)
+    metadata_by_stem = load_metadata_by_pdf_stem(export_json)
+    normalized_scope = scope if scope in SEARCH_SCOPES else "all"
+    connection = connect(db_path)
+    try:
+        results = search(connection, query, limit=50, scope=normalized_scope) if query.strip() else []
+    finally:
+        connection.close()
+
+    rendered_results = build_search_result_rows(results, books_dir=books_dir, metadata_by_stem=metadata_by_stem)
+    rendered_results = finalize_search_result_rows(rendered_results, books_dir=books_dir, sort=sort, group=group)
+    return rendered_results, normalized_scope
+
+
+def build_search_scrapbox_body(
+    *,
+    query: str,
+    scope: str,
+    sort: str,
+    group: str,
+    results: list[dict[str, object]],
+) -> tuple[str, str]:
+    now = _now_jst()
+    title_query = _sanitize_scrapbox_title(query or "検索結果")
+    page_title = _sanitize_scrapbox_title(f"検索結果 {title_query} {now.strftime('%Y-%m-%d %H:%M')}")
+    lines = [
+        f"検索語: {query or '(未入力)'}",
+        f"検索範囲: {scope}",
+        f"並び順: {sort}",
+        f"まとめ方: {group}",
+        f"作成日時: {now.strftime('%Y/%m/%d %H:%M')} JST",
+        "",
+        "結果一覧",
+    ]
+    for index, result in enumerate(results[:20], start=1):
+        title = str(result.get("title") or "")
+        kind = str(result.get("kind") or "")
+        snippet = str(result.get("snippet") or "").replace("\n", " ").strip()
+        path = str(result.get("path") or "")
+        scrapbox_url = str(result.get("scrapbox_url") or "")
+        page_summary = str(result.get("page_summary") or "")
+        detail_parts = [part for part in [kind, page_summary, path] if part]
+        lines.append(f"{index}. {title}")
+        if detail_parts:
+            lines.append(f"   {' / '.join(detail_parts)}")
+        if snippet:
+            lines.append(f"   {snippet}")
+        if scrapbox_url:
+            lines.append(f"   scrapbox: [{_scrapbox_page_label(scrapbox_url, title)}]")
+        lines.append("")
+
+    if len(results) > 20:
+        lines.append(f"他 {len(results) - 20} 件")
+
+    return page_title, "\n".join(lines).strip()
 
 
 def _set_index_progress(running: bool, current: int, total: int, title: str = "", message: str = "") -> None:
@@ -456,73 +623,15 @@ def search_page(
 ) -> HTMLResponse:
     books_dir = get_books_dir()
     db_path = get_db_path()
-    export_json = find_export_json(PROJECT_ROOT)
-    metadata_by_stem = load_metadata_by_pdf_stem(export_json)
     normalized_scope = scope if scope in SEARCH_SCOPES else "all"
-    connection = connect(db_path)
-    results = search(connection, q, limit=50, scope=normalized_scope) if q.strip() else []
-    connection.close()
-    rendered_results = []
-    for result in results:
-        if result.kind == "pdf":
-            rendered_results.append(
-                {
-                    "title": result.title,
-                    "path": result.path,
-                    "page_number": result.page_number,
-                    "page_numbers": [result.page_number] if result.page_number is not None else [],
-                    "page_summary": f"p.{result.page_number}" if result.page_number is not None else "",
-                    "page_urls": [
-                        raw_pdf_url(result.path or "", books_dir, page_number=result.page_number)
-                    ]
-                    if result.page_number is not None
-                    else [],
-                    "snippet": result.snippet,
-                    "kind": "pdf",
-                    "cover_url": (
-                        metadata.cover_url
-                        if (metadata := metadata_for_pdf(result.path or "", metadata_by_stem))
-                        else None
-                    ),
-                    "open_url": raw_pdf_url(result.path or "", books_dir, page_number=result.page_number),
-                    "scrapbox_url": (
-                        metadata.scrapbox_url
-                        if (metadata := metadata_for_pdf(result.path or "", metadata_by_stem))
-                        else None
-                    ),
-                }
-            )
-        else:
-            rendered_results.append(
-                {
-                    "title": result.title,
-                    "path": result.path,
-                    "page_number": result.page_number,
-                    "snippet": result.snippet,
-                    "kind": result.kind,
-                    "cover_url": result.cover_url,
-                    "open_url": result.open_url,
-                    "scrapbox_url": result.scrapbox_url or result.open_url,
-                }
-            )
-    rendered_results = sort_results(rendered_results, sort)
-    if group == "book":
-        rendered_results = group_pdf_results(rendered_results)
-    for result in rendered_results:
-        if result.get("kind") == "pdf":
-            page_numbers = result.get("page_numbers") or []
-            if page_numbers:
-                result["page_urls"] = [
-                    raw_pdf_url(result.get("path") or "", books_dir, page_number=page_number)
-                    for page_number in page_numbers
-                ]
-            elif result.get("page_number") is not None:
-                result["page_urls"] = [
-                    raw_pdf_url(result.get("path") or "", books_dir, page_number=int(result["page_number"]))
-                ]
-            else:
-                result["page_urls"] = []
-    actions = build_tomorrow_actions(rendered_results, q, limit=3) if q.strip() else []
+    rendered_results, normalized_scope = build_search_result_rows_context(
+        q,
+        sort=sort,
+        scope=normalized_scope,
+        group=group,
+        books_dir=books_dir,
+        db_path=db_path,
+    )
     sort_options = [
         {"value": "rank", "label": "関連度順"},
         {"value": "title", "label": "書名順"},
@@ -544,9 +653,38 @@ def search_page(
             "db_path": db_path,
             "results": rendered_results,
             "result_count": len(rendered_results),
-            "actions": actions,
         },
     )
+
+
+@app.get("/search/scrapbox")
+def search_scrapbox_export(
+    q: str = "",
+    sort: str = "rank",
+    scope: str = "all",
+    group: str = "none",
+) -> RedirectResponse:
+    books_dir = get_books_dir()
+    db_path = get_db_path()
+    rendered_results, _, normalized_scope = build_search_result_rows_context(
+        q,
+        sort=sort,
+        scope=scope,
+        group=group,
+        books_dir=books_dir,
+        db_path=db_path,
+    )
+    page_title, body = build_search_scrapbox_body(
+        query=q,
+        scope=normalized_scope,
+        sort=sort,
+        group=group,
+        results=rendered_results,
+    )
+    url = build_scrapbox_page_url(page_title, body)
+    if url is None:
+        raise HTTPException(status_code=400, detail="SCRAPBOX_BASE_URL が設定されていません")
+    return RedirectResponse(url=url, status_code=303)
 
 
 @app.get("/settings", response_class=HTMLResponse)

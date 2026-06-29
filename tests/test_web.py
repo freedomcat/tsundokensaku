@@ -5,6 +5,8 @@ from pathlib import Path
 import json
 
 from tsundokensaku.web import (
+    build_scrapbox_page_url,
+    build_search_scrapbox_body,
     group_pdf_results,
     highlight_query,
     import_pdfs_from_directory,
@@ -128,6 +130,38 @@ class HighlightQueryTest(unittest.TestCase):
             self.assertEqual(imported, 2)
             self.assertEqual(imported_kindle, 1)
             self.assertTrue(cache_path.exists())
+
+    def test_build_scrapbox_page_url_includes_prefilled_body(self) -> None:
+        with patch.dict("os.environ", {"SCRAPBOX_BASE_URL": "https://scrapbox.io/custom-project"}, clear=False):
+            url = build_scrapbox_page_url("検索結果 SQLite 2026-06-29 23:15", "検索語: SQLite\n結果一覧")
+
+        self.assertIsNotNone(url)
+        self.assertIn("https://scrapbox.io/custom-project/", url)
+        self.assertIn("body=", url)
+
+    def test_build_search_scrapbox_body_includes_results(self) -> None:
+        page_title, body = build_search_scrapbox_body(
+            query="SQLite",
+            scope="all",
+            sort="rank",
+            group="none",
+            results=[
+                {
+                    "title": "SQLite入門",
+                    "kind": "pdf",
+                    "snippet": "FTS5",
+                    "path": "books/tech/sqlite.pdf",
+                    "open_url": "https://example.com/pdf",
+                    "scrapbox_url": "https://scrapbox.io/custom-project/SQLite%E5%85%A5%E9%96%80",
+                }
+            ],
+        )
+
+        self.assertIn("SQLite", page_title)
+        self.assertIn("検索語: SQLite", body)
+        self.assertIn("SQLite入門", body)
+        self.assertIn("scrapbox: [SQLite入門]", body)
+        self.assertNotIn("open:", body)
 
 
 if __name__ == "__main__":
