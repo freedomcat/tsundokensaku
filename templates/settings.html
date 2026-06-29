@@ -28,21 +28,23 @@
   </section>
 {% endif %}
 
-<section class="card" id="index-progress-card">
-  <h2 style="margin-top: 0;">インデックス進捗</h2>
-  <div class="progress-shell">
-    <div class="progress" aria-hidden="true">
-      <div class="progress-fill" id="index-progress-fill" style="width: 0%;"></div>
-    </div>
-    <div class="muted" id="index-progress-text">{{ index_progress.message or '待機中' }}</div>
-    <div class="muted" id="index-progress-count"></div>
-    <div class="muted" id="index-progress-title"></div>
-  </div>
-</section>
-
 <section class="card">
   <h2 style="margin-top: 0;">scrapbox.json インポート</h2>
-  <p class="muted">Scrapbox の export JSON を指定して、メモと Kindle 本を DB に同期します。空欄なら最近の `shino-books_*.json` を使います。</p>
+  <p class="muted">ScrapboxのメモとKindle本情報を検索対象に追加・更新します。</p>
+  <input id="scrapbox-file-input" type="file" accept=".json,application/json" hidden>
+  <div
+    id="scrapbox-dropzone"
+    style="border: 1px dashed var(--border-subtle); border-radius: 8px; padding: 18px; background: rgba(255,255,255,0.32); cursor: pointer;"
+    tabindex="0"
+    role="button"
+    aria-label="scrapbox.json をドラッグ&ドロップしてインポート"
+  >
+    <div style="font-weight: 600;">scrapbox.json をここにドロップ</div>
+    <div class="muted" style="margin-top: 6px;">またはクリックして選択</div>
+    <div class="muted" id="scrapbox-upload-status" style="margin-top: 10px;">待機中</div>
+  </div>
+  <div id="scrapbox-upload-list" class="muted" style="margin-top: 10px;"></div>
+  <p class="muted" style="margin-top: 12px;">空欄なら最近の `shino-books_*.json` を使います。</p>
   <form class="search" action="/settings/scrapbox-import" method="get">
     <input
       type="search"
@@ -51,21 +53,54 @@
       placeholder="/path/to/shino-books_20260628_000000.json"
       aria-label="Scrapbox export JSON"
     >
-    <button class="primary" type="submit">インポート</button>
+    <button class="primary" type="submit">メモとKindleを取り込む</button>
   </form>
 </section>
 
 <section class="card">
-  <h2 style="margin-top: 0;">PDFインポート</h2>
-  <p>PDF はこのフォルダに追加してください。</p>
-  <p><code>{{ books_dir }}</code></p>
-  <p class="muted">ここに追加した PDF を、下の「インデックス実行」で取り込みます。</p>
+  <h2 style="margin-top: 0;">PDFを追加</h2>
+  <p>保存先: <code>{{ books_dir }}</code></p>
+  <input id="pdf-file-input" type="file" accept=".pdf,application/pdf" multiple webkitdirectory directory hidden>
+  <div
+    id="pdf-dropzone"
+    style="border: 1px dashed var(--border-subtle); border-radius: 8px; padding: 18px; background: rgba(255,255,255,0.32); cursor: pointer;"
+    tabindex="0"
+    role="button"
+    aria-label="PDF をドラッグ&ドロップしてインポート"
+  >
+    <div style="font-weight: 600;">① PDFをドラッグ&amp;ドロップ</div>
+    <div class="muted" style="margin-top: 6px;">またはクリックして選択</div>
+    <div class="muted" id="pdf-upload-status" style="margin-top: 10px;">待機中</div>
+  </div>
+  <div id="pdf-upload-list" class="muted" style="margin-top: 10px;"></div>
+  <div style="margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--border-subtle);">
+    <h3 style="margin: 0 0 8px 0; font-size: 1rem;">② フォルダからまとめて追加</h3>
+    <form class="search" action="/settings/pdf-import" method="get">
+      <input
+        type="search"
+        name="source_dir"
+        value="{{ '' }}"
+        placeholder="/path/to/pdf-folder"
+        aria-label="PDF取り込み元フォルダ"
+      >
+      <button class="primary" type="submit">追加する</button>
+    </form>
+  </div>
 </section>
 
 <section class="card">
   <h2 style="margin-top: 0;">インデックス実行</h2>
+  <p class="muted">保存先フォルダにある PDF を、検索用 DB に取り込みます。</p>
+  <div class="progress-shell" id="index-progress-card" style="margin-bottom: 16px;">
+    <div class="progress" aria-hidden="true">
+      <div class="progress-fill" id="index-progress-fill" style="width: 0%;"></div>
+    </div>
+    <div class="muted" id="index-progress-text">{{ index_progress.message or '待機中' }}</div>
+    <div class="muted" id="index-progress-count"></div>
+    <div class="muted" id="index-progress-title"></div>
+  </div>
   <form action="/settings/index" method="post">
-    <button class="primary" type="submit" id="index-start-button">インデックス実行</button>
+    <button class="primary" type="submit" id="index-start-button">インデックスを更新</button>
   </form>
 </section>
 
@@ -77,6 +112,7 @@
         <tr>
           <th>PDF</th>
           <th>状態</th>
+          <th>indexed_at</th>
           <th>開く</th>
           <th>Scrapbox</th>
         </tr>
@@ -86,6 +122,7 @@
           <tr>
             <td>{{ item.title }}</td>
             <td>{% if item.indexed %}<span class="pill">indexed</span>{% else %}<span class="muted">not indexed</span>{% endif %}</td>
+            <td class="timestamp-cell"><code>{{ item.indexed_at | format_indexed_at }}</code></td>
             <td>
               {% if item.open_url %}
                 <button
@@ -116,14 +153,14 @@
 <section class="card">
   <h2 style="margin-top: 0;">Kindle本一覧</h2>
   {% if kindle_items %}
-    <table>
+    <table class="kindle-table">
       <thead>
         <tr>
           <th>書籍</th>
           <th>external_id</th>
+          <th>indexed_at</th>
           <th>開く</th>
           <th>Scrapbox</th>
-          <th>indexed_at</th>
         </tr>
       </thead>
       <tbody>
@@ -131,17 +168,17 @@
           <tr>
             <td>{{ item.title }}</td>
             <td><code>{{ item.external_id or '' }}</code></td>
-            <td>
+            <td class="timestamp-cell"><code>{{ item.indexed_at | format_indexed_at }}</code></td>
+            <td class="action-cell">
               {% if item.open_url %}
                 <a class="button" href="{{ item.open_url }}" target="_blank" rel="noreferrer">Kindleで開く</a>
               {% endif %}
             </td>
-            <td>
+            <td class="action-cell">
               {% if item.scrapbox_url %}
                 <a class="button" href="{{ item.scrapbox_url }}" target="_blank" rel="noreferrer">Scrapbox</a>
               {% endif %}
             </td>
-            <td><code>{{ item.indexed_at }}</code></td>
           </tr>
         {% endfor %}
       </tbody>
@@ -156,9 +193,186 @@
     const card = document.getElementById('index-progress-card');
     const fill = document.getElementById('index-progress-fill');
     const text = document.getElementById('index-progress-text');
-    const count = document.getElementById('index-progress-count');
-    const title = document.getElementById('index-progress-title');
-    const startButton = document.getElementById('index-start-button');
+  const count = document.getElementById('index-progress-count');
+  const title = document.getElementById('index-progress-title');
+  const startButton = document.getElementById('index-start-button');
+  const dropzone = document.getElementById('pdf-dropzone');
+  const fileInput = document.getElementById('pdf-file-input');
+  const uploadStatus = document.getElementById('pdf-upload-status');
+  const uploadList = document.getElementById('pdf-upload-list');
+  const scrapboxDropzone = document.getElementById('scrapbox-dropzone');
+  const scrapboxFileInput = document.getElementById('scrapbox-file-input');
+  const scrapboxUploadStatus = document.getElementById('scrapbox-upload-status');
+  const scrapboxUploadList = document.getElementById('scrapbox-upload-list');
+
+    function setUploadStatus(text) {
+      if (uploadStatus) {
+        uploadStatus.textContent = text;
+      }
+    }
+
+    function renderUploadList(items) {
+      if (!uploadList) {
+        return;
+      }
+      uploadList.textContent = items.length ? items.join(' / ') : '';
+    }
+
+    async function uploadOne(file) {
+      const params = new URLSearchParams({ filename: file.name });
+      if (file.webkitRelativePath) {
+        params.set('relative_path', file.webkitRelativePath);
+      }
+      const response = await fetch(`/settings/pdf-upload?${params.toString()}`, {
+        method: 'POST',
+        headers: { 'Content-Type': file.type || 'application/pdf' },
+        body: await file.arrayBuffer(),
+      });
+      if (!response.ok) {
+        throw new Error(await response.text());
+      }
+      return await response.text();
+    }
+
+    async function uploadScrapboxFile(file) {
+      const params = new URLSearchParams({ filename: file.name });
+      const response = await fetch(`/settings/scrapbox-upload?${params.toString()}`, {
+        method: 'POST',
+        headers: { 'Content-Type': file.type || 'application/json' },
+        body: await file.arrayBuffer(),
+      });
+      if (!response.ok) {
+        throw new Error(await response.text());
+      }
+      return await response.text();
+    }
+
+    async function uploadFiles(files) {
+      const pdfFiles = Array.from(files).filter((file) => file.name.toLowerCase().endsWith('.pdf'));
+      if (!pdfFiles.length) {
+        setUploadStatus('PDF が見つかりません');
+        renderUploadList([]);
+        return;
+      }
+
+      renderUploadList(pdfFiles.map((file) => file.webkitRelativePath || file.name));
+      setUploadStatus(`アップロード中: 0 / ${pdfFiles.length}`);
+
+      let completed = 0;
+      const failures = [];
+      await Promise.all(pdfFiles.map(async (file) => {
+        try {
+          await uploadOne(file);
+        } catch (error) {
+          failures.push(`${file.name}: ${error.message}`);
+        } finally {
+          completed += 1;
+          setUploadStatus(`アップロード中: ${completed} / ${pdfFiles.length}`);
+        }
+      }));
+
+      if (failures.length) {
+        setUploadStatus(`完了: ${pdfFiles.length - failures.length} 件成功 / ${failures.length} 件失敗`);
+        renderUploadList(failures);
+        return;
+      }
+
+      window.location.href = `/settings?message=${encodeURIComponent(`PDF を ${pdfFiles.length} 件追加しました`)}`;
+    }
+
+    function handleFiles(fileList) {
+      void uploadFiles(fileList);
+    }
+
+    function setScrapboxStatus(text) {
+      if (scrapboxUploadStatus) {
+        scrapboxUploadStatus.textContent = text;
+      }
+    }
+
+    function renderScrapboxList(items) {
+      if (!scrapboxUploadList) {
+        return;
+      }
+      scrapboxUploadList.textContent = items.length ? items.join(' / ') : '';
+    }
+
+    async function uploadScrapboxSelection(files) {
+      const jsonFiles = Array.from(files).filter((file) => file.name.toLowerCase().endsWith('.json'));
+      if (!jsonFiles.length) {
+        setScrapboxStatus('JSON が見つかりません');
+        renderScrapboxList([]);
+        return;
+      }
+
+      const file = jsonFiles[0];
+      renderScrapboxList([file.webkitRelativePath || file.name]);
+      setScrapboxStatus('アップロード中...');
+
+      try {
+        const message = await uploadScrapboxFile(file);
+        window.location.href = `/settings?message=${encodeURIComponent(message)}`;
+      } catch (error) {
+        setScrapboxStatus(`失敗: ${error.message}`);
+        renderScrapboxList([error.message]);
+      }
+    }
+
+    function handleScrapboxFiles(fileList) {
+      void uploadScrapboxSelection(fileList);
+    }
+
+    if (dropzone && fileInput) {
+      dropzone.addEventListener('click', () => fileInput.click());
+      dropzone.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          fileInput.click();
+        }
+      });
+      dropzone.addEventListener('dragover', (event) => {
+        event.preventDefault();
+        dropzone.style.borderColor = 'var(--accent)';
+      });
+      dropzone.addEventListener('dragleave', () => {
+        dropzone.style.borderColor = 'var(--border-subtle)';
+      });
+      dropzone.addEventListener('drop', (event) => {
+        event.preventDefault();
+        dropzone.style.borderColor = 'var(--border-subtle)';
+        handleFiles(event.dataTransfer?.files || []);
+      });
+      fileInput.addEventListener('change', () => {
+        handleFiles(fileInput.files || []);
+        fileInput.value = '';
+      });
+    }
+
+    if (scrapboxDropzone && scrapboxFileInput) {
+      scrapboxDropzone.addEventListener('click', () => scrapboxFileInput.click());
+      scrapboxDropzone.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          scrapboxFileInput.click();
+        }
+      });
+      scrapboxDropzone.addEventListener('dragover', (event) => {
+        event.preventDefault();
+        scrapboxDropzone.style.borderColor = 'var(--accent)';
+      });
+      scrapboxDropzone.addEventListener('dragleave', () => {
+        scrapboxDropzone.style.borderColor = 'var(--border-subtle)';
+      });
+      scrapboxDropzone.addEventListener('drop', (event) => {
+        event.preventDefault();
+        scrapboxDropzone.style.borderColor = 'var(--border-subtle)';
+        handleScrapboxFiles(event.dataTransfer?.files || []);
+      });
+      scrapboxFileInput.addEventListener('change', () => {
+        handleScrapboxFiles(scrapboxFileInput.files || []);
+        scrapboxFileInput.value = '';
+      });
+    }
 
     function render(progress) {
       const total = Number(progress.total || 0);
@@ -170,7 +384,7 @@
       count.textContent = total > 0 ? `${current} / ${total}` : '';
       title.textContent = progress.title ? `対象: ${progress.title}` : '';
       startButton.disabled = running;
-      startButton.textContent = running ? 'インデックス中...' : 'インデックス実行';
+      startButton.textContent = running ? 'インデックス中...' : 'インデックスを更新';
     }
 
     async function refresh() {

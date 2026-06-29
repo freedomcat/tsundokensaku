@@ -4,11 +4,15 @@ import os
 import re
 import sqlite3
 import threading
+import shutil
+from datetime import datetime, timezone
+from typing import Iterable
 from urllib.parse import quote
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from markupsafe import Markup, escape
@@ -48,6 +52,7 @@ app = FastAPI(title="tsundokensaku")
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 templates.env.filters["highlight_query"] = lambda text, query="": highlight_query(text, query)
+templates.env.filters["format_indexed_at"] = lambda value: format_indexed_at(value)
 
 
 def get_books_dir() -> Path:
@@ -87,6 +92,15 @@ def highlight_query(text: str, query: str) -> Markup:
     if last_index < len(text):
         result += escape(text[last_index:])
     return result
+
+
+def format_indexed_at(value: str | None) -> str:
+    if not value:
+        return ""
+    dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(ZoneInfo("Asia/Tokyo")).strftime("%Y/%m/%d %H:%M")
 
 
 def _set_index_progress(running: bool, current: int, total: int, title: str = "", message: str = "") -> None:
@@ -263,13 +277,18 @@ def get_db_stats(db_path: Path) -> dict[str, int]:
 def get_library_items(books_dir: Path, db_path: Path) -> dict[str, object]:
     metadata_by_stem = get_metadata()
     pdf_paths = list(find_pdfs(books_dir))
-    indexed_paths: set[str] = set()
+    indexed_paths: dict[str, str] = {}
     kindle_books = []
     connection = None
     try:
         connection = connect(db_path)
         books = list_books(connection)
-        indexed_paths = {row["path"] for row in connection.execute("SELECT path FROM books").fetchall()}
+        indexed_paths = {
+            str(row["path"]): str(row["indexed_at"])
+            for row in connection.execute(
+                "SELECT path, indexed_at FROM books WHERE source_type = 'pdf' AND path IS NOT NULL"
+            ).fetchall()
+        }
         kindle_books = [book for book in books if book.source_type == "kindle"]
     except sqlite3.OperationalError:
         books = []
@@ -282,6 +301,7 @@ def get_library_items(books_dir: Path, db_path: Path) -> dict[str, object]:
             "path": pdf_path,
             "title": pdf_path.stem,
             "indexed": str(pdf_path.resolve()) in indexed_paths or str(pdf_path) in indexed_paths,
+            "indexed_at": indexed_paths.get(str(pdf_path.resolve())) or indexed_paths.get(str(pdf_path)),
             "cover_url": (
                 metadata.cover_url
                 if (metadata := metadata_for_pdf(pdf_path, metadata_by_stem))
@@ -315,6 +335,82 @@ def get_library_items(books_dir: Path, db_path: Path) -> dict[str, object]:
         "pdf_items": pdf_items,
         "kindle_items": kindle_items,
     }
+
+
+def import_pdfs_from_directory(source_dir: Path, books_dir: Path) -> tuple[int, int, int]:
+    source_root = source_dir.expanduser().resolve()
+    books_root = books_dir.expanduser().resolve()
+
+    if not source_root.exists():
+        raise FileNotFoundError(source_root)
+    if not source_root.is_dir():
+        raise NotADirectoryError(source_root)
+    if source_root == books_root or source_root.is_relative_to(books_root) or books_root.is_relative_to(source_root):
+        raise ValueError("source_dir と books_dir は重ならない場所を指定してください")
+
+    pdf_paths = [path for path in sorted(source_root.rglob("*.pdf")) if path.is_file()]
+    books_root.mkdir(parents=True, exist_ok=True)
+
+    copied = 0
+    skipped = 0
+    for pdf_path in pdf_paths:
+        destination = books_root / pdf_path.relative_to(source_root)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        if destination.exists():
+            skipped += 1
+            continue
+        shutil.copy2(pdf_path, destination)
+        copied += 1
+
+    return copied, skipped, len(pdf_paths)
+
+
+def _unique_destination_path(destination: Path) -> Path:
+    if not destination.exists():
+        return destination
+
+    stem = destination.stem
+    suffix = destination.suffix
+    for index in range(2, 10_000):
+        candidate = destination.with_name(f"{stem} ({index}){suffix}")
+        if not candidate.exists():
+            return candidate
+    raise FileExistsError(destination)
+
+
+def save_uploaded_pdf(filename: str, content: bytes, books_dir: Path, *, relative_path: str | None = None) -> Path:
+    books_root = books_dir.expanduser().resolve()
+    books_root.mkdir(parents=True, exist_ok=True)
+
+    base_name = Path(relative_path or filename)
+    if base_name.name.lower().endswith(".pdf") is False:
+        raise ValueError("PDF ファイルのみ受け付けます")
+
+    destination = (books_root / base_name).resolve()
+    try:
+        destination.relative_to(books_root)
+    except ValueError as exc:
+        raise ValueError("保存先が不正です") from exc
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination = _unique_destination_path(destination)
+    destination.write_bytes(content)
+    return destination
+
+
+def import_scrapbox_export_bytes(content: bytes, db_path: Path) -> tuple[int, int]:
+    target = SCRAPBOX_EXPORT_CACHE
+    target.write_bytes(content)
+
+    connection = connect(db_path)
+    try:
+        initialize(connection)
+        imported = sync_memos(connection, target)
+        imported_kindle = sync_kindle_books(connection, target)
+    finally:
+        connection.close()
+
+    return imported, imported_kindle
 
 
 SEARCH_SCOPE_OPTIONS = [
@@ -507,6 +603,66 @@ def import_scrapbox_json(export_json_path: str = "") -> RedirectResponse:
     connection.close()
     message = quote(f"Scrapbox JSON を同期しました: メモ {imported} 件 / Kindle {imported_kindle} 件 ({source.name})")
     return RedirectResponse(url=f"/settings?message={message}", status_code=303)
+
+
+@app.post("/settings/scrapbox-upload")
+async def upload_scrapbox_json(request: Request, filename: str = "") -> PlainTextResponse:
+    if not filename.strip():
+        return PlainTextResponse("filename が必要です", status_code=400)
+    if not filename.lower().endswith(".json"):
+        return PlainTextResponse("JSON ファイルのみ受け付けます", status_code=400)
+
+    content = await request.body()
+    if not content:
+        return PlainTextResponse("empty body", status_code=400)
+
+    try:
+        imported, imported_kindle = import_scrapbox_export_bytes(content, get_db_path())
+    except Exception as exc:
+        return PlainTextResponse(str(exc), status_code=400)
+
+    return PlainTextResponse(f"Scrapbox JSON を同期しました: メモ {imported} 件 / Kindle {imported_kindle} 件 ({filename})", status_code=201)
+
+
+@app.get("/settings/pdf-import")
+def import_pdf_directory(source_dir: str = "") -> RedirectResponse:
+    books_dir = get_books_dir()
+    target = "/settings"
+    source = Path(source_dir).expanduser() if source_dir.strip() else None
+    if source is None:
+        message = quote("PDF の取り込み元フォルダを指定してください")
+        return RedirectResponse(url=f"{target}?message={message}", status_code=303)
+
+    try:
+        copied, skipped, total = import_pdfs_from_directory(source, books_dir)
+    except Exception as exc:
+        message = quote(f"PDFインポートに失敗しました: {exc}")
+        return RedirectResponse(url=f"{target}?message={message}", status_code=303)
+
+    message = quote(
+        f"PDF を {copied} 件 {books_dir} にインポートしました / スキップ {skipped} 件 ({total} 件中, {source})"
+    )
+    return RedirectResponse(url=f"{target}?message={message}", status_code=303)
+
+
+@app.post("/settings/pdf-upload")
+async def upload_pdf(request: Request, filename: str = "", relative_path: str = "") -> PlainTextResponse:
+    books_dir = get_books_dir()
+    if not filename.strip():
+        return PlainTextResponse("filename が必要です", status_code=400)
+
+    content = await request.body()
+    if not content:
+        return PlainTextResponse("empty body", status_code=400)
+    if not content.startswith(b"%PDF"):
+        return PlainTextResponse("PDF 以外は受け付けません", status_code=400)
+
+    try:
+        saved = save_uploaded_pdf(filename, content, books_dir, relative_path=relative_path or None)
+    except Exception as exc:
+        return PlainTextResponse(str(exc), status_code=400)
+
+    return PlainTextResponse(str(saved), status_code=201)
 
 
 @app.post("/settings/index")
