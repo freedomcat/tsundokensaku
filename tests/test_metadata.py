@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from tsundokensaku.metadata import load_metadata_by_pdf_stem, load_scrapbox_memos, metadata_for_pdf
+from tsundokensaku.metadata import load_kindle_books, load_metadata_by_pdf_stem, load_scrapbox_memos, metadata_for_pdf
 
 
 class MetadataTest(unittest.TestCase):
@@ -111,6 +111,42 @@ class MetadataTest(unittest.TestCase):
             self.assertEqual(memos[0].body, "メモ1\n検索対象のメモ本文\n[https://example.com/cover.jpg]")
             self.assertEqual(memos[0].scrapbox_url, "https://scrapbox.io/custom-project/%E3%83%A1%E3%83%A21")
             self.assertEqual(memos[0].cover_url, "https://example.com/cover.jpg")
+
+    def test_loads_kindle_books_from_export(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            export_json = Path(temp_dir) / "shino-books_20260628_000000.json"
+            export_json.write_text(
+                json.dumps(
+                    {
+                        "pages": [
+                            {
+                                "title": "JavaScript: The Definitive Guide",
+                                "lines": [
+                                    {
+                                        "text": "[https://m.media-amazon.com/images/I/cover.jpg https://www.amazon.co.jp/dp/B004XQX4K0]"
+                                    },
+                                    {"text": "[https://read.amazon.co.jp/?asin=B004XQX4K0 Kindleで開く]"},
+                                    {"text": "#Kindle #David_Flanagan"},
+                                    {"text": "#技術書"},
+                                ],
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            with patch.dict("os.environ", {"SCRAPBOX_BASE_URL": "https://scrapbox.io/custom-project"}, clear=False):
+                books = load_kindle_books(export_json)
+
+            self.assertEqual(len(books), 1)
+            self.assertEqual(books[0].title, "JavaScript: The Definitive Guide")
+            self.assertEqual(books[0].external_id, "B004XQX4K0")
+            self.assertEqual(books[0].kindle_url, "https://read.amazon.co.jp/?asin=B004XQX4K0")
+            self.assertEqual(books[0].amazon_url, "https://www.amazon.co.jp/dp/B004XQX4K0")
+            self.assertEqual(books[0].scrapbox_url, "https://scrapbox.io/custom-project/JavaScript%3A%20The%20Definitive%20Guide")
+            self.assertEqual(books[0].cover_url, "https://m.media-amazon.com/images/I/cover.jpg")
 
 
 if __name__ == "__main__":

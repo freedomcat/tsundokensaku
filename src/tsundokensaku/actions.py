@@ -54,8 +54,8 @@ def _build_action_from_result(result: dict[str, Any], query: str) -> dict[str, s
         detail = f"『{title}』のノートを確認する"
         href = scrapbox_url or open_url
     elif kind == "kindle":
-        detail = f"『{title}』のメモを確認する"
-        href = scrapbox_url or open_url
+        detail = f"『{title}』をKindleで開く"
+        href = open_url or scrapbox_url
     else:
         detail = f"『{title}』を見直す"
         href = open_url or scrapbox_url

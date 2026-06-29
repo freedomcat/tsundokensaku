@@ -11,6 +11,7 @@ from tsundokensaku.database import (
     initialize,
     replace_pages,
     replace_book_notes,
+    sync_kindle_books,
     search,
     upsert_book,
 )
@@ -295,6 +296,46 @@ class DatabaseSearchTest(unittest.TestCase):
             self.assertEqual(results[0].kind, "kindle")
             self.assertIsNone(results[0].page_number)
             self.assertEqual(results[0].path, "kindle-999")
+            connection.close()
+
+    def test_sync_kindle_books_imports_scrapbox_kindle_links(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            export_json = root / "shino-books_20260628_000000.json"
+            export_json.write_text(
+                """
+                {
+                  "pages": [
+                    {
+                      "title": "JavaScript: The Definitive Guide",
+                      "lines": [
+                        {"text": "[https://m.media-amazon.com/images/I/cover.jpg https://www.amazon.co.jp/dp/B004XQX4K0]"},
+                        {"text": "[https://read.amazon.co.jp/?asin=B004XQX4K0 Kindleで開く]"},
+                        {"text": "#Kindle #技術書"}
+                      ]
+                    }
+                  ]
+                }
+                """,
+                encoding="utf-8",
+            )
+            db_path = root / "index.db"
+            connection = connect(db_path)
+            initialize(connection)
+
+            imported = sync_kindle_books(connection, export_json, project_url="https://scrapbox.io/custom-project")
+            results = search(connection, "Definitive", scope="title")
+
+            self.assertEqual(imported, 1)
+            self.assertEqual(len(results), 1)
+            self.assertEqual(results[0].kind, "kindle")
+            self.assertEqual(results[0].path, "B004XQX4K0")
+            self.assertEqual(results[0].open_url, "https://read.amazon.co.jp/?asin=B004XQX4K0")
+            self.assertEqual(
+                results[0].scrapbox_url,
+                "https://scrapbox.io/custom-project/JavaScript%3A%20The%20Definitive%20Guide",
+            )
+            self.assertEqual(results[0].cover_url, "https://m.media-amazon.com/images/I/cover.jpg")
             connection.close()
 
     def test_initialize_migrates_legacy_books_table(self) -> None:

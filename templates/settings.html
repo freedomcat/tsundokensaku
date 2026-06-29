@@ -42,7 +42,7 @@
 
 <section class="card">
   <h2 style="margin-top: 0;">scrapbox.json インポート</h2>
-  <p class="muted">Scrapbox の export JSON を指定して、メモを DB に同期します。空欄なら最近の `shino-books_*.json` を使います。</p>
+  <p class="muted">Scrapbox の export JSON を指定して、メモと Kindle 本を DB に同期します。空欄なら最近の `shino-books_*.json` を使います。</p>
   <form class="search" action="/settings/scrapbox-import" method="get">
     <input
       type="search"
@@ -121,6 +121,8 @@
         <tr>
           <th>書籍</th>
           <th>external_id</th>
+          <th>開く</th>
+          <th>Scrapbox</th>
           <th>indexed_at</th>
         </tr>
       </thead>
@@ -129,6 +131,16 @@
           <tr>
             <td>{{ item.title }}</td>
             <td><code>{{ item.external_id or '' }}</code></td>
+            <td>
+              {% if item.open_url %}
+                <a class="button" href="{{ item.open_url }}" target="_blank" rel="noreferrer">Kindleで開く</a>
+              {% endif %}
+            </td>
+            <td>
+              {% if item.scrapbox_url %}
+                <a class="button" href="{{ item.scrapbox_url }}" target="_blank" rel="noreferrer">Scrapbox</a>
+              {% endif %}
+            </td>
             <td><code>{{ item.indexed_at }}</code></td>
           </tr>
         {% endfor %}

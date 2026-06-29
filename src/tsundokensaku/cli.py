@@ -40,7 +40,7 @@ def _render_results(results, metadata_by_stem: dict[str, object]) -> list[dict[s
                     "snippet": result.snippet,
                     "path": result.path,
                     "open_url": result.open_url,
-                    "scrapbox_url": result.open_url,
+                    "scrapbox_url": result.scrapbox_url or result.open_url,
                     "cover_url": result.cover_url,
                 }
             )
@@ -52,8 +52,9 @@ def _render_results(results, metadata_by_stem: dict[str, object]) -> list[dict[s
                     "page_number": None,
                     "snippet": result.snippet,
                     "path": result.path or result.title,
-                    "open_url": None,
-                    "scrapbox_url": None,
+                    "open_url": result.open_url,
+                    "scrapbox_url": result.scrapbox_url,
+                    "cover_url": result.cover_url,
                 }
             )
         else:

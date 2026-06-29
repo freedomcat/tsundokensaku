@@ -63,6 +63,13 @@
                     {% if result.scrapbox_url %}
                       <a class="button" href="{{ result.scrapbox_url }}" target="_blank" rel="noreferrer">ノートを開く</a>
                     {% endif %}
+                  {% elif result.kind == 'kindle' %}
+                    {% if result.open_url %}
+                      <a class="button" href="{{ result.open_url }}" target="_blank" rel="noreferrer">Kindleで開く</a>
+                    {% endif %}
+                    {% if result.scrapbox_url %}
+                      <a class="button" href="{{ result.scrapbox_url }}" target="_blank" rel="noreferrer">Scrapbox</a>
+                    {% endif %}
                   {% else %}
                     {% if result.open_url %}
                       <button

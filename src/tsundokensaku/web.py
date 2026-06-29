@@ -14,7 +14,7 @@ from fastapi.templating import Jinja2Templates
 from markupsafe import Markup, escape
 
 from tsundokensaku.actions import build_tomorrow_actions
-from tsundokensaku.database import SEARCH_SCOPES, connect, list_books, search, sync_memos
+from tsundokensaku.database import SEARCH_SCOPES, connect, list_books, search, sync_kindle_books, sync_memos
 from tsundokensaku.database import initialize
 from tsundokensaku.indexer import find_pdfs, index_books
 from tsundokensaku.metadata import (
@@ -302,6 +302,9 @@ def get_library_items(books_dir: Path, db_path: Path) -> dict[str, object]:
             "external_id": book.external_id,
             "indexed_at": book.indexed_at,
             "path": book.external_id or book.title,
+            "open_url": book.open_url,
+            "scrapbox_url": book.scrapbox_url,
+            "cover_url": book.cover_url,
         }
         for book in kindle_books
     ]
@@ -403,7 +406,7 @@ def search_page(
                     "kind": result.kind,
                     "cover_url": result.cover_url,
                     "open_url": result.open_url,
-                    "scrapbox_url": result.open_url,
+                    "scrapbox_url": result.scrapbox_url or result.open_url,
                 }
             )
     rendered_results = sort_results(rendered_results, sort)
@@ -500,8 +503,9 @@ def import_scrapbox_json(export_json_path: str = "") -> RedirectResponse:
     if source != target:
         target.write_bytes(source.read_bytes())
     imported = sync_memos(connection, target)
+    imported_kindle = sync_kindle_books(connection, target)
     connection.close()
-    message = quote(f"Scrapbox JSON を同期しました: {imported} 件 ({source.name})")
+    message = quote(f"Scrapbox JSON を同期しました: メモ {imported} 件 / Kindle {imported_kindle} 件 ({source.name})")
     return RedirectResponse(url=f"/settings?message={message}", status_code=303)
 
 

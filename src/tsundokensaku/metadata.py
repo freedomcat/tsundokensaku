@@ -10,6 +10,7 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 
 BOOKSCAN_TAG = "#Bookscan"
 TECH_BOOK_TAG = "#技術書"
+KINDLE_TAG = "#Kindle"
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 ENV_FILE = PROJECT_ROOT / ".env"
 _ENV_LOADED = False
@@ -26,6 +27,16 @@ class BookMetadata:
 class ScrapboxMemo:
     title: str
     body: str
+    scrapbox_url: str | None = None
+    cover_url: str | None = None
+
+
+@dataclass(frozen=True)
+class KindleBookMetadata:
+    title: str
+    external_id: str
+    kindle_url: str
+    amazon_url: str | None = None
     scrapbox_url: str | None = None
     cover_url: str | None = None
 
@@ -130,6 +141,47 @@ def load_scrapbox_memos(export_json: Path | None, *, project_url: str | None = N
     return memos
 
 
+def load_kindle_books(export_json: Path | None, *, project_url: str | None = None) -> list[KindleBookMetadata]:
+    if export_json is None or not export_json.exists():
+        return []
+
+    base_url = (project_url or get_scrapbox_project_url())
+    if base_url:
+        base_url = base_url.rstrip("/")
+
+    data = json.loads(export_json.read_text(encoding="utf-8"))
+    books: list[KindleBookMetadata] = []
+    seen: set[str] = set()
+    for page in data.get("pages", []):
+        title = page.get("title", "")
+        lines = page.get("lines", [])
+        text = "\n".join(line.get("text", "") for line in lines)
+        if KINDLE_TAG not in text or TECH_BOOK_TAG not in text:
+            continue
+
+        asin = extract_asin(text)
+        if asin is None:
+            continue
+
+        key = asin.upper()
+        if key in seen:
+            continue
+        seen.add(key)
+
+        scrapbox_url = f"{base_url}/{quote(title, safe='')}" if base_url and title else None
+        books.append(
+            KindleBookMetadata(
+                title=title,
+                external_id=key,
+                kindle_url=extract_kindle_url(text) or f"https://read.amazon.co.jp/?asin={key}",
+                amazon_url=extract_amazon_url(text, asin=key),
+                scrapbox_url=scrapbox_url,
+                cover_url=extract_cover_image_url(lines),
+            )
+        )
+    return books
+
+
 def search_scrapbox_memos(
     export_json: Path | None,
     query: str,
@@ -193,6 +245,32 @@ def extract_freedomcat_filename(text: str) -> str | None:
         filename = unquote(Path(parsed.path).name)
         if filename.lower().endswith(".pdf"):
             return filename
+    return None
+
+
+def extract_kindle_url(text: str) -> str | None:
+    for match in re.finditer(r"https?://read\.amazon\.co\.jp/[^\s\]]+", text, re.IGNORECASE):
+        return match.group(0).strip("[]()<> \t\r\n")
+    return None
+
+
+def extract_amazon_url(text: str, *, asin: str) -> str | None:
+    for match in re.finditer(r"https?://(?:www\.)?amazon\.co\.jp/(?:[^/\s\]]+/)?dp/([0-9A-Z]{10})[^\s\]]*", text, re.IGNORECASE):
+        if match.group(1).upper() == asin.upper():
+            return match.group(0).strip("[]()<> \t\r\n")
+    return f"https://www.amazon.co.jp/dp/{asin}"
+
+
+def extract_asin(text: str) -> str | None:
+    kindle_url = extract_kindle_url(text)
+    if kindle_url:
+        values = parse_qs(urlparse(kindle_url).query).get("asin")
+        if values and re.fullmatch(r"[0-9A-Z]{10}", values[0], re.IGNORECASE):
+            return values[0].upper()
+
+    for match in re.finditer(r"amazon\.co\.jp/(?:[^/\s\]]+/)?dp/([0-9A-Z]{10})", text, re.IGNORECASE):
+        return match.group(1).upper()
+
     return None
 
 

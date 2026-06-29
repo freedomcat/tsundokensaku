@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from tsundokensaku.metadata import ScrapboxMemo, load_scrapbox_memos
+from tsundokensaku.metadata import KindleBookMetadata, ScrapboxMemo, load_kindle_books, load_scrapbox_memos
 from tsundokensaku.tokenizer import build_excerpt, prepare_index_text, tokenize_query
 
 
@@ -21,6 +21,9 @@ class BookRecord:
     size_bytes: int | None
     modified_at: float | None
     indexed_at: str
+    open_url: str | None = None
+    scrapbox_url: str | None = None
+    cover_url: str | None = None
 
 
 @dataclass(frozen=True)
@@ -45,6 +48,7 @@ class SearchResult:
     snippet: str
     kind: str = "pdf"
     open_url: str | None = None
+    scrapbox_url: str | None = None
     cover_url: str | None = None
 
 
@@ -89,6 +93,9 @@ def upsert_book(
     modified_at: float | None = None,
     source_type: str = "pdf",
     external_id: str | None = None,
+    open_url: str | None = None,
+    scrapbox_url: str | None = None,
+    cover_url: str | None = None,
 ) -> int:
     indexed_at = datetime.now(timezone.utc).isoformat()
     if source_type == "pdf":
@@ -98,15 +105,18 @@ def upsert_book(
             raise ValueError("PDF books require size_bytes and modified_at.")
         connection.execute(
             """
-            INSERT INTO books(path, source_type, external_id, title, size_bytes, modified_at, indexed_at)
-            VALUES (?, 'pdf', NULL, ?, ?, ?, ?)
+            INSERT INTO books(path, source_type, external_id, title, size_bytes, modified_at, indexed_at, open_url, scrapbox_url, cover_url)
+            VALUES (?, 'pdf', NULL, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(path) DO UPDATE SET
                 title = excluded.title,
                 size_bytes = excluded.size_bytes,
                 modified_at = excluded.modified_at,
-                indexed_at = excluded.indexed_at
+                indexed_at = excluded.indexed_at,
+                open_url = excluded.open_url,
+                scrapbox_url = excluded.scrapbox_url,
+                cover_url = excluded.cover_url
             """,
-            (str(path), title, size_bytes, modified_at, indexed_at),
+            (str(path), title, size_bytes, modified_at, indexed_at, open_url, scrapbox_url, cover_url),
         )
         row = connection.execute("SELECT id FROM books WHERE path = ?", (str(path),)).fetchone()
     else:
@@ -114,15 +124,18 @@ def upsert_book(
             raise ValueError("Non-PDF books require an external_id.")
         connection.execute(
             """
-            INSERT INTO books(path, source_type, external_id, title, size_bytes, modified_at, indexed_at)
-            VALUES (NULL, ?, ?, ?, ?, ?, ?)
+            INSERT INTO books(path, source_type, external_id, title, size_bytes, modified_at, indexed_at, open_url, scrapbox_url, cover_url)
+            VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(source_type, external_id) DO UPDATE SET
                 title = excluded.title,
                 size_bytes = excluded.size_bytes,
                 modified_at = excluded.modified_at,
-                indexed_at = excluded.indexed_at
+                indexed_at = excluded.indexed_at,
+                open_url = excluded.open_url,
+                scrapbox_url = excluded.scrapbox_url,
+                cover_url = excluded.cover_url
             """,
-            (source_type, external_id, title, size_bytes, modified_at, indexed_at),
+            (source_type, external_id, title, size_bytes, modified_at, indexed_at, open_url, scrapbox_url, cover_url),
         )
         row = connection.execute(
             "SELECT id FROM books WHERE source_type = ? AND external_id = ?",
@@ -136,7 +149,7 @@ def upsert_book(
 def get_book(connection: sqlite3.Connection, *, path: Path) -> BookRecord | None:
     row = connection.execute(
         """
-        SELECT id, path, source_type, external_id, title, size_bytes, modified_at, indexed_at
+        SELECT id, path, source_type, external_id, title, size_bytes, modified_at, indexed_at, open_url, scrapbox_url, cover_url
         FROM books
         WHERE path = ?
         """,
@@ -153,13 +166,16 @@ def get_book(connection: sqlite3.Connection, *, path: Path) -> BookRecord | None
         size_bytes=(int(row["size_bytes"]) if row["size_bytes"] is not None else None),
         modified_at=(float(row["modified_at"]) if row["modified_at"] is not None else None),
         indexed_at=str(row["indexed_at"]),
+        open_url=str(row["open_url"]) if row["open_url"] is not None else None,
+        scrapbox_url=str(row["scrapbox_url"]) if row["scrapbox_url"] is not None else None,
+        cover_url=str(row["cover_url"]) if row["cover_url"] is not None else None,
     )
 
 
 def list_books(connection: sqlite3.Connection) -> list[BookRecord]:
     rows = connection.execute(
         """
-        SELECT id, path, source_type, external_id, title, size_bytes, modified_at, indexed_at
+        SELECT id, path, source_type, external_id, title, size_bytes, modified_at, indexed_at, open_url, scrapbox_url, cover_url
         FROM books
         ORDER BY title, path
         """
@@ -174,6 +190,9 @@ def list_books(connection: sqlite3.Connection) -> list[BookRecord]:
             size_bytes=(int(row["size_bytes"]) if row["size_bytes"] is not None else None),
             modified_at=(float(row["modified_at"]) if row["modified_at"] is not None else None),
             indexed_at=str(row["indexed_at"]),
+            open_url=str(row["open_url"]) if row["open_url"] is not None else None,
+            scrapbox_url=str(row["scrapbox_url"]) if row["scrapbox_url"] is not None else None,
+            cover_url=str(row["cover_url"]) if row["cover_url"] is not None else None,
         )
         for row in rows
     ]
@@ -323,6 +342,23 @@ def sync_memos(connection: sqlite3.Connection, export_json: Path | None, *, proj
     return len(memos)
 
 
+def sync_kindle_books(connection: sqlite3.Connection, export_json: Path | None, *, project_url: str | None = None) -> int:
+    kindle_books = load_kindle_books(export_json, project_url=project_url)
+    for book in kindle_books:
+        upsert_book(
+            connection,
+            path=None,
+            source_type="kindle",
+            external_id=book.external_id,
+            title=book.title,
+            open_url=book.kindle_url,
+            scrapbox_url=book.scrapbox_url,
+            cover_url=book.cover_url,
+        )
+    connection.commit()
+    return len(kindle_books)
+
+
 def search(
     connection: sqlite3.Connection,
     query: str,
@@ -377,6 +413,7 @@ def search(
             snippet=_build_search_snippet(row, normalized_query),
             kind=str(row["kind"]) if "kind" in row.keys() and row["kind"] is not None else "pdf",
             open_url=row["open_url"] if "open_url" in row.keys() else None,
+            scrapbox_url=row["scrapbox_url"] if "scrapbox_url" in row.keys() else None,
             cover_url=row["cover_url"] if "cover_url" in row.keys() else None,
         )
         for row in rows
@@ -397,7 +434,10 @@ def _search_title(connection: sqlite3.Connection, query: str, *, limit: int) -> 
                 COALESCE(path, external_id, title) AS path,
                 CASE WHEN source_type = 'pdf' THEN 1 ELSE NULL END AS page_number,
                 title AS snippet,
-                source_type AS kind
+                source_type AS kind,
+                open_url,
+                scrapbox_url,
+                cover_url
             FROM books
             WHERE {where_clause}
             ORDER BY title, path
@@ -485,6 +525,7 @@ def _search_memo_fts(connection: sqlite3.Connection, query: str, *, limit: int) 
                 snippet(memos_fts, 2, '[', ']', ' ... ', 24) AS snippet,
                 'memo' AS kind,
                 scrapbox_url AS open_url,
+                scrapbox_url,
                 cover_url
             FROM memos_fts
             JOIN memos ON memos.id = memos_fts.memo_id
@@ -509,6 +550,7 @@ def _search_memo_like(connection: sqlite3.Connection, query: str, *, limit: int)
                 body AS snippet,
                 'memo' AS kind,
                 scrapbox_url AS open_url,
+                scrapbox_url,
                 cover_url
             FROM memos
             WHERE title LIKE ? OR body LIKE ?
@@ -539,6 +581,7 @@ def _search_book_notes_fts(connection: sqlite3.Connection, query: str, *, limit:
                 n.title || char(10) || n.body AS body_text,
                 'note' AS kind,
                 n.scrapbox_url AS open_url,
+                n.scrapbox_url AS scrapbox_url,
                 n.cover_url AS cover_url
             FROM book_notes_fts AS f
             JOIN book_notes AS n ON n.id = f.rowid
@@ -564,6 +607,7 @@ def _search_book_notes_like(connection: sqlite3.Connection, query: str, *, limit
                 n.title || char(10) || n.body AS body_text,
                 'note' AS kind,
                 n.scrapbox_url AS open_url,
+                n.scrapbox_url AS scrapbox_url,
                 n.cover_url AS cover_url
             FROM book_notes AS n
             JOIN books AS b ON b.id = n.book_id
@@ -625,6 +669,9 @@ def _ensure_books_schema(connection: sqlite3.Connection) -> None:
                 size_bytes INTEGER,
                 modified_at REAL,
                 indexed_at TEXT NOT NULL,
+                open_url TEXT,
+                scrapbox_url TEXT,
+                cover_url TEXT,
                 UNIQUE(source_type, external_id)
             );
             """
@@ -632,6 +679,9 @@ def _ensure_books_schema(connection: sqlite3.Connection) -> None:
         return
 
     if "source_type" in columns and "external_id" in columns:
+        for column in ("open_url", "scrapbox_url", "cover_url"):
+            if column not in columns:
+                connection.execute(f"ALTER TABLE books ADD COLUMN {column} TEXT")
         return
 
     connection.executescript(
@@ -645,10 +695,13 @@ def _ensure_books_schema(connection: sqlite3.Connection) -> None:
             size_bytes INTEGER,
             modified_at REAL,
             indexed_at TEXT NOT NULL,
+            open_url TEXT,
+            scrapbox_url TEXT,
+            cover_url TEXT,
             UNIQUE(source_type, external_id)
         );
 
-        INSERT INTO books_new(id, path, source_type, external_id, title, size_bytes, modified_at, indexed_at)
+        INSERT INTO books_new(id, path, source_type, external_id, title, size_bytes, modified_at, indexed_at, open_url, scrapbox_url, cover_url)
         SELECT
             id,
             path,
@@ -657,7 +710,10 @@ def _ensure_books_schema(connection: sqlite3.Connection) -> None:
             title,
             size_bytes,
             modified_at,
-            indexed_at
+            indexed_at,
+            NULL,
+            NULL,
+            NULL
         FROM books;
 
         DROP TABLE books;
