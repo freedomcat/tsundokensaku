@@ -19,6 +19,9 @@
       同じ書籍をまとめる
     </label>
     <button class="primary" type="submit">検索</button>
+    {% if scrapbox_export_url %}
+      <a class="button" href="{{ scrapbox_export_url }}" target="_blank" rel="noreferrer">Scrapboxにページを作る</a>
+    {% endif %}
   </form>
   <p class="muted" style="margin-top: 12px;">
     検索語: <span class="pill">{{ query or "未入力" }}</span> / 結果: {{ result_count }}

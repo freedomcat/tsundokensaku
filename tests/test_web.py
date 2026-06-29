@@ -163,6 +163,29 @@ class HighlightQueryTest(unittest.TestCase):
         self.assertIn("scrapbox: [SQLite入門]", body)
         self.assertNotIn("open:", body)
 
+    def test_build_search_scrapbox_body_keeps_all_results(self) -> None:
+        results = [
+            {
+                "title": f"本{i}",
+                "kind": "pdf",
+                "snippet": f"snippet {i}",
+                "path": f"books/tech/book-{i}.pdf",
+                "scrapbox_url": f"https://scrapbox.io/custom-project/%E6%9C%AC{i}",
+            }
+            for i in range(1, 22)
+        ]
+
+        _, body = build_search_scrapbox_body(
+            query="SQLite",
+            scope="all",
+            sort="rank",
+            group="none",
+            results=results,
+        )
+
+        self.assertIn("21. 本21", body)
+        self.assertNotIn("他 ", body)
+
 
 if __name__ == "__main__":
     unittest.main()

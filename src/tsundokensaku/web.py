@@ -247,7 +247,7 @@ def build_search_scrapbox_body(
         "",
         "結果一覧",
     ]
-    for index, result in enumerate(results[:20], start=1):
+    for index, result in enumerate(results, start=1):
         title = str(result.get("title") or "")
         kind = str(result.get("kind") or "")
         snippet = str(result.get("snippet") or "").replace("\n", " ").strip()
@@ -263,9 +263,6 @@ def build_search_scrapbox_body(
         if scrapbox_url:
             lines.append(f"   scrapbox: [{_scrapbox_page_label(scrapbox_url, title)}]")
         lines.append("")
-
-    if len(results) > 20:
-        lines.append(f"他 {len(results) - 20} 件")
 
     return page_title, "\n".join(lines).strip()
 
@@ -638,6 +635,9 @@ def search_page(
         {"value": "page", "label": "ページ番号順"},
         {"value": "scrapbox", "label": "Scrapboxあり優先"},
     ]
+    scrapbox_export_url = None
+    if q.strip() and get_scrapbox_project_url():
+        scrapbox_export_url = f"/search/scrapbox?{urlencode({'q': q, 'sort': sort, 'scope': normalized_scope, 'group': group})}"
     return templates.TemplateResponse(
         request,
         "search.html",
@@ -653,6 +653,7 @@ def search_page(
             "db_path": db_path,
             "results": rendered_results,
             "result_count": len(rendered_results),
+            "scrapbox_export_url": scrapbox_export_url,
         },
     )
 
@@ -666,7 +667,7 @@ def search_scrapbox_export(
 ) -> RedirectResponse:
     books_dir = get_books_dir()
     db_path = get_db_path()
-    rendered_results, _, normalized_scope = build_search_result_rows_context(
+    rendered_results, normalized_scope = build_search_result_rows_context(
         q,
         sort=sort,
         scope=scope,
