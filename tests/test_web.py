@@ -187,6 +187,7 @@ class HighlightQueryTest(unittest.TestCase):
         )
 
         self.assertIn("SQLite", page_title)
+        self.assertIn("#つんどけんさく", body)
         self.assertIn("検索語: SQLite", body)
         self.assertIn("SQLite入門", body)
         self.assertIn("scrapbox: [SQLite入門]", body)

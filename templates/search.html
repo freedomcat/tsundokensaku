@@ -9,23 +9,32 @@
         <option value="{{ option.value }}" {% if option.value == scope %}selected{% endif %}>{{ option.label }}</option>
       {% endfor %}
     </select>
-    <select name="sort" aria-label="並び順">
+    <input type="hidden" name="sort" value="{{ sort }}">
+    <input type="hidden" name="group" value="{{ group }}">
+    <button class="primary" type="submit">検索</button>
+  </form>
+</section>
+
+<section class="card">
+  <form class="search" action="/search" method="get" id="search-display-form">
+    <input type="hidden" name="q" value="{{ query }}">
+    <input type="hidden" name="scope" value="{{ scope }}">
+    <div class="muted">
+      検索語: <span class="pill">{{ query or "未入力" }}</span> / 結果: {{ result_count }}
+    </div>
+    <select name="sort" aria-label="並び順" data-auto-submit>
       {% for option in sort_options %}
         <option value="{{ option.value }}" {% if option.value == sort %}selected{% endif %}>{{ option.label }}</option>
       {% endfor %}
     </select>
     <label class="pill" style="display:inline-flex; align-items:center; gap:8px;">
-      <input type="checkbox" name="group" value="book" {% if group == 'book' %}checked{% endif %}>
+      <input type="checkbox" name="group" value="book" {% if group == 'book' %}checked{% endif %} data-auto-submit>
       同じ書籍をまとめる
     </label>
-    <button class="primary" type="submit">検索</button>
     {% if scrapbox_export_url %}
-      <a class="button" href="{{ scrapbox_export_url }}" target="_blank" rel="noreferrer">Scrapboxにページを作る</a>
+      <a class="button" href="{{ scrapbox_export_url }}" target="_blank" rel="noreferrer">Scrapboxに保存</a>
     {% endif %}
   </form>
-  <p class="muted" style="margin-top: 12px;">
-    検索語: <span class="pill">{{ query or "未入力" }}</span> / 結果: {{ result_count }}
-  </p>
 </section>
 
 <section class="card">
@@ -107,5 +116,18 @@
     <p class="muted">検索結果はありません。</p>
   {% endif %}
 </section>
+
+<script>
+  (() => {
+    const form = document.getElementById('search-display-form');
+    if (!form) {
+      return;
+    }
+
+    for (const control of form.querySelectorAll('[data-auto-submit]')) {
+      control.addEventListener('change', () => form.submit());
+    }
+  })();
+</script>
 
 {% endblock %}

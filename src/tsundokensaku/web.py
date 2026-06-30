@@ -240,6 +240,8 @@ def build_search_scrapbox_body(
     title_query = _sanitize_scrapbox_title(query or "検索結果")
     page_title = _sanitize_scrapbox_title(f"検索結果 {title_query} {now.strftime('%Y-%m-%d %H:%M')}")
     lines = [
+        "#つんどけんさく",
+        "",
         f"検索語: {query or '(未入力)'}",
         f"検索範囲: {scope}",
         f"並び順: {sort}",
