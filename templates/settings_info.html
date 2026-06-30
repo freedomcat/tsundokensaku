@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}つんどけんさく | 情報{% endblock %}
+{% block content %}
+<div class="settings-layout">
+  {% set active_settings_page = 'info' %}
+  {% include "_settings_sidebar.html" %}
+
+  <main style="display:grid; gap:16px;">
+    {% if message %}
+      <section class="card">
+        <p style="margin: 0;"><span class="pill">{{ message }}</span></p>
+      </section>
+    {% endif %}
+
+    <section class="card">
+      <h2 style="margin-top: 0;">情報</h2>
+      <div class="grid">
+        <div class="stat">
+          <div class="label">Books</div>
+          <div class="value" style="font-size: 1rem; line-height: 1.5; word-break: break-all;">{{ books_dir }}</div>
+        </div>
+        <div class="stat">
+          <div class="label">DB</div>
+          <div class="value" style="font-size: 1rem; line-height: 1.5; word-break: break-all;">{{ db_path }}</div>
+        </div>
+      </div>
+      <p class="muted" style="margin-top: 12px;">現在このアプリが参照している場所です。</p>
+    </section>
+  </main>
+</div>
+{% endblock %}

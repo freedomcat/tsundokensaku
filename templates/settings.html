@@ -105,6 +105,26 @@
 </section>
 
 <section class="card">
+  <h2 style="margin-top: 0;">共有先</h2>
+  <p class="muted">検索結果の PDF モーダルに出す共有先を、このブラウザごとに切り替えられます。</p>
+  <div style="display:grid; gap:10px; max-width: 360px;">
+    <label class="pill" style="display:flex; align-items:center; gap:10px; padding: 10px 12px;">
+      <input type="checkbox" id="share-target-notebooklm">
+      <span>NotebookLM</span>
+    </label>
+    <label class="pill" style="display:flex; align-items:center; gap:10px; padding: 10px 12px;">
+      <input type="checkbox" id="share-target-google-drive">
+      <span>Google Drive</span>
+    </label>
+  </div>
+  <div style="display:flex; gap:8px; margin-top: 14px; flex-wrap: wrap;">
+    <button class="primary" type="button" id="share-targets-save">保存</button>
+    <button type="button" id="share-targets-reset">既定に戻す</button>
+  </div>
+  <p class="muted" style="margin-top: 10px;">Google Drive は保存先へのショートカットです。実際のアップロードは別途行います。</p>
+</section>
+
+<section class="card">
   <h2 style="margin-top: 0;">PDF一覧</h2>
   {% if pdf_items %}
     <table>
@@ -129,8 +149,10 @@
                   type="button"
                   class="button"
                   data-pdf-modal-url="{{ item.open_url }}"
+                  data-pdf-modal-path="{{ item.path or '' }}"
                   data-pdf-modal-title="{{ item.title }}"
                   data-pdf-modal-scrapbox-url="{{ item.scrapbox_url or '' }}"
+                  data-pdf-modal-pages=""
                 >
                   Open
                 </button>
@@ -204,6 +226,12 @@
   const scrapboxFileInput = document.getElementById('scrapbox-file-input');
   const scrapboxUploadStatus = document.getElementById('scrapbox-upload-status');
   const scrapboxUploadList = document.getElementById('scrapbox-upload-list');
+  const shareNotebooklm = document.getElementById('share-target-notebooklm');
+  const shareGoogleDrive = document.getElementById('share-target-google-drive');
+  const shareSaveButton = document.getElementById('share-targets-save');
+  const shareResetButton = document.getElementById('share-targets-reset');
+  const shareStorageKey = 'tsundokensaku-share-targets';
+  const shareDefaultIds = ['notebooklm', 'google-drive'];
 
     function setUploadStatus(text) {
       if (uploadStatus) {
@@ -386,6 +414,64 @@
       startButton.disabled = running;
       startButton.textContent = running ? 'インデックス中...' : 'インデックスを更新';
     }
+
+    function loadShareTargets() {
+      try {
+        const raw = localStorage.getItem(shareStorageKey);
+        if (!raw) {
+          return shareDefaultIds.slice();
+        }
+        const parsed = JSON.parse(raw);
+        if (!Array.isArray(parsed)) {
+          return shareDefaultIds.slice();
+        }
+        return parsed.filter((value) => typeof value === 'string' && value);
+      } catch (error) {
+        console.warn('Failed to load share targets', error);
+        return shareDefaultIds.slice();
+      }
+    }
+
+    function saveShareTargets(ids) {
+      localStorage.setItem(shareStorageKey, JSON.stringify(ids));
+    }
+
+    function syncShareTargetForm() {
+      const enabled = new Set(loadShareTargets());
+      if (shareNotebooklm) {
+        shareNotebooklm.checked = enabled.has('notebooklm');
+      }
+      if (shareGoogleDrive) {
+        shareGoogleDrive.checked = enabled.has('google-drive');
+      }
+    }
+
+    function collectShareTargetIds() {
+      const ids = [];
+      if (shareNotebooklm?.checked) {
+        ids.push('notebooklm');
+      }
+      if (shareGoogleDrive?.checked) {
+        ids.push('google-drive');
+      }
+      return ids;
+    }
+
+    if (shareSaveButton) {
+      shareSaveButton.addEventListener('click', () => {
+        saveShareTargets(collectShareTargetIds());
+        window.location.href = `/settings?message=${encodeURIComponent('共有先を保存しました')}`;
+      });
+    }
+
+    if (shareResetButton) {
+      shareResetButton.addEventListener('click', () => {
+        saveShareTargets(shareDefaultIds.slice());
+        syncShareTargetForm();
+      });
+    }
+
+    syncShareTargetForm();
 
     async function refresh() {
       try {

@@ -1,0 +1,214 @@
+{% extends "base.html" %}
+{% block title %}つんどけんさく | 共有先{% endblock %}
+{% block content %}
+<div class="settings-layout">
+  {% set active_settings_page = 'share' %}
+  {% include "_settings_sidebar.html" %}
+
+  <main style="display:grid; gap:16px;">
+    {% if message %}
+      <section class="card">
+        <p style="margin: 0;"><span class="pill">{{ message }}</span></p>
+      </section>
+    {% endif %}
+
+    <section class="card">
+      <h2 style="margin-top: 0;">共有先</h2>
+      <p class="muted">検索結果の PDF モーダルに表示する共有先を選べます。設定はこのブラウザに保存されます。</p>
+      <div style="display:grid; gap:10px; max-width: 360px;">
+        <details open>
+          <summary class="pill" style="cursor:pointer; padding: 10px 12px; list-style:none;">AI系</summary>
+          <div style="display:grid; gap:10px; margin-top: 10px;">
+            <label class="pill" style="display:flex; align-items:center; gap:10px; padding: 10px 12px;">
+              <input type="checkbox" id="share-target-notebooklm">
+              <span>NotebookLM</span>
+            </label>
+            <label class="pill" style="display:flex; align-items:center; gap:10px; padding: 10px 12px;">
+              <input type="checkbox" id="share-target-chatgpt">
+              <span>ChatGPT</span>
+            </label>
+            <label class="pill" style="display:flex; align-items:center; gap:10px; padding: 10px 12px;">
+              <input type="checkbox" id="share-target-claude">
+              <span>Claude</span>
+            </label>
+            <label class="pill" style="display:flex; align-items:center; gap:10px; padding: 10px 12px;">
+              <input type="checkbox" id="share-target-copilot">
+              <span>Copilot</span>
+            </label>
+            <label class="pill" style="display:flex; align-items:center; gap:10px; padding: 10px 12px;">
+              <input type="checkbox" id="share-target-gemini">
+              <span>Gemini</span>
+            </label>
+            <label class="pill" style="display:flex; align-items:center; gap:10px; padding: 10px 12px;">
+              <input type="checkbox" id="share-target-perplexity">
+              <span>Perplexity</span>
+            </label>
+            <label class="pill" style="display:flex; align-items:center; gap:10px; padding: 10px 12px;">
+              <input type="checkbox" id="share-target-lechat">
+              <span>Le Chat</span>
+            </label>
+          </div>
+        </details>
+        <details open>
+          <summary class="pill" style="cursor:pointer; padding: 10px 12px; list-style:none;">保存・共有系</summary>
+          <div style="display:grid; gap:10px; margin-top: 10px;">
+            <label class="pill" style="display:flex; align-items:center; gap:10px; padding: 10px 12px;">
+              <input type="checkbox" id="share-target-google-drive">
+              <span>Google Drive</span>
+            </label>
+            <label class="pill" style="display:flex; align-items:center; gap:10px; padding: 10px 12px;">
+              <input type="checkbox" id="share-target-onedrive">
+              <span>OneDrive</span>
+            </label>
+            <label class="pill" style="display:flex; align-items:center; gap:10px; padding: 10px 12px;">
+              <input type="checkbox" id="share-target-dropbox">
+              <span>Dropbox</span>
+            </label>
+            <label class="pill" style="display:flex; align-items:center; gap:10px; padding: 10px 12px;">
+              <input type="checkbox" id="share-target-evernote">
+              <span>Evernote</span>
+            </label>
+          </div>
+        </details>
+      </div>
+      <div style="display:flex; gap:8px; margin-top: 14px; flex-wrap: wrap;">
+        <button class="primary" type="button" id="share-targets-save">保存</button>
+        <button type="button" id="share-targets-reset">既定に戻す</button>
+      </div>
+      <p class="muted" style="margin-top: 10px;">Google Drive は保存先へのショートカットです。実際のアップロードは別途行います。</p>
+    </section>
+  </main>
+</div>
+
+<script>
+  (() => {
+    const shareNotebooklm = document.getElementById('share-target-notebooklm');
+    const shareChatgpt = document.getElementById('share-target-chatgpt');
+    const shareClaude = document.getElementById('share-target-claude');
+    const shareCopilot = document.getElementById('share-target-copilot');
+    const shareGemini = document.getElementById('share-target-gemini');
+    const sharePerplexity = document.getElementById('share-target-perplexity');
+    const shareLechat = document.getElementById('share-target-lechat');
+    const shareGoogleDrive = document.getElementById('share-target-google-drive');
+    const shareOneDrive = document.getElementById('share-target-onedrive');
+    const shareDropbox = document.getElementById('share-target-dropbox');
+    const shareEvernote = document.getElementById('share-target-evernote');
+    const shareSaveButton = document.getElementById('share-targets-save');
+    const shareResetButton = document.getElementById('share-targets-reset');
+    const shareStorageKey = 'tsundokensaku-share-targets';
+    const shareDefaultIds = ['notebooklm', 'chatgpt', 'claude', 'copilot', 'gemini', 'perplexity', 'lechat', 'google-drive', 'onedrive', 'dropbox', 'evernote'];
+
+    function loadShareTargets() {
+      try {
+        const raw = localStorage.getItem(shareStorageKey);
+        if (!raw) {
+          return shareDefaultIds.slice();
+        }
+        const parsed = JSON.parse(raw);
+        if (!Array.isArray(parsed)) {
+          return shareDefaultIds.slice();
+        }
+        return parsed.filter((value) => typeof value === 'string' && value);
+      } catch (error) {
+        console.warn('Failed to load share targets', error);
+        return shareDefaultIds.slice();
+      }
+    }
+
+    function saveShareTargets(ids) {
+      localStorage.setItem(shareStorageKey, JSON.stringify(ids));
+    }
+
+    function syncShareTargetForm() {
+      const enabled = new Set(loadShareTargets());
+      if (shareNotebooklm) {
+        shareNotebooklm.checked = enabled.has('notebooklm');
+      }
+      if (shareChatgpt) {
+        shareChatgpt.checked = enabled.has('chatgpt');
+      }
+      if (shareClaude) {
+        shareClaude.checked = enabled.has('claude');
+      }
+      if (shareCopilot) {
+        shareCopilot.checked = enabled.has('copilot');
+      }
+      if (shareGemini) {
+        shareGemini.checked = enabled.has('gemini');
+      }
+      if (sharePerplexity) {
+        sharePerplexity.checked = enabled.has('perplexity');
+      }
+      if (shareLechat) {
+        shareLechat.checked = enabled.has('lechat');
+      }
+      if (shareGoogleDrive) {
+        shareGoogleDrive.checked = enabled.has('google-drive');
+      }
+      if (shareOneDrive) {
+        shareOneDrive.checked = enabled.has('onedrive');
+      }
+      if (shareDropbox) {
+        shareDropbox.checked = enabled.has('dropbox');
+      }
+      if (shareEvernote) {
+        shareEvernote.checked = enabled.has('evernote');
+      }
+    }
+
+    function collectShareTargetIds() {
+      const ids = [];
+      if (shareNotebooklm?.checked) {
+        ids.push('notebooklm');
+      }
+      if (shareChatgpt?.checked) {
+        ids.push('chatgpt');
+      }
+      if (shareClaude?.checked) {
+        ids.push('claude');
+      }
+      if (shareCopilot?.checked) {
+        ids.push('copilot');
+      }
+      if (shareGemini?.checked) {
+        ids.push('gemini');
+      }
+      if (sharePerplexity?.checked) {
+        ids.push('perplexity');
+      }
+      if (shareLechat?.checked) {
+        ids.push('lechat');
+      }
+      if (shareGoogleDrive?.checked) {
+        ids.push('google-drive');
+      }
+      if (shareOneDrive?.checked) {
+        ids.push('onedrive');
+      }
+      if (shareDropbox?.checked) {
+        ids.push('dropbox');
+      }
+      if (shareEvernote?.checked) {
+        ids.push('evernote');
+      }
+      return ids;
+    }
+
+    if (shareSaveButton) {
+      shareSaveButton.addEventListener('click', () => {
+        saveShareTargets(collectShareTargetIds());
+        window.location.href = `/settings/share?message=${encodeURIComponent('共有先を保存しました')}`;
+      });
+    }
+
+    if (shareResetButton) {
+      shareResetButton.addEventListener('click', () => {
+        saveShareTargets(shareDefaultIds.slice());
+        syncShareTargetForm();
+      });
+    }
+
+    syncShareTargetForm();
+  })();
+</script>
+{% endblock %}

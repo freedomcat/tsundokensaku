@@ -13,7 +13,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from markupsafe import Markup, escape
@@ -28,6 +28,7 @@ from tsundokensaku.metadata import (
     metadata_for_pdf,
     get_scrapbox_project_url,
 )
+from tsundokensaku.pdf_export import default_output_path, parse_page_selection, render_selected_pages
 from tsundokensaku.tokenizer import tokenize_query
 
 
@@ -696,7 +697,7 @@ def settings_page(request: Request, message: str = "") -> HTMLResponse:
     library = get_library_items(books_dir, db_path)
     return templates.TemplateResponse(
         request,
-        "settings.html",
+        "settings_index.html",
         {
             "request": request,
             "books_dir": books_dir,
@@ -710,6 +711,52 @@ def settings_page(request: Request, message: str = "") -> HTMLResponse:
             "default_export_json": find_export_json(PROJECT_ROOT),
             "message": message,
             "index_progress": _get_index_progress(),
+        },
+    )
+
+
+@app.get("/settings/share", response_class=HTMLResponse)
+def settings_share_page(request: Request, message: str = "") -> HTMLResponse:
+    books_dir = get_books_dir()
+    db_path = get_db_path()
+    db_stats = get_db_stats(db_path)
+    library = get_library_items(books_dir, db_path)
+    return templates.TemplateResponse(
+        request,
+        "settings_share.html",
+        {
+            "request": request,
+            "books_dir": books_dir,
+            "db_path": db_path,
+            "pdf_count": library["pdf_count"],
+            "book_count": db_stats["book_count"],
+            "kindle_count": db_stats["kindle_count"],
+            "page_count": db_stats["page_count"],
+            "pdf_items": library["pdf_items"],
+            "kindle_items": library["kindle_items"],
+            "message": message,
+        },
+    )
+
+
+@app.get("/settings/info", response_class=HTMLResponse)
+def settings_info_page(request: Request, message: str = "") -> HTMLResponse:
+    books_dir = get_books_dir()
+    db_path = get_db_path()
+    db_stats = get_db_stats(db_path)
+    library = get_library_items(books_dir, db_path)
+    return templates.TemplateResponse(
+        request,
+        "settings_info.html",
+        {
+            "request": request,
+            "books_dir": books_dir,
+            "db_path": db_path,
+            "pdf_count": library["pdf_count"],
+            "book_count": db_stats["book_count"],
+            "kindle_count": db_stats["kindle_count"],
+            "page_count": db_stats["page_count"],
+            "message": message,
         },
     )
 
@@ -839,6 +886,38 @@ def open_pdf(pdf_path: str) -> FileResponse:
     if not candidate.is_file():
         raise HTTPException(status_code=404, detail="PDF not found")
     return FileResponse(candidate, media_type="application/pdf")
+
+
+@app.get("/export-pdf")
+def export_pdf(pdf_path: str, pages: str) -> Response:
+    books_dir = get_books_dir().resolve()
+    candidate = (books_dir / pdf_path).resolve()
+    try:
+        candidate.relative_to(books_dir)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="PDF not found") from exc
+    if not candidate.is_file():
+        raise HTTPException(status_code=404, detail="PDF not found")
+
+    page_spec = pages.strip()
+    if not page_spec:
+        raise HTTPException(status_code=400, detail="pages is required")
+
+    from pypdf import PdfReader
+
+    try:
+        page_numbers = parse_page_selection(page_spec, len(PdfReader(str(candidate)).pages))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    content = render_selected_pages(candidate, page_numbers)
+    filename = default_output_path(candidate, page_numbers).name
+    return Response(
+        content=content,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}",
+        },
+    )
 
 
 @app.get("/view/{pdf_path:path}", response_class=HTMLResponse)

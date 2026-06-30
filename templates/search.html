@@ -79,8 +79,10 @@
                         type="button"
                         class="button"
                         data-pdf-modal-url="{{ result.open_url }}"
+                        data-pdf-modal-path="{{ result.path or '' }}"
                         data-pdf-modal-title="{{ result.title }}{% if result.page_summary %} {{ result.page_summary }}{% elif result.page_number is not none %} p.{{ result.page_number }}{% endif %}"
                         data-pdf-modal-scrapbox-url="{{ result.scrapbox_url or '' }}"
+                        data-pdf-modal-pages="{{ result.page_numbers | join(',') }}"
                       >
                         {% if result.page_summary %}{{ result.page_summary }}を開く{% elif result.page_number is not none %}p.{{ result.page_number }}を開く{% else %}このページを開く{% endif %}
                       </button>

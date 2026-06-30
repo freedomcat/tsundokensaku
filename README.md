@@ -206,6 +206,20 @@ make reindex
 make search QUERY=SQLite
 ```
 
+## NotebookLM 用にページを抜き出す
+
+検索結果の PDF から、指定したページだけを抜き出した小さい PDF を作れます。NotebookLM に渡したいときに使う想定です。
+
+```bash
+PYTHONPATH=src python3 scripts/export_pdf_pages.py "books/tech/理科系の作文技術.pdf" --pages 11-15
+```
+
+出力先を変える場合は `--output` を使います。
+
+```bash
+PYTHONPATH=src python3 scripts/export_pdf_pages.py "books/tech/理科系の作文技術.pdf" --pages 11-15 --output /tmp/rika_pdf.pdf
+```
+
 直接使う場合:
 
 ```bash

@@ -4,9 +4,12 @@ from unittest.mock import patch
 from pathlib import Path
 import json
 
+from pypdf import PdfReader, PdfWriter
+
 from tsundokensaku.web import (
     build_scrapbox_page_url,
     build_search_scrapbox_body,
+    export_pdf,
     group_pdf_results,
     highlight_query,
     import_pdfs_from_directory,
@@ -130,6 +133,32 @@ class HighlightQueryTest(unittest.TestCase):
             self.assertEqual(imported, 2)
             self.assertEqual(imported_kindle, 1)
             self.assertTrue(cache_path.exists())
+
+    def test_export_pdf_returns_selected_pages(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            books_dir = root / "books" / "tech"
+            books_dir.mkdir(parents=True)
+            pdf_path = books_dir / "sample.pdf"
+
+            writer = PdfWriter()
+            for _ in range(4):
+                writer.add_blank_page(width=72, height=72)
+            with pdf_path.open("wb") as handle:
+                writer.write(handle)
+
+            with patch("tsundokensaku.web.get_books_dir", return_value=books_dir):
+                response = export_pdf(pdf_path="sample.pdf", pages="2-3")
+
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.headers["content-type"], "application/pdf")
+            self.assertIn("attachment", response.headers["content-disposition"])
+
+            with tempfile.NamedTemporaryFile(suffix=".pdf") as output:
+                output.write(response.body)
+                output.flush()
+                reader = PdfReader(output.name)
+                self.assertEqual(len(reader.pages), 2)
 
     def test_build_scrapbox_page_url_includes_prefilled_body(self) -> None:
         with patch.dict("os.environ", {"SCRAPBOX_BASE_URL": "https://scrapbox.io/custom-project"}, clear=False):
