@@ -8,6 +8,7 @@ __pycache__/
 *.pyo
 *.pyd
 .env
-data/index.db
+data/*
+!data/.gitkeep
 books/tech/*.pdf
 shino-books_imported.json
