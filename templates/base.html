@@ -567,6 +567,17 @@
         white-space: nowrap;
       }
 
+      .modal-panel:fullscreen {
+        width: 100vw;
+        height: 100vh;
+        max-width: none;
+        border-radius: 0;
+      }
+
+      .modal-panel:fullscreen .modal-viewport {
+        background: white;
+      }
+
       .modal-pages {
         display: inline-flex;
         align-items: center;
@@ -644,6 +655,7 @@
                 <input id="pdf-modal-pages" type="text" inputmode="numeric" placeholder="11-15,18">
               </label>
               <a class="button" id="pdf-modal-export" href="#" target="_blank" rel="noreferrer">切り出し</a>
+              <button type="button" id="pdf-modal-fullscreen">全画面</button>
               <details class="modal-share">
                 <summary class="modal-share-button" aria-label="シェア">
                   <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
@@ -663,10 +675,12 @@
     <script>
       (() => {
         const modal = document.getElementById('pdf-modal');
+        const modalPanel = modal?.querySelector('.modal-panel');
         const frame = document.getElementById('pdf-modal-frame');
         const title = document.getElementById('pdf-modal-title');
         const pagesInput = document.getElementById('pdf-modal-pages');
         const exportLink = document.getElementById('pdf-modal-export');
+        const fullscreenButton = document.getElementById('pdf-modal-fullscreen');
         const openLink = document.getElementById('pdf-modal-open');
         const shareMenu = document.getElementById('pdf-modal-share-menu');
         const scrapboxLink = document.getElementById('pdf-modal-scrapbox');
@@ -841,11 +855,47 @@
             .join('');
         }
 
-        function closeModal() {
+        function updateFullscreenButton() {
+          if (!fullscreenButton || !modalPanel) {
+            return;
+          }
+          fullscreenButton.textContent = document.fullscreenElement === modalPanel ? '全画面を終了' : '全画面';
+        }
+
+        async function exitFullscreenIfNeeded() {
+          if (document.fullscreenElement === modalPanel && document.exitFullscreen) {
+            try {
+              await document.exitFullscreen();
+            } catch (error) {
+              console.warn('Failed to exit fullscreen', error);
+            }
+          }
+        }
+
+        async function toggleFullscreen() {
+          if (!modalPanel) {
+            return;
+          }
+          if (document.fullscreenElement === modalPanel) {
+            await exitFullscreenIfNeeded();
+            return;
+          }
+          if (modalPanel.requestFullscreen) {
+            try {
+              await modalPanel.requestFullscreen();
+            } catch (error) {
+              console.warn('Failed to enter fullscreen', error);
+            }
+          }
+        }
+
+        async function closeModal() {
+          await exitFullscreenIfNeeded();
           modal.classList.remove('open');
           modal.setAttribute('aria-hidden', 'true');
           frame.src = 'about:blank';
           modal.querySelector('.modal-share')?.removeAttribute('open');
+          updateFullscreenButton();
         }
 
         function setScrapboxLink(url) {
@@ -893,6 +943,7 @@
           modal.querySelector('.modal-share').removeAttribute('open');
           modal.classList.add('open');
           modal.setAttribute('aria-hidden', 'false');
+          updateFullscreenButton();
         }
 
         document.addEventListener('click', (event) => {
@@ -912,15 +963,23 @@
 
         pagesInput.addEventListener('input', setExportLink);
 
-        closeButton.addEventListener('click', closeModal);
+        fullscreenButton?.addEventListener('click', () => {
+          void toggleFullscreen();
+        });
+        document.addEventListener('fullscreenchange', updateFullscreenButton);
+        updateFullscreenButton();
+
+        closeButton.addEventListener('click', () => {
+          void closeModal();
+        });
         modal.addEventListener('click', (event) => {
           if (event.target === modal) {
-            closeModal();
+            void closeModal();
           }
         });
         document.addEventListener('keydown', (event) => {
           if (event.key === 'Escape' && modal.classList.contains('open')) {
-            closeModal();
+            void closeModal();
           }
         });
       })();
