@@ -65,16 +65,41 @@ python -m tsundokensaku search "Python" --db data/index.db --limit 10
 
 検索結果には、書籍名、ページ番号、抜粋が表示されます。Kindle 本はページ番号なしで表示され、本ごとのメモは `book_notes` として一緒に検索対象になります。
 
-## Ubuntu と Docker で使う
+## WSL2 (Ubuntu) + Docker で使う
 
-Ubuntu 側では、プロジェクトを `~/work/tsundokensaku` に置いて起動する前提にしています。
+この例では、WSL2 上の Ubuntu で開発し、PDF は Windows 側に保存したまま使う構成を想定しています。
 
-PDF は Windows 側の `C:\tsundokensaku-books\tech` をそのまま read-only でマウントします。Ubuntu からは `/mnt/c/tsundokensaku-books/tech` として見えます。
+プロジェクトは次の場所に置きます。
 
-`make run` は、未変更のPDFを飛ばす差分インデックスとして動きます。削除済みPDFもDBから消します。
-`make reindex` は、`data/index.db` を消してから全件を作り直します。本文抽出や検索アルゴリズムを変えたときはこちらを使います。
+```text
+~/work/tsundokensaku
+```
 
-`BOOKS_DIR` で PDF のマウント元を、`DB_DIR` で DB の置き場所を変えられます。
+PDF は Windows 側の次の場所に置きます。
+
+```text
+C:\tsundokensaku-books\tech
+```
+
+WSL2 からは次のパスとして参照できます。
+
+```text
+/mnt/c/tsundokensaku-books/tech
+```
+
+Docker コンテナには、このディレクトリを read-only でマウントします。これにより、コンテナから誤って PDF を書き換えたり削除したりするのを防げます。
+
+`make run` は差分更新でインデックスを作ります。
+
+- 新しく追加された PDF をインデックスに登録します。
+- 更新された PDF だけ再解析します。
+- 削除された PDF はインデックスから削除します。
+
+普段は `make run` で十分です。
+
+`make reindex` は `data/index.db` を削除してから、全件を最初から作り直します。本文抽出方法や検索アルゴリズムを変えたときはこちらを使います。
+
+`BOOKS_DIR` には PDF を保存しているディレクトリを、`DB_DIR` には DB の置き場所を指定できます。
 
 ```bash
 BOOKS_DIR=/path/to/your/books/tech DB_DIR=./data make run
@@ -82,9 +107,9 @@ BOOKS_DIR=/path/to/your/books/tech DB_DIR=./data make run
 
 ## Web UI
 
-CLI を残したまま、ローカル用の Web UI も使えます。
+CLI に加えて、ローカル環境で使える Web UI も用意しています。
 
-常駐起動:
+### 起動
 
 ```bash
 .venv/bin/uvicorn tsundokensaku.web:app --reload
@@ -97,41 +122,77 @@ CLI を残したまま、ローカル用の Web UI も使えます。
 - `http://127.0.0.1:8000/`
 - `http://127.0.0.1:8000/settings`
 
-Web UI でも `BOOKS_DIR` と `DB_DIR` を使えます。
-設定をまとめて書くなら、まず `.env.example` を `.env` にコピーして使えます。
+### 設定
+
+設定は `.env` で管理できます。まずサンプルをコピーします。
 
 ```bash
 cp .env.example .env
 ```
 
-`.env` には `BOOKS_DIR`、`DB_DIR`、Scrapbox を使う場合は `SCRAPBOX_BASE_URL` などを入れます。
-`BASE_URL` や `SCRAPBOX_PROJECT_URL` も読みます。未設定なら Scrapbox リンクは表示しません。
-`/settings` では、`scrapbox.json` の再同期、PDF を追加するフォルダの確認、インデックス実行、PDF一覧、Kindle本一覧をまとめて見られます。
+主な設定項目は次のとおりです。
 
-検索範囲は `all` / `title` / `body` / `memo` の4種類です。
-- `all`: PDF のタイトルと本文、Kindle 本のタイトル、本ごとのメモ、Scrapbox のメモをまとめて検索します。
-- `title`: PDF と Kindle の書籍タイトルを検索します。
-- `body`: PDF の本文だけを検索します。
-- `memo`: Scrapbox のメモだけを検索します。
+| 項目 | 内容 |
+| --- | --- |
+| `BOOKS_DIR` | PDF を保存しているフォルダ |
+| `DB_DIR` | インデックス DB の保存先 |
+| `SCRAPBOX_BASE_URL` | Scrapbox 連携用 URL |
+| `BASE_URL` | アプリのベース URL |
+| `SCRAPBOX_PROJECT_URL` | Scrapbox プロジェクト URL |
 
-本文検索は、Sudachi で分かち書きした SQLite FTS5 を基本にしつつ、既存インデックスや未導入環境では `LIKE` も併用します。Sudachi が入っていない環境でも、簡易トークナイザにフォールバックします。
+Scrapbox 関連を設定しない場合は、Scrapbox リンクは表示しません。
+
+`Web UI` でも `BOOKS_DIR` と `DB_DIR` を使えます。
+
+### 設定画面
+
+`/settings` では次の操作ができます。
+
+- `scrapbox.json` の再同期
+- PDF を追加するフォルダの確認
+- インデックス実行
+- PDF 一覧の表示
+- Kindle 本一覧の表示
+
+### 検索
+
+検索対象は 4 種類から選べます。
+
+| 範囲 | 検索対象 |
+| --- | --- |
+| `all` | PDF のタイトルと本文、Kindle 本のタイトル、本ごとのメモ、Scrapbox のメモをまとめて検索します |
+| `title` | PDF と Kindle の書籍タイトルを検索します |
+| `body` | PDF の本文だけを検索します |
+| `memo` | Scrapbox のメモだけを検索します |
 
 CLI では `--scope`、Web UI では検索フォームのプルダウンで切り替えられます。
 
-検索結果の並び順は、画面上のセレクトボックスで切り替えられます。
+### 検索結果の並び順
+
+並び順は画面上のセレクトボックスで切り替えられます。
 
 - 関連度順: SQLite FTS5 の `rank` 順です。通常は検索語に近い結果が上に出ます。
 - 書名順: 書籍名で並べ、同じ書籍内ではページ番号順に表示します。
 - ページ番号順: ページ番号が小さい順に並べ、同じページ番号では書籍名順に表示します。
 - Scrapboxあり優先: `shino-books_*.json` から対応する Scrapbox ページが見つかった結果を先に表示します。
 
-インデックス作成:
+### 本文検索について
+
+本文検索は SQLite FTS5 を利用しています。
+
+日本語は Sudachi で分かち書きを行います。
+
+Sudachi がインストールされていない環境では簡易トークナイザに切り替わり、FTS5 を利用できない場合は `LIKE` 検索で動作します。
+
+### CLI
+
+インデックス更新:
 
 ```bash
 make run
 ```
 
-これは Web UI の起動ではなく、PDF を DB に取り込む処理です。`Ctrl+C` で止める常駐サーバーではありません。
+これは Web サーバーの起動ではなく、PDF をインデックスへ登録・更新するコマンドです。
 
 全件再構築:
 
@@ -160,11 +221,15 @@ py -3.13 -m tsundokensaku index --books-dir "C:\tsundokensaku-books\tech" --db "
 py -3.13 -m tsundokensaku search "SQLite" --db "C:\tsundokensaku-books\index.db"
 ```
 
-## Cosense/ScrapboxエクスポートからPDFを取り込む
+## Cosense/Scrapbox から技術書 PDF を取り込む
 
-蔵書が増えたら、Cosense/Scrapboxから新しいJSONをエクスポートして取り込みます。
+Cosense/Scrapbox のエクスポート JSON から、`#技術書` と `#Bookscan` が付いたページだけを拾い、Bookscan 由来の技術書 PDF を `books/tech/` に集める補助ツールです。
 
-この補助ツールは、JSON内の `pages` から `#Bookscan` と `#技術書` の両方を含むページを探し、Bookscanまたは `books.freedomcat.com` のPDFファイル名を推定して、`G:\マイドライブ\books` から `books/tech/` へコピーします。
+このスクリプトは、JSON 内の `pages` から両方のタグを含むページを探し、PDF の場所が書かれているページだけを取り込み対象にします。既定では `G:\マイドライブ\books` をコピー元、`books/tech/` をコピー先として使います。コピー元は `--source-root` で変更できます。PDF が見つからない場合は、コピーをスキップします。
+
+このツールは必須ではありません。PDF が `books/tech/` にあれば、`make run` や `python -m tsundokensaku index` でそのままインデックスできます。
+
+`--json` を省略した場合は、カレントディレクトリか `Downloads` にある最新の `shino-books_*.json` を使います。
 
 まずコピー予定だけ確認します。
 
@@ -172,33 +237,19 @@ py -3.13 -m tsundokensaku search "SQLite" --db "C:\tsundokensaku-books\index.db"
 python scripts/import_books_from_cosense.py --json "C:\Users\shino\Downloads\shino-books_20260625_001153.json" --dry-run
 ```
 
-問題なければコピーします。既に `books/tech/` にあるPDFは既定でスキップされるので、増えた分だけ取り込めます。
+問題なければコピーします。既に `books/tech/` にある PDF は既定でスキップされます。
 
 ```powershell
 python scripts/import_books_from_cosense.py --json "C:\Users\shino\Downloads\shino-books_20260625_001153.json"
 ```
 
-エクスポートJSONは、次のどちらかに置きます。
-
-- `C:\Users\shino\Downloads\shino-books_*.json`
-- プロジェクト直下、つまり `tsundokensaku\shino-books_*.json`
-
-おすすめは、今回のようにプロジェクト直下へコピーして残しておく運用です。どのJSONから取り込んだかがプロジェクト内で分かりやすくなります。
-
-プロジェクト直下に置いた場合は、最新の `shino-books_*.json` が自動で使われます。
-
-```powershell
-python scripts/import_books_from_cosense.py --dry-run --quiet
-python scripts/import_books_from_cosense.py
-```
-
-上書きしたい場合だけ `--overwrite` を付けます。
+上書きしたい場合だけ `--overwrite` を付けます。コピー後は `data/import_manifest.csv` に取り込み結果の一覧を出力します。
 
 ```powershell
 python scripts/import_books_from_cosense.py --overwrite
 ```
 
-取り込みスクリプトの正式な置き場所は `scripts/import_books_from_cosense.py` です。
+`--source-root` でコピー元、`--destination` でコピー先、`--manifest` で一覧ファイルの保存先を変えられます。
 
 Codexなどの制限付き実行環境で作業ツリー内にDBを作れない場合は、一時ディレクトリを指定してください。
 
