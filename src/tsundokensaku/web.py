@@ -36,6 +36,21 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_BOOKS_DIR = Path("books/tech")
 CONTAINER_BOOKS_DIR = Path("/books/tech")
 DEFAULT_DB_PATH = Path("data/index.db")
+
+
+def _find_project_root() -> Path:
+    candidates = [
+        Path(os.environ.get("TSUNDOKENSAKU_ROOT", "")) if os.environ.get("TSUNDOKENSAKU_ROOT") else None,
+        Path.cwd(),
+        Path(__file__).resolve().parents[2],
+    ]
+    for candidate in candidates:
+        if candidate and (candidate / "templates").is_dir() and (candidate / "static").is_dir():
+            return candidate
+    return Path(__file__).resolve().parents[2]
+
+
+PROJECT_ROOT = _find_project_root()
 TEMPLATES_DIR = PROJECT_ROOT / "templates"
 STATIC_DIR = PROJECT_ROOT / "static"
 SCRAPBOX_EXPORT_CACHE = PROJECT_ROOT / "shino-books_imported.json"

@@ -3,10 +3,25 @@ services:
     build:
       context: .
     image: tsundokensaku:dev
+    env_file:
+      - .env
+    entrypoint: ["python", "-m", "uvicorn", "tsundokensaku.web:app"]
+    command: ["--host", "0.0.0.0", "--port", "${WEB_PORT:-8000}"]
     working_dir: /app
+    ports:
+      - "${WEB_PORT:-8000}:${WEB_PORT:-8000}"
     volumes:
-      - ./:/app
-      - ${BOOKS_DIR:-/mnt/c/tsundokensaku-books/tech}:/books/tech:ro
-      - ${DB_DIR:-./data}:/app/data
+      - type: bind
+        source: .
+        target: /app
+      - type: bind
+        source: ${BOOKS_DIR:-/mnt/c/tsundokensaku-books/tech}
+        target: /books/tech
+        read_only: true
+      - type: bind
+        source: ${DB_DIR:-./data}
+        target: /app/data
     environment:
       PYTHONUNBUFFERED: "1"
+      BOOKS_DIR: /books/tech
+      DB_DIR: /app/data
