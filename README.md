@@ -2,6 +2,30 @@
 
 個人用の技術書PDF全文検索CLIです。MVPでは `books/tech/` 配下のPDFをページ単位で読み取り、SQLite FTS5に保存してキーワード検索します。追加課金なしで動きます。
 
+## クイックスタート
+
+1. 設定ファイルを作る。
+
+```bash
+cp .env.example .env
+```
+
+2. PDF を置く場所を用意する。既定は `books/tech/` です。
+
+3. Web UI を起動する。
+
+```bash
+.venv/bin/uvicorn tsundokensaku.web:app --host 0.0.0.0 --port 8000 --reload
+```
+
+4. ブラウザで開く。
+
+```text
+http://127.0.0.1:8000/
+```
+
+必要なら `.env` の `BOOKS_DIR` と `DB_DIR` を実環境に合わせて変更します。
+
 ## 最小構成
 
 ```text
