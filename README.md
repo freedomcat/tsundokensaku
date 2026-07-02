@@ -4,64 +4,38 @@
 
 ## クイックスタート
 
-1. 設定ファイルを作る。
+すでに clone 済みなら 1 は飛ばしてかまいません。
+
+1. リポジトリを取得して移動する。
+
+```bash
+git clone git@github.com:freedomcat/tsundokensaku.git
+cd tsundokensaku
+```
+
+2. 設定ファイルを作る。
 
 ```bash
 cp .env.example .env
 ```
 
-2. PDF を置く場所を用意する。既定は `books/tech/` です。
+3. PDF を置く場所を用意する。既定は `books/tech/` ですが、Docker では `.env` の `BOOKS_DIR` を使います。
 
-3. Web UI を起動する。
+4. Web UI を起動する。
 
 ```bash
-.venv/bin/uvicorn tsundokensaku.web:app --host 0.0.0.0 --port 8000 --reload
+docker compose up --build
 ```
 
-4. ブラウザで開く。
+5. ブラウザで開く。
 
 ```text
-http://127.0.0.1:8000/
+http://127.0.0.1:${WEB_PORT:-8000}/
 ```
 
-必要なら `.env` の `BOOKS_DIR` と `DB_DIR` を実環境に合わせて変更します。
+必要なら `.env` の `BOOKS_DIR`、`DB_DIR`、`WEB_PORT` を実環境に合わせて変更します。
 
-## 最小構成
-
-```text
-tsundokensaku/
-  books/tech/                 # 検索対象PDFを置く場所
-  scripts/
-    import_books_from_cosense.py # Cosense/ScrapboxエクスポートからPDFを取り込む補助ツール
-  src/tsundokensaku/
-    cli.py                    # CLI入口
-    database.py               # SQLite schema / 保存 / 検索
-    pdf_extract.py            # PDFページ単位テキスト抽出
-    indexer.py                # PDF探索とDB投入
-  tests/
-    test_database.py          # DBと検索の最小テスト
-  pyproject.toml
-  README.md
-```
-
-## 実装方針
-
-- PDFは `pypdf` でページ単位にテキスト抽出する。
-- SQLiteは標準ライブラリ `sqlite3` を使う。
-- 検索用にSQLite FTS5の仮想テーブルを作る。
-- CLIは `index` と `search` の2コマンドに絞る。
-- Web UIを後で追加しやすいように、CLIから直接DB処理を書かず、`indexer.py` と `database.py` に分ける。
-- テストしやすいように、DB処理は一時ファイルDBでも動く純粋な関数に寄せる。
-- `books` には `source_type` を持たせ、PDF と Kindle を同じ一覧で扱えるようにする。
-- Scrapbox 由来のキャッシュは `memos` に残し、本ごとの注記は `book_notes` に分ける。
-
-## 依存ライブラリ
-
-- `pypdf`: PDFからテキストを抽出するため。
-- `sudachipy` / `sudachidict_core`: 本文検索の分かち書きに使います。未導入でも、簡易フォールバックで動きます。
-- `sqlite3`: Python標準ライブラリ。FTS5対応SQLiteが必要。
-
-この環境のバンドルPythonではSQLite `3.50.4`、`pypdf 6.10.0` を確認済みです。
+設計メモは [ARCHITECTURE.md](ARCHITECTURE.md) に分けています。
 
 ## 使い方
 
@@ -69,14 +43,6 @@ PDFを置きます。
 
 ```powershell
 New-Item -ItemType Directory -Force books/tech
-```
-
-開発中はインストールせず、`PYTHONPATH` で実行できます。
-
-```powershell
-$env:PYTHONPATH="src"
-python -m tsundokensaku index
-python -m tsundokensaku search "SQLite"
 ```
 
 DBの保存先やPDFディレクトリを変える場合:
@@ -88,46 +54,6 @@ python -m tsundokensaku search "Python" --db data/index.db --limit 10
 ```
 
 検索結果には、書籍名、ページ番号、抜粋が表示されます。Kindle 本はページ番号なしで表示され、本ごとのメモは `book_notes` として一緒に検索対象になります。
-
-## WSL2 (Ubuntu) + Docker で使う
-
-この例では、WSL2 上の Ubuntu で開発し、PDF は Windows 側に保存したまま使う構成を想定しています。
-
-プロジェクトは次の場所に置きます。
-
-```text
-~/work/tsundokensaku
-```
-
-PDF は Windows 側の次の場所に置きます。
-
-```text
-C:\tsundokensaku-books\tech
-```
-
-WSL2 からは次のパスとして参照できます。
-
-```text
-/mnt/c/tsundokensaku-books/tech
-```
-
-Docker コンテナには、このディレクトリを read-only でマウントします。これにより、コンテナから誤って PDF を書き換えたり削除したりするのを防げます。
-
-`make run` は差分更新でインデックスを作ります。
-
-- 新しく追加された PDF をインデックスに登録します。
-- 更新された PDF だけ再解析します。
-- 削除された PDF はインデックスから削除します。
-
-普段は `make run` で十分です。
-
-`make reindex` は `data/index.db` を削除してから、全件を最初から作り直します。本文抽出方法や検索アルゴリズムを変えたときはこちらを使います。
-
-`BOOKS_DIR` には PDF を保存しているディレクトリを、`DB_DIR` には DB の置き場所を指定できます。
-
-```bash
-BOOKS_DIR=/path/to/your/books/tech DB_DIR=./data make run
-```
 
 ## Web UI
 
