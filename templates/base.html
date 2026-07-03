@@ -309,12 +309,15 @@
         align-items: start;
       }
 
+      .result-layout.no-cover {
+        grid-template-columns: 1fr;
+      }
+
       .result-cover {
         width: 96px;
       }
 
-      .cover-thumb,
-      .cover-placeholder {
+      .cover-thumb {
         width: 96px;
         height: 136px;
         border-radius: 12px;
@@ -619,8 +622,7 @@
         .viewer-frame { height: calc(100vh - 230px); min-height: 420px; }
         .result-layout { grid-template-columns: 72px 1fr; gap: 12px; }
         .result-cover,
-        .cover-thumb,
-        .cover-placeholder { width: 72px; height: 102px; }
+        .cover-thumb { width: 72px; height: 102px; }
         .progress { height: 12px; }
         .modal { padding: 8px; }
         .modal-panel { height: 96vh; border-radius: 10px; }

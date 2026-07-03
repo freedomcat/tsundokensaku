@@ -42,14 +42,12 @@
     <div class="results">
       {% for result in results %}
         <article class="result">
-          <div class="result-layout">
-            <div class="result-cover">
-              {% if result.cover_url %}
+          <div class="result-layout{% if not result.cover_url %} no-cover{% endif %}">
+            {% if result.cover_url %}
+              <div class="result-cover">
                 <img class="cover-thumb" src="{{ result.cover_url }}" alt="{{ result.title }} の書影" loading="lazy" referrerpolicy="no-referrer">
-              {% else %}
-                <div class="cover-placeholder" aria-hidden="true"></div>
-              {% endif %}
-            </div>
+              </div>
+            {% endif %}
             <div class="result-body">
               <h3>
                 {{ result.title | highlight_query(query) }}
