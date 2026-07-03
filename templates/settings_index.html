@@ -16,46 +16,53 @@
       <summary>PDF一覧</summary>
       <div class="card-body">
         {% if pdf_items %}
-          <table>
-            <thead>
-              <tr>
-                <th>PDF</th>
-                <th>状態</th>
-                <th>indexed_at</th>
-                <th>開く</th>
-                <th>Scrapbox</th>
-              </tr>
-            </thead>
-            <tbody>
-              {% for item in pdf_items %}
+          <form id="reindex-form" action="/settings/index" method="post">
+            <table>
+              <thead>
                 <tr>
-                  <td>{{ item.title }}</td>
-                  <td>{% if item.indexed %}<span class="pill">indexed</span>{% else %}<span class="muted">not indexed</span>{% endif %}</td>
-                  <td class="timestamp-cell"><code>{{ item.indexed_at | format_indexed_at }}</code></td>
-                  <td>
-                    {% if item.open_url %}
-                      <button
-                        type="button"
-                        class="button"
-                        data-pdf-modal-url="{{ item.open_url }}"
-                        data-pdf-modal-path="{{ item.path or '' }}"
-                        data-pdf-modal-title="{{ item.title }}"
-                        data-pdf-modal-scrapbox-url="{{ item.scrapbox_url or '' }}"
-                        data-pdf-modal-pages=""
-                      >
-                        Open
-                      </button>
-                    {% endif %}
-                  </td>
-                  <td>
-                    {% if item.scrapbox_url %}
-                      <a class="button" href="{{ item.scrapbox_url }}" target="_blank" rel="noreferrer">Scrapbox</a>
-                    {% endif %}
-                  </td>
+                  <th><input type="checkbox" id="reindex-select-all" aria-label="すべて選択"></th>
+                  <th>PDF</th>
+                  <th>状態</th>
+                  <th>indexed_at</th>
+                  <th>開く</th>
+                  <th>Scrapbox</th>
                 </tr>
-              {% endfor %}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {% for item in pdf_items %}
+                  <tr>
+                    <td><input type="checkbox" name="force" value="{{ item.path }}" class="reindex-checkbox"></td>
+                    <td>{{ item.title }}</td>
+                    <td>{% if item.indexed %}<span class="pill">indexed</span>{% else %}<span class="muted">not indexed</span>{% endif %}</td>
+                    <td class="timestamp-cell"><code>{{ item.indexed_at | format_indexed_at }}</code></td>
+                    <td>
+                      {% if item.open_url %}
+                        <button
+                          type="button"
+                          class="button"
+                          data-pdf-modal-url="{{ item.open_url }}"
+                          data-pdf-modal-path="{{ item.path or '' }}"
+                          data-pdf-modal-title="{{ item.title }}"
+                          data-pdf-modal-scrapbox-url="{{ item.scrapbox_url or '' }}"
+                          data-pdf-modal-pages=""
+                        >
+                          Open
+                        </button>
+                      {% endif %}
+                    </td>
+                    <td>
+                      {% if item.scrapbox_url %}
+                        <a class="button" href="{{ item.scrapbox_url }}" target="_blank" rel="noreferrer">Scrapbox</a>
+                      {% endif %}
+                    </td>
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+            <button class="button" type="submit" id="reindex-selected-button" disabled style="margin-top: 12px;">
+              選択したPDFを強制再インデックス
+            </button>
+          </form>
         {% else %}
           <p class="muted">PDF が見つかりません。</p>
         {% endif %}
@@ -195,6 +202,9 @@
     const scrapboxFileInput = document.getElementById('scrapbox-file-input');
     const scrapboxUploadStatus = document.getElementById('scrapbox-upload-status');
     const scrapboxUploadList = document.getElementById('scrapbox-upload-list');
+    const reindexSelectAll = document.getElementById('reindex-select-all');
+    const reindexCheckboxes = Array.from(document.querySelectorAll('.reindex-checkbox'));
+    const reindexSelectedButton = document.getElementById('reindex-selected-button');
 
     function setUploadStatus(text) {
       if (uploadStatus) {
@@ -392,6 +402,29 @@
 
     refresh();
     setInterval(refresh, 1000);
+
+    function updateReindexButton() {
+      if (!reindexSelectedButton) {
+        return;
+      }
+      reindexSelectedButton.disabled = !reindexCheckboxes.some((box) => box.checked);
+    }
+
+    if (reindexSelectAll) {
+      reindexSelectAll.addEventListener('change', () => {
+        reindexCheckboxes.forEach((box) => { box.checked = reindexSelectAll.checked; });
+        updateReindexButton();
+      });
+    }
+
+    reindexCheckboxes.forEach((box) => {
+      box.addEventListener('change', () => {
+        if (!box.checked && reindexSelectAll) {
+          reindexSelectAll.checked = false;
+        }
+        updateReindexButton();
+      });
+    });
   })();
 </script>
 {% endblock %}

@@ -12,7 +12,7 @@ from urllib.parse import unquote, urlparse
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -303,11 +303,16 @@ def _get_index_progress() -> dict[str, object]:
         return dict(INDEX_PROGRESS)
 
 
-def _run_index_job() -> None:
+def _run_index_job(force_paths: set[str] | None = None) -> None:
     books_dir = get_books_dir()
     db_path = get_db_path()
     try:
-        index_books(books_dir=books_dir, db_path=db_path, progress_callback=_set_index_progress)
+        index_books(
+            books_dir=books_dir,
+            db_path=db_path,
+            progress_callback=_set_index_progress,
+            force_paths=force_paths,
+        )
         _set_index_progress(
             False,
             int(_get_index_progress().get("current", 0)),
@@ -869,22 +874,25 @@ async def upload_pdf(request: Request, filename: str = "", relative_path: str = 
 
 
 @app.post("/settings/index")
-def run_index() -> RedirectResponse:
+def run_index(force: list[str] = Form(default=[])) -> RedirectResponse:
     progress = _get_index_progress()
     if bool(progress.get("running")):
         message = quote("インデックス実行中です")
         return RedirectResponse(url=f"/settings?message={message}", status_code=303)
 
+    force_paths = set(force) if force else None
     _set_index_progress(True, 0, 0, "", "準備中")
-    thread = threading.Thread(target=_run_index_job, daemon=True)
+    thread = threading.Thread(target=_run_index_job, args=(force_paths,), daemon=True)
     thread.start()
-    message = quote("インデックスを開始しました")
+    message = quote(
+        f"選択した {len(force_paths)} 件の強制再インデックスを開始しました" if force_paths else "インデックスを開始しました"
+    )
     return RedirectResponse(url=f"/settings?message={message}", status_code=303)
 
 
 @app.post("/manage/index")
-def manage_run_index() -> RedirectResponse:
-    return run_index()
+def manage_run_index(force: list[str] = Form(default=[])) -> RedirectResponse:
+    return run_index(force=force)
 
 
 @app.get("/settings/progress")

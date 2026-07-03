@@ -52,11 +52,13 @@ def index_books(
     books_dir: Path,
     db_path: Path,
     progress_callback: Callable[[bool, int, int, str, str], None] | None = None,
+    force_paths: set[str] | None = None,
 ) -> list[IndexedBook]:
     return index_books_with_progress(
         books_dir=books_dir,
         db_path=db_path,
         progress_callback=progress_callback,
+        force_paths=force_paths,
     )
 
 
@@ -65,6 +67,7 @@ def index_books_with_progress(
     books_dir: Path,
     db_path: Path,
     progress_callback: Callable[[bool, int, int, str, str], None] | None = None,
+    force_paths: set[str] | None = None,
 ) -> list[IndexedBook]:
     connection = connect(db_path)
     initialize(connection)
@@ -89,15 +92,23 @@ def index_books_with_progress(
         stat = pdf_path.stat()
         title = pdf_path.stem
         existing = get_book(connection, path=pdf_path)
+        forced = force_paths is not None and (
+            str(pdf_path) in force_paths or str(pdf_path.resolve()) in force_paths
+        )
 
-        if existing and existing.size_bytes == stat.st_size and existing.modified_at == stat.st_mtime:
+        if (
+            not forced
+            and existing
+            and existing.size_bytes == stat.st_size
+            and existing.modified_at == stat.st_mtime
+        ):
             skipped += 1
             _emit_progress(index, total, f"SKIP {title}")
             if progress_callback is not None:
                 progress_callback(True, index, total, title, f"SKIP {title}")
             continue
 
-        action = "UPDATE" if existing else "INDEX"
+        action = "FORCE" if forced and existing else ("UPDATE" if existing else "INDEX")
         _emit_progress(index, total, f"{action} {title}")
         if progress_callback is not None:
             progress_callback(True, index, total, title, f"{action} {title}")
