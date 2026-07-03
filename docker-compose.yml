@@ -17,7 +17,6 @@ services:
       - type: bind
         source: ${BOOKS_DIR:-/mnt/c/tsundokensaku-books/tech}
         target: /books/tech
-        read_only: true
       - type: bind
         source: ${DB_DIR:-./data}
         target: /app/data
