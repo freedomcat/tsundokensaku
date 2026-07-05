@@ -11,7 +11,7 @@ from tsundokensaku.metadata import find_export_json, load_metadata_by_pdf_stem, 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
-DEFAULT_BOOKS_DIR = Path("books/tech")
+DEFAULT_BOOKS_DIR = Path("data/books")
 DEFAULT_DB_PATH = Path("data/index.db")
 
 
@@ -79,7 +79,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="tsundokensaku")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    index_parser = subparsers.add_parser("index", help="Index PDFs under books/tech.")
+    index_parser = subparsers.add_parser("index", help="Index PDFs under data/books.")
     index_parser.add_argument("--books-dir", type=Path, default=DEFAULT_BOOKS_DIR)
     index_parser.add_argument("--db", type=Path, default=DEFAULT_DB_PATH)
 

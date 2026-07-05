@@ -3,8 +3,6 @@ services:
     build:
       context: .
     image: tsundokensaku:dev
-    env_file:
-      - .env
     entrypoint: ["python", "-m", "uvicorn", "tsundokensaku.web:app"]
     command: ["--host", "0.0.0.0", "--port", "${WEB_PORT:-8000}"]
     working_dir: /app
@@ -15,12 +13,16 @@ services:
         source: .
         target: /app
       - type: bind
-        source: ${BOOKS_DIR:-/mnt/c/tsundokensaku-books/tech}
-        target: /books/tech
+        source: ${BOOKS_DIR:-./data/books}
+        target: /data/books
       - type: bind
         source: ${DB_DIR:-./data}
         target: /app/data
     environment:
       PYTHONUNBUFFERED: "1"
-      BOOKS_DIR: /books/tech
+      BOOKS_DIR: /data/books
       DB_DIR: /app/data
+      SCRAPBOX_BASE_URL: ${SCRAPBOX_BASE_URL:-}
+      BASE_URL: ${BASE_URL:-}
+      SCRAPBOX_PROJECT_URL: ${SCRAPBOX_PROJECT_URL:-}
+      SCRAPBOX_EXPORT_JSON: ${SCRAPBOX_EXPORT_JSON:-}

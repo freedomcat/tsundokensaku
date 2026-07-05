@@ -6,7 +6,13 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 .venv/
+*.pdf
+*.json
+.env
 data/index.db
+data/*.db
+data/*.sqlite
+data/*.sqlite3
 *.pyc
 *.pyo
 *.pyd

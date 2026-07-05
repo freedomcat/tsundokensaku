@@ -35,8 +35,8 @@ from tsundokensaku.tokenizer import tokenize_query
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_BOOKS_DIR = Path("books/tech")
-CONTAINER_BOOKS_DIR = Path("/books/tech")
+DEFAULT_BOOKS_DIR = Path("data/books")
+CONTAINER_BOOKS_DIRS = (Path("/data/books"), Path("/books/tech"))
 DEFAULT_DB_PATH = Path("data/index.db")
 
 
@@ -362,10 +362,11 @@ def resolve_pdf_path(pdf_path: str | Path, books_dir: Path) -> Path | None:
     candidates: list[Path] = []
     if candidate.is_absolute():
         candidates.append(candidate)
-        try:
-            candidates.append(books_root / candidate.relative_to(CONTAINER_BOOKS_DIR))
-        except ValueError:
-            pass
+        for container_books_dir in CONTAINER_BOOKS_DIRS:
+            try:
+                candidates.append(books_root / candidate.relative_to(container_books_dir))
+            except ValueError:
+                pass
     else:
         candidates.append(books_root / candidate)
 

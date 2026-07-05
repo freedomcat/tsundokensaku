@@ -233,8 +233,8 @@ def metadata_for_pdf(path: str | Path, metadata_by_stem: dict[str, BookMetadata]
     if stem in metadata_by_stem:
         return metadata_by_stem[stem]
 
-    # DB paths created inside Docker often use /books/tech/..., while the Web UI
-    # may resolve files through a WSL path. The basename is stable across both.
+    # DB paths created inside Docker may use /data/books/... or legacy /books/tech/...,
+    # while the Web UI may resolve files through a WSL path. The basename is stable.
     name_stem = Path(Path(path).name).stem
     if name_stem in metadata_by_stem:
         return metadata_by_stem[name_stem]

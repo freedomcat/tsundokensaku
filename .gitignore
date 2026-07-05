@@ -10,5 +10,12 @@ __pycache__/
 .env
 data/*
 !data/.gitkeep
+!data/books/
+!data/books/*.pdf
 books/tech/*.pdf
+books/tech/**/*.pdf
+*.sqlite
+*.sqlite3
+*.db
+shino-books_*.json
 shino-books_imported.json

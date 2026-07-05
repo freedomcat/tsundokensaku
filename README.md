@@ -1,239 +1,186 @@
 # つんどけんさく
 
-個人用の技術書PDF全文検索CLIです。MVPでは `books/tech/` 配下のPDFをページ単位で読み取り、SQLite FTS5に保存してキーワード検索します。表示ではPDFメタデータやScrapbox由来の書籍タイトルを優先し、ファイル名は最終手段として扱います。追加課金なしで動きます。
+つんどけんさくは、積読になっている技術書PDFをローカルで全文検索し、必要なページをすぐ開いたり、NotebookLMなどに渡すためにページ単位で切り出したりできる、個人蔵書の検索ハブです。
+
+Web UIを中心に、PDF本文、Kindle本情報、Scrapbox/Cosenseメモを横断して検索できます。PDFはページ単位でインデックスされ、検索結果から該当ページをモーダルで開けます。必要なページだけを新しいPDFとして切り出すこともできます。
+
+外部AI APIや有料クラウド検索サービスに依存せず、SQLite FTS5を使ってローカルで動きます。追加課金なしで、自分のPC上の蔵書を検索資産として活用することを目的にしています。CLIもありますが、主役はWeb UIです。
+
+## 提出用の動作確認
+
+前提:
+
+- Docker
+- Docker Compose
+
+起動:
+
+```bash
+docker compose up --build
+```
+
+ブラウザで開きます。
+
+```text
+http://localhost:8000
+```
+
+このリポジトリには、動作確認用サンプルとして山形浩生さんによるオープンソース関連文書のPDFを `data/books/` に同梱しています。起動後、Web UIの設定画面でインデックスを実行すると、すぐにPDF本文検索とPDFモーダル表示を試せます。
+
+初回はPDFの本文抽出とインデックス作成に時間がかかります。すでにインデックス済みのPDFは差分判定されるため、次回以降はすぐ検索できます。
+
+### 同梱サンプルPDFについて
+
+同梱しているPDFは次の3点です。
+
+| ファイル | 文書 | 配布元 |
+| --- | --- | --- |
+| `data/books/cathedral.pdf` | 伽藍とバザール | <https://cruel.org/freeware/cathedral.pdf> |
+| `data/books/noosphere.pdf` | ノウアスフィアの開墾 | <https://cruel.org/freeware/noosphere.pdf> |
+| `data/books/magicpot.pdf` | 魔法のおなべ | <https://cruel.org/freeware/magicpot.pdf> |
+
+これらは山形浩生さんのサイト <https://cruel.org/> で公開されているPDFです。`cathedral.pdf` と `noosphere.pdf` の本文には、版権表示を残す限り商業利用を含む複製・再配布が自由に認められる旨の記載があります。また、山形浩生さんのリンクポリシー <https://cruel.org/linkpolicy.html> では、丸ごとコピーする場合も文章自体を変えず、元URL・版権・転載自由であることを明記すればよい旨が示されています。
+
+このリポジトリでは、サンプルPDFを内容変更せずに同梱し、元URLと版権者が分かる形で表示しています。自分の蔵書PDFを追加する場合は、`data/books/` に置いてからWeb UIの設定画面でインデックスを実行してください。Publicリポジトリに追加するPDFは、再配布できるものだけにしてください。
 
 ## クイックスタート
 
 すでに clone 済みなら 1 は飛ばしてかまいません。
 
-1. リポジトリを取得して移動する。
+1. リポジトリを取得して移動します。
 
 ```bash
 git clone git@github.com:freedomcat/tsundokensaku.git
 cd tsundokensaku
 ```
 
-2. 設定ファイルを作る。
+2. 必要に応じて設定ファイルを作ります。`.env` がなくても既定値で起動できます。
 
 ```bash
 cp .env.example .env
 ```
 
-3. PDF を置く場所を用意する。既定は `books/tech/` ですが、Docker では `.env` の `BOOKS_DIR` を使います。
+3. PDFを置くディレクトリを確認します。サンプルPDFは最初から `data/books/` に入っています。
 
-4. Web UI を起動する。
+```bash
+ls data/books
+```
+
+4. Web UIを起動します。
 
 ```bash
 docker compose up --build
 ```
 
-5. ブラウザで開く。
+5. `http://localhost:8000` を開きます。
 
-```text
-http://127.0.0.1:${WEB_PORT:-8000}/
-```
+## 環境変数
 
-必要なら `.env` の `BOOKS_DIR`、`DB_DIR`、`WEB_PORT` を実環境に合わせて変更します。
+`.env` はリポジトリに含めません。必要な場合だけ `.env.example` をコピーして使います。
 
-設計メモは [ARCHITECTURE.md](ARCHITECTURE.md) に分けています。
+| 項目 | 既定値 | 内容 |
+| --- | --- | --- |
+| `BOOKS_DIR` | `./data/books` | ホスト側のPDF保存ディレクトリ |
+| `DB_DIR` | `./data` | SQLite DBの保存先ディレクトリ |
+| `WEB_PORT` | `8000` | Web UIの公開ポート |
+| `SCRAPBOX_BASE_URL` | 空 | Scrapbox/Cosense連携用URL |
+| `BASE_URL` | 空 | Scrapbox/Cosense連携用URLの別名 |
+| `SCRAPBOX_PROJECT_URL` | 空 | Scrapbox/CosenseプロジェクトURL |
+| `SCRAPBOX_EXPORT_JSON` | 空 | Scrapbox/CosenseエクスポートJSONのパス |
 
-## 使い方
+Scrapbox/Cosense関連を設定しない場合、メモ検索やScrapboxリンク表示は使わずにPDF検索だけで動きます。
 
-PDFを置きます。
+## Web UIでできること
 
-```powershell
-New-Item -ItemType Directory -Force books/tech
-```
+- PDF本文の全文検索
+- Kindle本情報の検索
+- Scrapbox/Cosenseメモの検索
+- 検索結果からPDFの該当ページを表示
+- 必要ページだけのPDF切り出し
+- PDF、Kindle本、メモを横断した検索
 
-DBの保存先やPDFディレクトリを変える場合:
-
-```powershell
-$env:PYTHONPATH="src"
-python -m tsundokensaku index --books-dir books/tech --db data/index.db
-python -m tsundokensaku search "Python" --db data/index.db --limit 10
-```
-
-検索結果には、書籍タイトル、ページ番号、抜粋が表示されます。Kindle 本はページ番号なしで表示され、本ごとのメモは `book_notes` として一緒に検索対象になります。
-
-## Web UI
-
-CLI に加えて、ローカル環境で使える Web UI も用意しています。
-
-### 起動
-
-```bash
-.venv/bin/uvicorn tsundokensaku.web:app --reload
-```
-
-`Ctrl+C` で終了します。
-
-ブラウザで次の画面を開きます。
-
-- `http://127.0.0.1:8000/`
-- `http://127.0.0.1:8000/settings`
-
-### 設定
-
-設定は `.env` で管理できます。まずサンプルをコピーします。
-
-```bash
-cp .env.example .env
-```
-
-主な設定項目は次のとおりです。
-
-| 項目 | 内容 |
-| --- | --- |
-| `BOOKS_DIR` | PDF を保存しているフォルダ |
-| `DB_DIR` | インデックス DB の保存先 |
-| `SCRAPBOX_BASE_URL` | Scrapbox 連携用 URL |
-| `BASE_URL` | アプリのベース URL |
-| `SCRAPBOX_PROJECT_URL` | Scrapbox プロジェクト URL |
-
-Scrapbox 関連を設定しない場合は、Scrapbox リンクは表示しません。
-
-`Web UI` でも `BOOKS_DIR` と `DB_DIR` を使えます。
-
-### 設定画面
-
-`/settings` では次の操作ができます。
-
-- `scrapbox.json` の再同期
-- PDF を追加するフォルダの確認
-- インデックス実行
-- PDF 書籍一覧の表示
-- Kindle 本一覧の表示
-
-### 検索
-
-検索対象は 4 種類から選べます。
+検索対象は画面上で切り替えられます。
 
 | 範囲 | 検索対象 |
 | --- | --- |
-| `all` | PDF のタイトルと本文、Kindle 本のタイトル、本ごとのメモ、Scrapbox のメモをまとめて検索します |
-| `title` | PDF と Kindle の書籍タイトルを検索します |
-| `body` | PDF の本文だけを検索します |
-| `memo` | Scrapbox のメモだけを検索します |
+| `all` | PDFのタイトルと本文、Kindle本のタイトル、本ごとのメモ、Scrapbox/Cosenseメモ |
+| `title` | PDFとKindleの書籍タイトル |
+| `body` | PDF本文 |
+| `memo` | Scrapbox/Cosenseメモ |
 
-CLI では `--scope`、Web UI では検索フォームのプルダウンで切り替えられます。
+本文検索はSQLite FTS5を使います。日本語はSudachiで分かち書きし、部分一致の救済にはFTS5 trigramインデックスを使います。
 
-### 検索結果の並び順
+## NotebookLM用にページを抜き出す
 
-並び順は画面上のセレクトボックスで切り替えられます。
-
-- 関連度順: SQLite FTS5 の `rank` 順です。通常は検索語に近い結果が上に出ます。
-- 書名順: 書籍名で並べ、同じ書籍内ではページ番号順に表示します。
-- ページ番号順: ページ番号が小さい順に並べ、同じページ番号では書籍名順に表示します。
-- Scrapboxあり優先: `shino-books_*.json` から対応する Scrapbox ページが見つかった結果を先に表示します。
-
-### 本文検索について
-
-本文検索は SQLite FTS5 を利用しています。
-
-日本語は Sudachi で分かち書きを行います。
-
-Sudachi がインストールされていない環境では簡易トークナイザに切り替わり、FTS5 を利用できない場合は `LIKE` 検索で動作します。
-
-### CLI
-
-インデックス更新:
+検索結果のPDFから、指定したページだけを抜き出した小さいPDFを作れます。NotebookLMなどに必要なページだけ渡したいときに使います。
 
 ```bash
-make run
-```
-
-これは Web サーバーの起動ではなく、PDF をインデックスへ登録・更新するコマンドです。
-
-全件再構築:
-
-```bash
-make reindex
-```
-
-検索:
-
-```bash
-make search QUERY=SQLite
-```
-
-## NotebookLM 用にページを抜き出す
-
-検索結果の PDF から、指定したページだけを抜き出した小さい PDF を作れます。NotebookLM に渡したいときに使う想定です。
-
-```bash
-PYTHONPATH=src python3 scripts/export_pdf_pages.py "books/tech/理科系の作文技術.pdf" --pages 11-15
+PYTHONPATH=src python3 scripts/export_pdf_pages.py "data/books/cathedral.pdf" --pages 11-15
 ```
 
 出力先を変える場合は `--output` を使います。
 
 ```bash
-PYTHONPATH=src python3 scripts/export_pdf_pages.py "books/tech/理科系の作文技術.pdf" --pages 11-15 --output /tmp/rika_pdf.pdf
+PYTHONPATH=src python3 scripts/export_pdf_pages.py "data/books/cathedral.pdf" --pages 11-15 --output /tmp/sample_pages.pdf
 ```
 
-直接使う場合:
+## CLI
+
+Web UIが主役ですが、CLIでもインデックス作成と検索ができます。
 
 ```bash
-./scripts/dev.sh index --books-dir /books/tech --db data/index.db
-./scripts/dev.sh search --db data/index.db SQLite
+python -m tsundokensaku index --books-dir data/books --db data/index.db
+python -m tsundokensaku search "SQLite" --db data/index.db --limit 10
 ```
 
-Windowsセキュリティがプロジェクト配下への書き込みを止める場合は、PDF置き場とDBを短い固定パスに置くのが安定です。
+Makefile経由でも実行できます。
 
-```powershell
-$env:PYTHONPATH="src"
-py -3.13 -m tsundokensaku index --books-dir "C:\tsundokensaku-books\tech" --db "C:\tsundokensaku-books\index.db"
-py -3.13 -m tsundokensaku search "SQLite" --db "C:\tsundokensaku-books\index.db"
+```bash
+make run
+make search QUERY=SQLite
 ```
 
-## Cosense/Scrapbox から技術書 PDF を取り込む
+## Cosense/Scrapbox連携
 
-Cosense/Scrapbox のエクスポート JSON から、`#技術書` と `#Bookscan` が付いたページだけを拾い、Bookscan 由来の技術書 PDF を `books/tech/` に集める補助ツールです。
+Cosense/ScrapboxのエクスポートJSONを取り込むと、メモ検索やPDFに対応するScrapboxページへのリンク表示ができます。
 
-このスクリプトは、JSON 内の `pages` から両方のタグを含むページを探し、PDF の場所が書かれているページだけを取り込み対象にします。既定では `G:\マイドライブ\books` をコピー元、`books/tech/` をコピー先として使います。コピー元は `--source-root` で変更できます。PDF が見つからない場合は、コピーをスキップします。
+Web UIの設定画面からJSONをアップロードできます。CLI補助ツールを使う場合は、次のように実行します。
 
-このツールは必須ではありません。PDF が `books/tech/` にあれば、`make run` や `python -m tsundokensaku index` でそのままインデックスできます。
-
-`--json` を省略した場合は、カレントディレクトリか `Downloads` にある最新の `shino-books_*.json` を使います。
-
-まずコピー予定だけ確認します。
-
-```powershell
-python scripts/import_books_from_cosense.py --json "C:\Users\shino\Downloads\shino-books_20260625_001153.json" --dry-run
+```bash
+python scripts/import_books_from_cosense.py --json path/to/export.json --dry-run
+python scripts/import_books_from_cosense.py --json path/to/export.json
 ```
 
-問題なければコピーします。既に `books/tech/` にある PDF は既定でスキップされます。
+この補助ツールは必須ではありません。PDFが `data/books/` にあれば、Web UIからそのままインデックスできます。
 
-```powershell
-python scripts/import_books_from_cosense.py --json "C:\Users\shino\Downloads\shino-books_20260625_001153.json"
-```
+## 公開前チェック
 
-上書きしたい場合だけ `--overwrite` を付けます。コピー後は `data/import_manifest.csv` に取り込み結果の一覧を出力します。
+Publicリポジトリとして提出する場合は、次を含めないでください。
 
-```powershell
-python scripts/import_books_from_cosense.py --overwrite
-```
+- Bookscanなどで電子化したPDF
+- 個人のScrapbox/Cosense export JSON実データ
+- Kindleの個人情報を含むデータ
+- `.env`
+- APIキー、トークン、認証情報
+- 個人メールアドレス
+- 個人環境に強く依存した絶対パス
 
-`--source-root` でコピー元、`--destination` でコピー先、`--manifest` で一覧ファイルの保存先を変えられます。
-
-Codexなどの制限付き実行環境で作業ツリー内にDBを作れない場合は、一時ディレクトリを指定してください。
-
-```powershell
-$env:PYTHONPATH="src"
-python -m tsundokensaku index --db "$env:TEMP\tsundokensaku-index.db"
-python -m tsundokensaku search "SQLite" --db "$env:TEMP\tsundokensaku-index.db"
-```
+このリポジトリでは `.gitignore` と `.dockerignore` で、PDF、実DB、`.env`、個人用JSONを除外しています。
 
 ## テスト
 
-```powershell
-$env:PYTHONPATH="src"
+```bash
 python -m unittest discover -s tests
 ```
+
+## 設計メモ
+
+詳細な設計メモは [ARCHITECTURE.md](ARCHITECTURE.md) に分けています。
 
 ## 今回あえて入れていないもの
 
 - AI要約
 - ベクトル検索
-- 差分インデックスの細かい最適化
+- RAG
 
-まずはローカルで確実に動く全文検索の芯を作るためです。
+提出時点では、ローカルで安定して動く全文検索と、AIに渡すページを自分の蔵書から探して切り出す体験を優先しています。
