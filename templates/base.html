@@ -708,7 +708,7 @@
         const scrapboxLink = document.getElementById('pdf-modal-scrapbox');
         const closeButton = document.getElementById('pdf-modal-close');
         let currentPdfPath = '';
-        const exportSaveDirConfigured = {{ 'true' if pdf_export_save_dir() else 'false' }};
+        const exportSaveDirConfigured = {{ 'true' if is_pdf_export_save_dir_configured is defined and is_pdf_export_save_dir_configured() else 'false' }};
 
         const SHARE_TARGETS = [
           {

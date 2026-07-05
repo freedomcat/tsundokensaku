@@ -20,6 +20,7 @@ services:
         target: /app/data
     environment:
       PYTHONUNBUFFERED: "1"
+      PYTHONPATH: /app/src
       BOOKS_DIR: /data/books
       DB_DIR: /app/data
       PDF_EXPORT_SAVE_DIR: ${PDF_EXPORT_SAVE_DIR:-}

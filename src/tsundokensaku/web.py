@@ -98,6 +98,7 @@ def get_pdf_export_save_dir() -> Path | None:
 
 
 templates.env.globals["pdf_export_save_dir"] = get_pdf_export_save_dir
+templates.env.globals["is_pdf_export_save_dir_configured"] = lambda: get_pdf_export_save_dir() is not None
 
 
 def get_metadata() -> dict[str, BookMetadata]:
