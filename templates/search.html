@@ -1,6 +1,17 @@
 {% extends "base.html" %}
 {% block title %}つんどけんさく | 検索{% endblock %}
 {% block content %}
+{% if index_progress.running %}
+<section class="card">
+  <p style="margin: 0;">
+    <span class="pill">インデックス処理中</span>
+    <span class="muted" style="margin-left: 8px;">
+      {{ index_progress.message or '処理中' }}
+      {% if index_progress.title %} / 対象: {{ index_progress.title }}{% endif %}
+    </span>
+  </p>
+</section>
+{% endif %}
 <section class="card">
   <form class="search" action="/search" method="get">
     <input type="search" name="q" value="{{ query }}" placeholder="キーワードを入力して検索">
@@ -100,7 +111,9 @@
                   {% endif %}
                 </div>
               {% endif %}
-              <div class="meta"><code>{{ result.path or result.title }}</code></div>
+              {% if result.kind != 'pdf' %}
+                <div class="meta"><code>{{ result.path or result.title }}</code></div>
+              {% endif %}
               <div class="snippet">{{ result.snippet | highlight_query(query) }}</div>
               {% if result.hit_count and result.hit_count > 1 %}
                 <div class="muted" style="margin-top: 8px;">{{ result.hit_count }}件をまとめています</div>

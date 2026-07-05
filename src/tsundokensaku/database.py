@@ -7,14 +7,22 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from tsundokensaku.metadata import KindleBookMetadata, ScrapboxMemo, load_kindle_books, load_scrapbox_memos
-from tsundokensaku.tokenizer import build_excerpt, prepare_index_text, tokenize_query
+from tsundokensaku.metadata import (
+    BookMetadata,
+    KindleBookMetadata,
+    ScrapboxMemo,
+    load_kindle_books,
+    load_scrapbox_memos,
+    resolve_pdf_display_title,
+)
+from tsundokensaku.tokenizer import build_excerpt, normalize_trigram_text, prepare_index_text, tokenize_query
 
 
 @dataclass(frozen=True)
 class BookRecord:
     id: int
     path: str | None
+    filename: str | None
     source_type: str
     external_id: str | None
     title: str
@@ -71,6 +79,8 @@ def connect(db_path: Path) -> sqlite3.Connection:
             '--db "C:\\tsundokensaku-books\\index.db"'
         ) from exc
     connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA journal_mode = WAL")
+    connection.execute("PRAGMA busy_timeout = 5000")
     return connection
 
 
@@ -80,6 +90,7 @@ def initialize(connection: sqlite3.Connection) -> None:
     _ensure_pages_schema(connection)
     _ensure_memo_schema(connection)
     _ensure_book_notes_schema(connection)
+    _ensure_search_schema(connection)
     connection.execute("PRAGMA foreign_keys = ON")
     connection.commit()
 
@@ -88,6 +99,7 @@ def upsert_book(
     connection: sqlite3.Connection,
     *,
     path: Path | None = None,
+    filename: str | None = None,
     title: str,
     size_bytes: int | None = None,
     modified_at: float | None = None,
@@ -103,11 +115,13 @@ def upsert_book(
             raise ValueError("PDF books require a path.")
         if size_bytes is None or modified_at is None:
             raise ValueError("PDF books require size_bytes and modified_at.")
+        filename = filename or path.name
         connection.execute(
             """
-            INSERT INTO books(path, source_type, external_id, title, size_bytes, modified_at, indexed_at, open_url, scrapbox_url, cover_url)
-            VALUES (?, 'pdf', NULL, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO books(path, filename, source_type, external_id, title, size_bytes, modified_at, indexed_at, open_url, scrapbox_url, cover_url)
+            VALUES (?, ?, 'pdf', NULL, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(path) DO UPDATE SET
+                filename = excluded.filename,
                 title = excluded.title,
                 size_bytes = excluded.size_bytes,
                 modified_at = excluded.modified_at,
@@ -116,7 +130,7 @@ def upsert_book(
                 scrapbox_url = excluded.scrapbox_url,
                 cover_url = excluded.cover_url
             """,
-            (str(path), title, size_bytes, modified_at, indexed_at, open_url, scrapbox_url, cover_url),
+            (str(path), filename, title, size_bytes, modified_at, indexed_at, open_url, scrapbox_url, cover_url),
         )
         row = connection.execute("SELECT id FROM books WHERE path = ?", (str(path),)).fetchone()
     else:
@@ -124,9 +138,10 @@ def upsert_book(
             raise ValueError("Non-PDF books require an external_id.")
         connection.execute(
             """
-            INSERT INTO books(path, source_type, external_id, title, size_bytes, modified_at, indexed_at, open_url, scrapbox_url, cover_url)
-            VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO books(path, filename, source_type, external_id, title, size_bytes, modified_at, indexed_at, open_url, scrapbox_url, cover_url)
+            VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(source_type, external_id) DO UPDATE SET
+                filename = excluded.filename,
                 title = excluded.title,
                 size_bytes = excluded.size_bytes,
                 modified_at = excluded.modified_at,
@@ -135,7 +150,7 @@ def upsert_book(
                 scrapbox_url = excluded.scrapbox_url,
                 cover_url = excluded.cover_url
             """,
-            (source_type, external_id, title, size_bytes, modified_at, indexed_at, open_url, scrapbox_url, cover_url),
+            (filename, source_type, external_id, title, size_bytes, modified_at, indexed_at, open_url, scrapbox_url, cover_url),
         )
         row = connection.execute(
             "SELECT id FROM books WHERE source_type = ? AND external_id = ?",
@@ -143,16 +158,19 @@ def upsert_book(
         ).fetchone()
     if row is None:
         raise RuntimeError(f"Failed to store book: {path or external_id}")
+    _replace_book_search_index(connection, book_id=int(row["id"]), title=title)
     return int(row["id"])
 
 
 def get_book(connection: sqlite3.Connection, *, path: Path) -> BookRecord | None:
+    columns = _table_columns(connection, "books")
+    filename_expr = "filename" if "filename" in columns else "NULL AS filename"
     row = connection.execute(
         """
-        SELECT id, path, source_type, external_id, title, size_bytes, modified_at, indexed_at, open_url, scrapbox_url, cover_url
+        SELECT id, path, {filename_expr}, source_type, external_id, title, size_bytes, modified_at, indexed_at, open_url, scrapbox_url, cover_url
         FROM books
         WHERE path = ?
-        """,
+        """.format(filename_expr=filename_expr),
         (str(path),),
     ).fetchone()
     if row is None:
@@ -160,6 +178,7 @@ def get_book(connection: sqlite3.Connection, *, path: Path) -> BookRecord | None
     return BookRecord(
         id=int(row["id"]),
         path=str(row["path"]) if row["path"] is not None else None,
+        filename=str(row["filename"]) if "filename" in row.keys() and row["filename"] is not None else None,
         source_type=str(row["source_type"]),
         external_id=str(row["external_id"]) if row["external_id"] is not None else None,
         title=str(row["title"]),
@@ -173,17 +192,20 @@ def get_book(connection: sqlite3.Connection, *, path: Path) -> BookRecord | None
 
 
 def list_books(connection: sqlite3.Connection) -> list[BookRecord]:
+    columns = _table_columns(connection, "books")
+    filename_expr = "filename" if "filename" in columns else "NULL AS filename"
     rows = connection.execute(
         """
-        SELECT id, path, source_type, external_id, title, size_bytes, modified_at, indexed_at, open_url, scrapbox_url, cover_url
+        SELECT id, path, {filename_expr}, source_type, external_id, title, size_bytes, modified_at, indexed_at, open_url, scrapbox_url, cover_url
         FROM books
         ORDER BY title, path
-        """
+        """.format(filename_expr=filename_expr)
     ).fetchall()
     return [
         BookRecord(
             id=int(row["id"]),
             path=str(row["path"]) if row["path"] is not None else None,
+            filename=str(row["filename"]) if "filename" in row.keys() and row["filename"] is not None else None,
             source_type=str(row["source_type"]),
             external_id=str(row["external_id"]) if row["external_id"] is not None else None,
             title=str(row["title"]),
@@ -199,6 +221,12 @@ def list_books(connection: sqlite3.Connection) -> list[BookRecord]:
 
 
 def delete_book(connection: sqlite3.Connection, *, book_id: int) -> None:
+    page_ids = [int(row["id"]) for row in connection.execute("SELECT id FROM pages WHERE book_id = ?", (book_id,)).fetchall()]
+    if page_ids:
+        placeholders = ",".join("?" for _ in page_ids)
+        connection.execute(f"DELETE FROM pages_fts WHERE rowid IN ({placeholders})", page_ids)
+        connection.execute(f"DELETE FROM pages_trigram WHERE rowid IN ({placeholders})", page_ids)
+    connection.execute("DELETE FROM books_fts WHERE rowid = ?", (book_id,))
     connection.execute("DELETE FROM books WHERE id = ?", (book_id,))
     connection.commit()
 
@@ -210,8 +238,12 @@ def replace_pages(
     title: str,
     pages: Iterable[PageRecord],
 ) -> int:
+    page_ids = [int(row["id"]) for row in connection.execute("SELECT id FROM pages WHERE book_id = ?", (book_id,)).fetchall()]
+    if page_ids:
+        placeholders = ",".join("?" for _ in page_ids)
+        connection.execute(f"DELETE FROM pages_fts WHERE rowid IN ({placeholders})", page_ids)
+        connection.execute(f"DELETE FROM pages_trigram WHERE rowid IN ({placeholders})", page_ids)
     connection.execute("DELETE FROM pages WHERE book_id = ?", (book_id,))
-    connection.execute("DELETE FROM pages_fts WHERE book_id = ?", (book_id,))
 
     count = 0
     for page in pages:
@@ -230,6 +262,16 @@ def replace_pages(
                 page.page_number,
                 prepare_index_text(title),
                 prepare_index_text(page.text),
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO pages_trigram(rowid, text)
+            VALUES (?, ?)
+            """,
+            (
+                cursor.lastrowid,
+                normalize_trigram_text(page.text),
             ),
         )
         count += 1
@@ -359,6 +401,49 @@ def sync_kindle_books(connection: sqlite3.Connection, export_json: Path | None, 
     return len(kindle_books)
 
 
+def refresh_pdf_titles(connection: sqlite3.Connection, metadata_by_stem: dict[str, BookMetadata]) -> int:
+    rows = connection.execute(
+        """
+        SELECT id, path, title, filename
+        FROM books
+        WHERE source_type = 'pdf' AND path IS NOT NULL
+        ORDER BY id
+        """
+    ).fetchall()
+
+    updated = 0
+    for row in rows:
+        path = str(row["path"])
+        resolved_title = resolve_pdf_display_title(path, metadata_by_stem)
+        resolved_filename = Path(path).name
+        current_title = str(row["title"])
+        current_filename = str(row["filename"]) if "filename" in row.keys() and row["filename"] is not None else None
+
+        if current_title == resolved_title and current_filename == resolved_filename:
+            continue
+
+        connection.execute(
+            "UPDATE books SET title = ?, filename = ? WHERE id = ?",
+            (resolved_title, resolved_filename, int(row["id"])),
+        )
+        _replace_book_search_index(connection, book_id=int(row["id"]), title=resolved_title)
+
+        if current_title != resolved_title:
+            pages = [
+                PageRecord(page_number=int(page_row["page_number"]), text=str(page_row["text"]))
+                for page_row in connection.execute(
+                    "SELECT page_number, text FROM pages WHERE book_id = ? ORDER BY page_number",
+                    (int(row["id"]),),
+                ).fetchall()
+            ]
+            replace_pages(connection, book_id=int(row["id"]), title=resolved_title, pages=pages)
+        updated += 1
+
+    if updated:
+        connection.commit()
+    return updated
+
+
 def search(
     connection: sqlite3.Connection,
     query: str,
@@ -421,6 +506,46 @@ def search(
 
 
 def _search_title(connection: sqlite3.Connection, query: str, *, limit: int) -> list[sqlite3.Row]:
+    rows: list[sqlite3.Row] = []
+    try:
+        rows.extend(_search_title_fts(connection, query, limit=limit))
+    except sqlite3.OperationalError:
+        pass
+    try:
+        rows.extend(_search_title_like(connection, query, limit=limit))
+    except sqlite3.OperationalError:
+        pass
+    return _dedupe_rows(rows, limit=limit)
+
+
+def _search_title_fts(connection: sqlite3.Connection, query: str, *, limit: int) -> list[sqlite3.Row]:
+    fts_query = _to_fts_query(query)
+    if not fts_query:
+        return []
+    return list(
+        connection.execute(
+            """
+            SELECT
+                b.title,
+                COALESCE(b.path, b.external_id, b.title) AS path,
+                CASE WHEN b.source_type = 'pdf' THEN 1 ELSE NULL END AS page_number,
+                b.title AS snippet,
+                b.source_type AS kind,
+                b.open_url,
+                b.scrapbox_url,
+                b.cover_url
+            FROM books_fts AS f
+            JOIN books AS b ON b.id = f.rowid
+            WHERE books_fts MATCH ?
+            ORDER BY rank
+            LIMIT ?
+            """,
+            (fts_query, limit),
+        )
+    )
+
+
+def _search_title_like(connection: sqlite3.Connection, query: str, *, limit: int) -> list[sqlite3.Row]:
     terms = _query_terms(query)
     if not terms:
         return []
@@ -455,7 +580,7 @@ def _search_body(connection: sqlite3.Connection, query: str, *, limit: int) -> l
     except sqlite3.OperationalError:
         pass
     try:
-        rows.extend(_search_body_like(connection, query, limit=limit))
+        rows.extend(_search_body_trigram(connection, query, limit=limit))
     except sqlite3.OperationalError:
         pass
     return _dedupe_rows(rows, limit=limit)
@@ -484,8 +609,10 @@ def _search_body_fts(connection: sqlite3.Connection, query: str, *, limit: int) 
     )
 
 
-def _search_body_like(connection: sqlite3.Connection, query: str, *, limit: int) -> list[sqlite3.Row]:
-    like_query = f"%{query}%"
+def _search_body_trigram(connection: sqlite3.Connection, query: str, *, limit: int) -> list[sqlite3.Row]:
+    trigram_query = _to_trigram_query(query)
+    if not trigram_query:
+        return []
     return list(
         connection.execute(
             """
@@ -495,13 +622,14 @@ def _search_body_like(connection: sqlite3.Connection, query: str, *, limit: int)
                 p.page_number,
                 p.text AS body_text,
                 'pdf' AS kind
-            FROM pages AS p
+            FROM pages_trigram AS t
+            JOIN pages AS p ON p.id = t.rowid
             JOIN books AS b ON b.id = p.book_id
-            WHERE p.text LIKE ?
+            WHERE pages_trigram MATCH ?
             ORDER BY b.title, p.page_number
             LIMIT ?
             """,
-            (like_query, limit),
+            (trigram_query, limit),
         )
     )
 
@@ -635,6 +763,14 @@ def _to_scoped_fts_query(query: str, *, column: str) -> str:
     return " ".join(prefixed_terms)
 
 
+def _to_trigram_query(query: str) -> str:
+    normalized = normalize_trigram_text(query)
+    if len(normalized) < 3:
+        return ""
+    escaped = normalized.replace('"', '""')
+    return f'"{escaped}"'
+
+
 def _clean_snippet(snippet: str) -> str:
     one_line = " ".join(snippet.split())
     if len(one_line) <= 240:
@@ -663,6 +799,7 @@ def _ensure_books_schema(connection: sqlite3.Connection) -> None:
             CREATE TABLE books (
                 id INTEGER PRIMARY KEY,
                 path TEXT UNIQUE,
+                filename TEXT,
                 source_type TEXT NOT NULL DEFAULT 'pdf' CHECK (source_type IN ('pdf', 'kindle')),
                 external_id TEXT,
                 title TEXT NOT NULL,
@@ -679,6 +816,9 @@ def _ensure_books_schema(connection: sqlite3.Connection) -> None:
         return
 
     if "source_type" in columns and "external_id" in columns:
+        if "filename" not in columns:
+            connection.execute("ALTER TABLE books ADD COLUMN filename TEXT")
+            _backfill_book_filenames(connection)
         for column in ("open_url", "scrapbox_url", "cover_url"):
             if column not in columns:
                 connection.execute(f"ALTER TABLE books ADD COLUMN {column} TEXT")
@@ -689,6 +829,7 @@ def _ensure_books_schema(connection: sqlite3.Connection) -> None:
         CREATE TABLE books_new (
             id INTEGER PRIMARY KEY,
             path TEXT UNIQUE,
+            filename TEXT,
             source_type TEXT NOT NULL DEFAULT 'pdf' CHECK (source_type IN ('pdf', 'kindle')),
             external_id TEXT,
             title TEXT NOT NULL,
@@ -701,10 +842,11 @@ def _ensure_books_schema(connection: sqlite3.Connection) -> None:
             UNIQUE(source_type, external_id)
         );
 
-        INSERT INTO books_new(id, path, source_type, external_id, title, size_bytes, modified_at, indexed_at, open_url, scrapbox_url, cover_url)
+        INSERT INTO books_new(id, path, filename, source_type, external_id, title, size_bytes, modified_at, indexed_at, open_url, scrapbox_url, cover_url)
         SELECT
             id,
             path,
+            NULL,
             'pdf',
             NULL,
             title,
@@ -720,6 +862,7 @@ def _ensure_books_schema(connection: sqlite3.Connection) -> None:
         ALTER TABLE books_new RENAME TO books;
         """
     )
+    _backfill_book_filenames(connection)
 
 
 def _ensure_pages_schema(connection: sqlite3.Connection) -> None:
@@ -740,8 +883,14 @@ def _ensure_pages_schema(connection: sqlite3.Connection) -> None:
             text,
             tokenize = 'unicode61'
         );
+
+        CREATE VIRTUAL TABLE IF NOT EXISTS pages_trigram USING fts5(
+            text,
+            tokenize = 'trigram'
+        );
         """
     )
+    _backfill_pages_trigram(connection)
 
 
 def _ensure_memo_schema(connection: sqlite3.Connection) -> None:
@@ -795,6 +944,72 @@ def _ensure_book_notes_schema(connection: sqlite3.Connection) -> None:
     )
 
 
+def _ensure_search_schema(connection: sqlite3.Connection) -> None:
+    connection.executescript(
+        """
+        CREATE VIRTUAL TABLE IF NOT EXISTS books_fts USING fts5(
+            book_id UNINDEXED,
+            title,
+            tokenize = 'unicode61'
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_books_title_path ON books(title, path);
+        CREATE INDEX IF NOT EXISTS idx_memos_title ON memos(title);
+        CREATE INDEX IF NOT EXISTS idx_book_notes_book_title ON book_notes(book_id, title);
+        """
+    )
+    has_books_fts_rows = connection.execute("SELECT 1 FROM books_fts LIMIT 1").fetchone() is not None
+    if not has_books_fts_rows:
+        connection.execute(
+            """
+            INSERT INTO books_fts(rowid, book_id, title)
+            SELECT id, id, title
+            FROM books
+            """
+        )
+
+
+def _replace_book_search_index(connection: sqlite3.Connection, *, book_id: int, title: str) -> None:
+    connection.execute("DELETE FROM books_fts WHERE rowid = ?", (book_id,))
+    connection.execute(
+        """
+        INSERT INTO books_fts(rowid, book_id, title)
+        VALUES (?, ?, ?)
+        """,
+        (book_id, book_id, prepare_index_text(title)),
+    )
+
+
+def _backfill_pages_trigram(connection: sqlite3.Connection) -> None:
+    has_rows = connection.execute("SELECT 1 FROM pages_trigram LIMIT 1").fetchone() is not None
+    if has_rows:
+        return
+    rows = connection.execute("SELECT id, text FROM pages ORDER BY id").fetchall()
+    for row in rows:
+        connection.execute(
+            """
+            INSERT INTO pages_trigram(rowid, text)
+            VALUES (?, ?)
+            """,
+            (int(row["id"]), normalize_trigram_text(str(row["text"]))),
+        )
+
+
+def _backfill_book_filenames(connection: sqlite3.Connection) -> None:
+    rows = connection.execute(
+        """
+        SELECT id, path
+        FROM books
+        WHERE source_type = 'pdf' AND path IS NOT NULL AND (filename IS NULL OR filename = '')
+        """
+    ).fetchall()
+    for row in rows:
+        connection.execute(
+            "UPDATE books SET filename = ? WHERE id = ?",
+            (Path(str(row["path"])).name, int(row["id"])),
+        )
+
+
 def _dedupe_rows(rows: list[sqlite3.Row], *, limit: int) -> list[sqlite3.Row]:
     unique_rows: list[sqlite3.Row] = []
     seen: set[tuple[object, ...]] = set()
@@ -805,25 +1020,6 @@ def _dedupe_rows(rows: list[sqlite3.Row], *, limit: int) -> list[sqlite3.Row]:
             row["path"],
             row["page_number"] if "page_number" in row.keys() else None,
             row["snippet"] if "snippet" in row.keys() else row["body_text"] if "body_text" in row.keys() else None,
-        )
-        if key in seen:
-            continue
-        seen.add(key)
-        unique_rows.append(row)
-        if len(unique_rows) >= limit:
-            break
-    return unique_rows
-
-
-def _dedupe_rows(rows: list[sqlite3.Row], *, limit: int) -> list[sqlite3.Row]:
-    unique_rows: list[sqlite3.Row] = []
-    seen: set[tuple[object, ...]] = set()
-    for row in rows:
-        key = (
-            row["title"],
-            row["path"],
-            row["page_number"],
-            row["body_text"] if "body_text" in row.keys() else row["snippet"] if "snippet" in row.keys() else None,
         )
         if key in seen:
             continue

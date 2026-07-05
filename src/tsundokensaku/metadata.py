@@ -244,6 +244,55 @@ def metadata_for_pdf(path: str | Path, metadata_by_stem: dict[str, BookMetadata]
     return metadata_by_stem.get(extract_book_id(name_stem))
 
 
+def _normalize_title_value(value: object) -> str | None:
+    if value is None:
+        return None
+    text = re.sub(r"\s+", " ", str(value).replace("\x00", " ")).strip()
+    return text or None
+
+
+def read_pdf_metadata_title(pdf_path: str | Path) -> str | None:
+    try:
+        from pypdf import PdfReader
+    except Exception:
+        return None
+
+    try:
+        reader = PdfReader(str(pdf_path))
+    except Exception:
+        return None
+
+    metadata = getattr(reader, "metadata", None)
+    if metadata is None:
+        return None
+
+    title = getattr(metadata, "title", None)
+    if not title and hasattr(metadata, "get"):
+        title = metadata.get("/Title") or metadata.get("Title")
+    return _normalize_title_value(title)
+
+
+def sanitize_pdf_filename_title(filename: str | Path) -> str:
+    stem = Path(filename).stem
+    cleaned = stem.replace("_", " ").replace("-", " ")
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" .")
+    return cleaned or "book"
+
+
+def resolve_pdf_display_title(path: str | Path, metadata_by_stem: dict[str, BookMetadata]) -> str:
+    pdf_title = read_pdf_metadata_title(path)
+    if pdf_title:
+        return pdf_title
+
+    metadata = metadata_for_pdf(path, metadata_by_stem)
+    if metadata:
+        metadata_title = _normalize_title_value(metadata.title)
+        if metadata_title:
+            return metadata_title
+
+    return sanitize_pdf_filename_title(path)
+
+
 def decode_repeatedly(value: str) -> str:
     current = value
     while True:

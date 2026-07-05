@@ -4,7 +4,16 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from tsundokensaku.metadata import load_kindle_books, load_metadata_by_pdf_stem, load_scrapbox_memos, metadata_for_pdf
+from pypdf import PdfWriter
+
+from tsundokensaku.metadata import (
+    BookMetadata,
+    load_kindle_books,
+    load_metadata_by_pdf_stem,
+    load_scrapbox_memos,
+    metadata_for_pdf,
+    resolve_pdf_display_title,
+)
 
 
 class MetadataTest(unittest.TestCase):
@@ -147,6 +156,37 @@ class MetadataTest(unittest.TestCase):
             self.assertEqual(books[0].amazon_url, "https://www.amazon.co.jp/dp/B004XQX4K0")
             self.assertEqual(books[0].scrapbox_url, "https://scrapbox.io/custom-project/JavaScript%3A%20The%20Definitive%20Guide")
             self.assertEqual(books[0].cover_url, "https://m.media-amazon.com/images/I/cover.jpg")
+
+    def test_resolve_pdf_display_title_prefers_pdf_metadata_then_scrapbox_then_filename(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            pdf_with_metadata = root / "metadata.pdf"
+            pdf_without_metadata = root / "scrapbox.pdf"
+            pdf_fallback = root / "Programming_Ruby_5th_ja.pdf"
+
+            writer = PdfWriter()
+            writer.add_blank_page(width=72, height=72)
+            writer.add_metadata({"/Title": "PDF Metadata Title"})
+            with pdf_with_metadata.open("wb") as handle:
+                writer.write(handle)
+
+            writer = PdfWriter()
+            writer.add_blank_page(width=72, height=72)
+            with pdf_without_metadata.open("wb") as handle:
+                writer.write(handle)
+
+            writer = PdfWriter()
+            writer.add_blank_page(width=72, height=72)
+            with pdf_fallback.open("wb") as handle:
+                writer.write(handle)
+
+            metadata_by_stem = {
+                "scrapbox": BookMetadata(title="Scrapbox Title"),
+            }
+
+            self.assertEqual(resolve_pdf_display_title(pdf_with_metadata, metadata_by_stem), "PDF Metadata Title")
+            self.assertEqual(resolve_pdf_display_title(pdf_without_metadata, metadata_by_stem), "Scrapbox Title")
+            self.assertEqual(resolve_pdf_display_title(pdf_fallback, {}), "Programming Ruby 5th ja")
 
 
 if __name__ == "__main__":

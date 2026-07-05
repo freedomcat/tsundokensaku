@@ -15,6 +15,7 @@ from tsundokensaku.database import (
     replace_pages,
     upsert_book,
 )
+from tsundokensaku.metadata import find_export_json, load_metadata_by_pdf_stem, resolve_pdf_display_title
 from tsundokensaku.pdf_extract import extract_pages
 
 
@@ -71,6 +72,7 @@ def index_books_with_progress(
 ) -> list[IndexedBook]:
     connection = connect(db_path)
     initialize(connection)
+    metadata_by_stem = load_metadata_by_pdf_stem(find_export_json(Path(__file__).resolve().parents[2]))
 
     indexed: list[IndexedBook] = []
     pdf_paths = list(find_pdfs(books_dir))
@@ -90,7 +92,7 @@ def index_books_with_progress(
 
     for index, pdf_path in enumerate(pdf_paths, start=1):
         stat = pdf_path.stat()
-        title = pdf_path.stem
+        title = resolve_pdf_display_title(pdf_path, metadata_by_stem)
         existing = get_book(connection, path=pdf_path)
         forced = force_paths is not None and (
             str(pdf_path) in force_paths or str(pdf_path.resolve()) in force_paths
@@ -101,6 +103,8 @@ def index_books_with_progress(
             and existing
             and existing.size_bytes == stat.st_size
             and existing.modified_at == stat.st_mtime
+            and existing.title == title
+            and existing.filename == pdf_path.name
         ):
             skipped += 1
             _emit_progress(index, total, f"SKIP {title}")
@@ -116,6 +120,7 @@ def index_books_with_progress(
         book_id = upsert_book(
             connection,
             path=pdf_path,
+            filename=pdf_path.name,
             title=title,
             size_bytes=stat.st_size,
             modified_at=stat.st_mtime,

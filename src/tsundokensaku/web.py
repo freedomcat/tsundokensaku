@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import logging
 import os
 import re
 import sqlite3
 import threading
+import time
 import shutil
 from datetime import datetime, timezone
 from typing import Iterable
@@ -54,6 +56,13 @@ PROJECT_ROOT = _find_project_root()
 TEMPLATES_DIR = PROJECT_ROOT / "templates"
 STATIC_DIR = PROJECT_ROOT / "static"
 SCRAPBOX_EXPORT_CACHE = PROJECT_ROOT / "shino-books_imported.json"
+LOGGER = logging.getLogger(__name__)
+LOGGER.setLevel(logging.INFO)
+if not LOGGER.handlers:
+    handler = logging.StreamHandler()
+    handler.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
+    LOGGER.addHandler(handler)
+LOGGER.propagate = False
 
 INDEX_PROGRESS_LOCK = threading.Lock()
 INDEX_PROGRESS: dict[str, object] = {
@@ -154,6 +163,7 @@ def build_search_result_rows(
     rendered_results: list[dict[str, object]] = []
     for result in results:
         if result.kind == "pdf":
+            metadata = metadata_for_pdf(result.path or "", metadata_by_stem)
             rendered_results.append(
                 {
                     "title": result.title,
@@ -168,17 +178,9 @@ def build_search_result_rows(
                     else [],
                     "snippet": result.snippet,
                     "kind": "pdf",
-                    "cover_url": (
-                        metadata.cover_url
-                        if (metadata := metadata_for_pdf(result.path or "", metadata_by_stem))
-                        else None
-                    ),
+                    "cover_url": metadata.cover_url if metadata else None,
                     "open_url": raw_pdf_url(result.path or "", books_dir, page_number=result.page_number),
-                    "scrapbox_url": (
-                        metadata.scrapbox_url
-                        if (metadata := metadata_for_pdf(result.path or "", metadata_by_stem))
-                        else None
-                    ),
+                    "scrapbox_url": metadata.scrapbox_url if metadata else None,
                 }
             )
         else:
@@ -229,17 +231,41 @@ def build_search_result_rows_context(
     books_dir: Path,
     db_path: Path,
 ) -> tuple[list[dict[str, object]], str]:
+    started_at = time.perf_counter()
     export_json = find_export_json(PROJECT_ROOT)
+    metadata_started_at = time.perf_counter()
     metadata_by_stem = load_metadata_by_pdf_stem(export_json)
+    metadata_elapsed = time.perf_counter() - metadata_started_at
     normalized_scope = scope if scope in SEARCH_SCOPES else "all"
     connection = connect(db_path)
+    search_elapsed = 0.0
     try:
+        search_started_at = time.perf_counter()
         results = search(connection, query, limit=50, scope=normalized_scope) if query.strip() else []
+        search_elapsed = time.perf_counter() - search_started_at
     finally:
         connection.close()
 
+    render_started_at = time.perf_counter()
     rendered_results = build_search_result_rows(results, books_dir=books_dir, metadata_by_stem=metadata_by_stem)
+    render_elapsed = time.perf_counter() - render_started_at
+    finalize_started_at = time.perf_counter()
     rendered_results = finalize_search_result_rows(rendered_results, books_dir=books_dir, sort=sort, group=group)
+    finalize_elapsed = time.perf_counter() - finalize_started_at
+    total_elapsed = time.perf_counter() - started_at
+    LOGGER.info(
+        "search timing query=%r scope=%s sort=%s group=%s metadata=%.4fs db=%.4fs render=%.4fs finalize=%.4fs total=%.4fs results=%d",
+        query,
+        normalized_scope,
+        sort,
+        group,
+        metadata_elapsed,
+        search_elapsed,
+        render_elapsed,
+        finalize_elapsed,
+        total_elapsed,
+        len(rendered_results),
+    )
     return rendered_results, normalized_scope
 
 
@@ -269,10 +295,9 @@ def build_search_scrapbox_body(
         title = str(result.get("title") or "")
         kind = str(result.get("kind") or "")
         snippet = str(result.get("snippet") or "").replace("\n", " ").strip()
-        path = str(result.get("path") or "")
         scrapbox_url = str(result.get("scrapbox_url") or "")
         page_summary = str(result.get("page_summary") or "")
-        detail_parts = [part for part in [kind, page_summary, path] if part]
+        detail_parts = [part for part in [kind, page_summary] if part]
         lines.append(f"{index}. {title}")
         if detail_parts:
             lines.append(f"   {' / '.join(detail_parts)}")
@@ -463,13 +488,14 @@ def get_db_stats(db_path: Path) -> dict[str, int]:
 
 def get_library_items(books_dir: Path, db_path: Path) -> dict[str, object]:
     metadata_by_stem = get_metadata()
-    pdf_paths = list(find_pdfs(books_dir))
     indexed_paths: dict[str, str] = {}
     kindle_books = []
+    pdf_books: list[object] = []
     connection = None
     try:
         connection = connect(db_path)
         books = list_books(connection)
+        pdf_books = [book for book in books if book.source_type == "pdf" and book.path is not None]
         indexed_paths = {
             str(row["path"]): str(row["indexed_at"])
             for row in connection.execute(
@@ -485,23 +511,15 @@ def get_library_items(books_dir: Path, db_path: Path) -> dict[str, object]:
 
     pdf_items = [
         {
-            "path": pdf_path,
-            "title": pdf_path.stem,
-            "indexed": str(pdf_path.resolve()) in indexed_paths or str(pdf_path) in indexed_paths,
-            "indexed_at": indexed_paths.get(str(pdf_path.resolve())) or indexed_paths.get(str(pdf_path)),
-            "cover_url": (
-                metadata.cover_url
-                if (metadata := metadata_for_pdf(pdf_path, metadata_by_stem))
-                else None
-            ),
-            "open_url": raw_pdf_url(pdf_path, books_dir),
-            "scrapbox_url": (
-                metadata.scrapbox_url
-                if (metadata := metadata_for_pdf(pdf_path, metadata_by_stem))
-                else None
-            ),
+            "path": Path(book.path) if book.path is not None else None,
+            "title": book.title,
+            "indexed": True,
+            "indexed_at": indexed_paths.get(str(book.path)),
+            "cover_url": (metadata.cover_url if (metadata := metadata_for_pdf(book.path or "", metadata_by_stem)) else None),
+            "open_url": raw_pdf_url(book.path or "", books_dir),
+            "scrapbox_url": metadata.scrapbox_url if metadata else None,
         }
-        for pdf_path in pdf_paths
+        for book in pdf_books
     ]
     kindle_items = [
         {
@@ -516,7 +534,7 @@ def get_library_items(books_dir: Path, db_path: Path) -> dict[str, object]:
         for book in kindle_books
     ]
     return {
-        "pdf_count": len(pdf_paths),
+        "pdf_count": len(pdf_books),
         "books_count": len(books),
         "kindle_count": len(kindle_books),
         "pdf_items": pdf_items,
@@ -629,6 +647,7 @@ def home(request: Request) -> HTMLResponse:
             "page_count": db_stats["page_count"],
             "scope": "all",
             "scope_options": SEARCH_SCOPE_OPTIONS,
+            "index_progress": _get_index_progress(),
         },
     )
 
@@ -677,6 +696,7 @@ def search_page(
             "results": rendered_results,
             "result_count": len(rendered_results),
             "scrapbox_export_url": scrapbox_export_url,
+            "index_progress": _get_index_progress(),
         },
     )
 

@@ -57,6 +57,7 @@ def _render_results(results, metadata_by_stem: dict[str, object]) -> list[dict[s
                 }
             )
         else:
+            metadata = metadata_for_pdf(result.path or "", metadata_by_stem)
             rendered_results.append(
                 {
                     "kind": "pdf",
@@ -68,11 +69,7 @@ def _render_results(results, metadata_by_stem: dict[str, object]) -> list[dict[s
                     "snippet": result.snippet,
                     "path": result.path,
                     "open_url": result.path,
-                    "scrapbox_url": (
-                        metadata.scrapbox_url
-                        if (metadata := metadata_for_pdf(result.path or "", metadata_by_stem))
-                        else None
-                    ),
+                    "scrapbox_url": metadata.scrapbox_url if metadata else None,
                 }
             )
     return rendered_results
@@ -128,7 +125,8 @@ def main(argv: list[str] | None = None) -> int:
                 header = f"[{kind_label}] {result['title']}"
             print(header)
             print(f"  {result['snippet']}")
-            print(f"  {result['open_url'] or result['path']}")
+            if result["kind"] != "pdf":
+                print(f"  {result['open_url'] or result['path']}")
             print()
         return 0
 

@@ -64,6 +64,10 @@ def prepare_query_text(query: str) -> str:
     return ""
 
 
+def normalize_trigram_text(text: str) -> str:
+    return normalize_text(text).casefold()
+
+
 def build_excerpt(text: str, query: str, *, width: int = 120) -> str:
     display_text = normalize_text(text)
     if not display_text:

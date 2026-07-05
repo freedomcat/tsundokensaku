@@ -191,6 +191,7 @@ class HighlightQueryTest(unittest.TestCase):
         self.assertIn("検索語: SQLite", body)
         self.assertIn("SQLite入門", body)
         self.assertIn("scrapbox: [SQLite入門]", body)
+        self.assertNotIn("books/tech/sqlite.pdf", body)
         self.assertNotIn("open:", body)
 
     def test_build_search_scrapbox_body_keeps_all_results(self) -> None:

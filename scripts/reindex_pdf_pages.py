@@ -18,6 +18,7 @@ if str(SRC_DIR) not in sys.path:
 
 from tsundokensaku.database import PageRecord, connect, initialize, replace_pages, search, upsert_book
 from tsundokensaku.indexer import find_pdfs
+from tsundokensaku.metadata import find_export_json, load_metadata_by_pdf_stem, resolve_pdf_display_title
 from tsundokensaku.pdf_extract import extract_pages
 
 DEFAULT_DB_PATH = PROJECT_ROOT / "data" / "index.db"
@@ -100,6 +101,7 @@ def main() -> int:
     completed: dict[str, Any] = state.setdefault("completed", {})
     connection = connect(db_path)
     initialize(connection)
+    metadata_by_stem = load_metadata_by_pdf_stem(find_export_json(PROJECT_ROOT))
 
     total = len(pdf_paths)
     done_pages = sum(int(item.get("pages", 0)) for item in completed.values())
@@ -112,24 +114,26 @@ def main() -> int:
         for index, pdf_path in enumerate(pdf_paths, start=1):
             key = str(pdf_path.resolve())
             stat = pdf_path.stat()
+            title = resolve_pdf_display_title(pdf_path, metadata_by_stem)
             existing_state = completed.get(key)
-            if _is_completed(existing_state, stat):
-                print(f"[{index}/{total}] SKIP {pdf_path.stem}", flush=True)
+            if _is_completed(existing_state, stat, title=title):
+                print(f"[{index}/{total}] SKIP {title}", flush=True)
                 continue
 
-            print(f"[{index}/{total}] INDEX {pdf_path.stem}", flush=True)
+            print(f"[{index}/{total}] INDEX {title}", flush=True)
             book_id = upsert_book(
                 connection,
                 path=pdf_path,
-                title=pdf_path.stem,
+                filename=pdf_path.name,
+                title=title,
                 size_bytes=stat.st_size,
                 modified_at=stat.st_mtime,
             )
             pages = [PageRecord(page_number=page.page_number, text=page.text) for page in extract_pages(pdf_path)]
-            page_count = replace_pages(connection, book_id=book_id, title=pdf_path.stem, pages=pages)
+            page_count = replace_pages(connection, book_id=book_id, title=title, pages=pages)
 
             completed[key] = {
-                "title": pdf_path.stem,
+                "title": title,
                 "pages": page_count,
                 "size_bytes": stat.st_size,
                 "modified_at": stat.st_mtime,
@@ -140,7 +144,7 @@ def main() -> int:
 
             indexed += 1
             page_total += page_count
-            print(f"[{index}/{total}] DONE {pdf_path.stem} ({page_count} pages)", flush=True)
+            print(f"[{index}/{total}] DONE {title} ({page_count} pages)", flush=True)
     finally:
         connection.close()
 
@@ -244,10 +248,14 @@ def _assert_db_available(db_path: Path) -> None:
         raise SystemExit(f"DB quick_check failed before backup: {quick_check}")
 
 
-def _is_completed(item: Any, stat) -> bool:
+def _is_completed(item: Any, stat, *, title: str) -> bool:
     if not isinstance(item, dict):
         return False
-    return item.get("size_bytes") == stat.st_size and item.get("modified_at") == stat.st_mtime
+    return (
+        item.get("size_bytes") == stat.st_size
+        and item.get("modified_at") == stat.st_mtime
+        and item.get("title") == title
+    )
 
 
 def _search_counts(db_path: Path, queries: list[str]) -> dict[str, Any]:

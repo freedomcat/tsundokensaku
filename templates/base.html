@@ -45,6 +45,8 @@
         align-items: center;
         gap: 12px;
         margin-bottom: 24px;
+        position: relative;
+        z-index: 20;
       }
 
       .brand {
@@ -103,6 +105,8 @@
         gap: 8px;
         flex-wrap: wrap;
         justify-self: end;
+        position: relative;
+        z-index: 21;
       }
 
       .topbar > [aria-hidden="true"] {
@@ -126,6 +130,10 @@
         justify-content: center;
         white-space: nowrap;
         line-height: 1.2;
+      }
+
+      .nav a {
+        min-width: 88px;
       }
 
       .nav a.active,
@@ -642,7 +650,7 @@
           </a>
         </div>
         <nav class="nav">
-          <a href="/settings" class="{% if request.url.path.startswith('/settings') or request.url.path == '/manage' %}active{% endif %}">設定</a>
+          <a href="/settings" class="{% if request.url.path.startswith('/settings') or request.url.path == '/manage' %}active{% endif %}" style="min-width: 88px;">設定</a>
         </nav>
       </div>
       {% block content %}{% endblock %}

@@ -1,6 +1,17 @@
 {% extends "base.html" %}
 {% block title %}つんどけんさく | ホーム{% endblock %}
 {% block content %}
+{% if index_progress.running %}
+<section class="card">
+  <p style="margin: 0;">
+    <span class="pill">インデックス処理中</span>
+    <span class="muted" style="margin-left: 8px;">
+      {{ index_progress.message or '処理中' }}
+      {% if index_progress.title %} / 対象: {{ index_progress.title }}{% endif %}
+    </span>
+  </p>
+</section>
+{% endif %}
 <section class="card">
   <form class="search" action="/search" method="get">
     <input type="search" name="q" value="{{ query }}" placeholder="キーワードを入力して検索">

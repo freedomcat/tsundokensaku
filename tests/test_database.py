@@ -11,11 +11,12 @@ from tsundokensaku.database import (
     initialize,
     replace_pages,
     replace_book_notes,
+    refresh_pdf_titles,
     sync_kindle_books,
     search,
     upsert_book,
 )
-from tsundokensaku.metadata import ScrapboxMemo
+from tsundokensaku.metadata import BookMetadata, ScrapboxMemo
 
 
 class DatabaseSearchTest(unittest.TestCase):
@@ -348,6 +349,7 @@ class DatabaseSearchTest(unittest.TestCase):
                 CREATE TABLE books (
                     id INTEGER PRIMARY KEY,
                     path TEXT NOT NULL UNIQUE,
+                    filename TEXT,
                     title TEXT NOT NULL,
                     size_bytes INTEGER NOT NULL,
                     modified_at REAL NOT NULL,
@@ -356,8 +358,8 @@ class DatabaseSearchTest(unittest.TestCase):
                 """
             )
             connection.execute(
-                "INSERT INTO books(id, path, title, size_bytes, modified_at, indexed_at) VALUES (1, ?, ?, ?, ?, ?)",
-                ("books/tech/legacy.pdf", "legacy", 10, 1.0, "2026-06-28T00:00:00+00:00"),
+                "INSERT INTO books(id, path, filename, title, size_bytes, modified_at, indexed_at) VALUES (1, ?, ?, ?, ?, ?, ?)",
+                ("books/tech/legacy.pdf", "legacy.pdf", "legacy", 10, 1.0, "2026-06-28T00:00:00+00:00"),
             )
             connection.commit()
 
@@ -365,9 +367,92 @@ class DatabaseSearchTest(unittest.TestCase):
 
             columns = {row[1] for row in connection.execute("PRAGMA table_info(books)").fetchall()}
             self.assertIn("source_type", columns)
-            row = connection.execute("SELECT source_type, external_id FROM books WHERE id = 1").fetchone()
+            self.assertIn("filename", columns)
+            row = connection.execute("SELECT source_type, external_id, filename FROM books WHERE id = 1").fetchone()
             self.assertEqual(row["source_type"], "pdf")
             self.assertIsNone(row["external_id"])
+            self.assertEqual(row["filename"], "legacy.pdf")
+            connection.close()
+
+    def test_initialize_creates_search_indexes(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "index.db"
+            connection = connect(db_path)
+            initialize(connection)
+
+            tables = {
+                str(row["name"])
+                for row in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type IN ('table', 'view')"
+                ).fetchall()
+            }
+            indexes = {
+                str(row["name"])
+                for row in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'index'"
+                ).fetchall()
+            }
+
+            self.assertIn("books_fts", tables)
+            self.assertIn("idx_books_title_path", indexes)
+            self.assertIn("idx_memos_title", indexes)
+            self.assertIn("idx_book_notes_book_title", indexes)
+            self.assertIn("pages_trigram", tables)
+            connection.close()
+
+    def test_refresh_pdf_titles_updates_display_title_and_fts(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "index.db"
+            connection = connect(db_path)
+            initialize(connection)
+            book_id = upsert_book(
+                connection,
+                path=Path("books/tech/legacy.pdf"),
+                filename="legacy.pdf",
+                title="legacy",
+                size_bytes=123,
+                modified_at=1.0,
+            )
+            replace_pages(
+                connection,
+                book_id=book_id,
+                title="legacy",
+                pages=[PageRecord(page_number=1, text="Actual Title appears here")],
+            )
+
+            updated = refresh_pdf_titles(connection, {"legacy": BookMetadata(title="Actual Title")})
+            results = search(connection, "Actual Title", scope="title")
+
+            self.assertEqual(updated, 1)
+            self.assertEqual(len(results), 1)
+            self.assertEqual(results[0].title, "Actual Title")
+            self.assertEqual(results[0].page_number, 1)
+            connection.close()
+
+    def test_search_body_uses_trigram_for_partial_matches(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "index.db"
+            connection = connect(db_path)
+            initialize(connection)
+            book_id = upsert_book(
+                connection,
+                path=Path("books/tech/linux.pdf"),
+                title="linux guide",
+                size_bytes=123,
+                modified_at=1.0,
+            )
+            replace_pages(
+                connection,
+                book_id=book_id,
+                title="linux guide",
+                pages=[PageRecord(page_number=1, text="The Linux kernel lives inside the OS.")],
+            )
+
+            results = search(connection, "ernel liv", scope="body")
+
+            self.assertEqual(len(results), 1)
+            self.assertEqual(results[0].page_number, 1)
+            self.assertIn("kernel", results[0].snippet)
             connection.close()
 
 
