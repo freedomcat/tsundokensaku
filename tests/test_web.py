@@ -15,6 +15,7 @@ from tsundokensaku.web import (
     import_pdfs_from_directory,
     import_scrapbox_export_bytes,
     format_indexed_at,
+    save_pdf_export_to_configured_dir,
     save_uploaded_pdf,
 )
 
@@ -159,6 +160,56 @@ class HighlightQueryTest(unittest.TestCase):
                 output.flush()
                 reader = PdfReader(output.name)
                 self.assertEqual(len(reader.pages), 2)
+
+    def test_save_pdf_export_requires_configured_dir(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            books_dir = Path(temp_dir) / "books"
+            books_dir.mkdir()
+            pdf_path = books_dir / "sample.pdf"
+            writer = PdfWriter()
+            writer.add_blank_page(width=72, height=72)
+            with pdf_path.open("wb") as handle:
+                writer.write(handle)
+
+            with self.assertRaises(ValueError):
+                save_pdf_export_to_configured_dir("sample.pdf", "1", books_dir=books_dir, save_dir=None)
+
+    def test_save_pdf_export_errors_when_save_dir_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            books_dir = root / "books"
+            books_dir.mkdir()
+            pdf_path = books_dir / "sample.pdf"
+            writer = PdfWriter()
+            writer.add_blank_page(width=72, height=72)
+            with pdf_path.open("wb") as handle:
+                writer.write(handle)
+
+            with self.assertRaises(FileNotFoundError):
+                save_pdf_export_to_configured_dir("sample.pdf", "1", books_dir=books_dir, save_dir=root / "missing")
+
+    def test_save_pdf_export_writes_unique_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            books_dir = root / "books"
+            save_dir = root / "exports"
+            books_dir.mkdir()
+            save_dir.mkdir()
+            pdf_path = books_dir / "日本語の本.pdf"
+            writer = PdfWriter()
+            for _ in range(3):
+                writer.add_blank_page(width=72, height=72)
+            with pdf_path.open("wb") as handle:
+                writer.write(handle)
+            existing = save_dir / "日本語の本_p1-2.pdf"
+            existing.write_bytes(b"existing")
+
+            saved = save_pdf_export_to_configured_dir("日本語の本.pdf", "1-2", books_dir=books_dir, save_dir=save_dir)
+
+            self.assertEqual(saved.name, "日本語の本_p1-2_2.pdf")
+            self.assertTrue(saved.exists())
+            reader = PdfReader(str(saved))
+            self.assertEqual(len(reader.pages), 2)
 
     def test_build_scrapbox_page_url_includes_prefilled_body(self) -> None:
         with patch.dict("os.environ", {"SCRAPBOX_BASE_URL": "https://scrapbox.io/custom-project"}, clear=False):

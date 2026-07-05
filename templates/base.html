@@ -503,6 +503,14 @@
         justify-content: flex-end;
       }
 
+      .modal-export-status {
+        flex-basis: 100%;
+        color: var(--muted);
+        font-size: 0.86rem;
+        overflow-wrap: anywhere;
+        text-align: right;
+      }
+
       .modal-share {
         position: relative;
       }
@@ -664,7 +672,8 @@
                 <span>ページ</span>
                 <input id="pdf-modal-pages" type="text" inputmode="numeric" placeholder="11-15,18">
               </label>
-              <a class="button" id="pdf-modal-export" href="#" target="_blank" rel="noreferrer">切り出し</a>
+              <a class="button" id="pdf-modal-export" href="#" target="_blank" rel="noreferrer">ダウンロード</a>
+              <button type="button" id="pdf-modal-save-export">指定フォルダへ保存</button>
               <button type="button" id="pdf-modal-fullscreen">全画面</button>
               <details class="modal-share">
                 <summary class="modal-share-button" aria-label="シェア">
@@ -677,6 +686,7 @@
               <a class="button" id="pdf-modal-open" href="#" target="_blank" rel="noreferrer">PDFを開く</a>
               <a class="button" id="pdf-modal-scrapbox" href="#" target="_blank" rel="noreferrer" hidden>Scrapboxで開く</a>
               <button type="button" id="pdf-modal-close">閉じる</button>
+              <div class="modal-export-status" id="pdf-modal-export-status"></div>
             </div>
           </div>
           <iframe class="modal-viewport" id="pdf-modal-frame" title="PDF viewer"></iframe>
@@ -690,12 +700,15 @@
         const title = document.getElementById('pdf-modal-title');
         const pagesInput = document.getElementById('pdf-modal-pages');
         const exportLink = document.getElementById('pdf-modal-export');
+        const saveExportButton = document.getElementById('pdf-modal-save-export');
+        const exportStatus = document.getElementById('pdf-modal-export-status');
         const fullscreenButton = document.getElementById('pdf-modal-fullscreen');
         const openLink = document.getElementById('pdf-modal-open');
         const shareMenu = document.getElementById('pdf-modal-share-menu');
         const scrapboxLink = document.getElementById('pdf-modal-scrapbox');
         const closeButton = document.getElementById('pdf-modal-close');
         let currentPdfPath = '';
+        const exportSaveDirConfigured = {{ 'true' if pdf_export_save_dir() else 'false' }};
 
         const SHARE_TARGETS = [
           {
@@ -919,19 +932,26 @@
         }
 
         function setExportLink() {
+          const hasPages = Boolean(pagesInput.value.trim());
           if (!currentPdfPath) {
             exportLink.href = '#';
             exportLink.removeAttribute('target');
             exportLink.setAttribute('aria-disabled', 'true');
+            if (saveExportButton) {
+              saveExportButton.disabled = true;
+            }
             return;
           }
-          const pages = pagesInput.value.trim();
-          if (!pages) {
+          if (!hasPages) {
             exportLink.href = '#';
             exportLink.removeAttribute('target');
             exportLink.setAttribute('aria-disabled', 'true');
+            if (saveExportButton) {
+              saveExportButton.disabled = true;
+            }
             return;
           }
+          const pages = pagesInput.value.trim();
           const params = new URLSearchParams({
             pdf_path: currentPdfPath,
             pages,
@@ -939,6 +959,46 @@
           exportLink.href = `/export-pdf?${params.toString()}`;
           exportLink.target = '_blank';
           exportLink.removeAttribute('aria-disabled');
+          if (saveExportButton) {
+            saveExportButton.disabled = !exportSaveDirConfigured;
+          }
+        }
+
+        function setExportStatus(message) {
+          if (exportStatus) {
+            exportStatus.textContent = message || '';
+          }
+        }
+
+        async function saveExportedPdf() {
+          if (!currentPdfPath || !pagesInput.value.trim()) {
+            return;
+          }
+          if (!exportSaveDirConfigured) {
+            setExportStatus('保存先フォルダが未設定です。設定画面で指定してください。');
+            return;
+          }
+          const params = new URLSearchParams({
+            pdf_path: currentPdfPath,
+            pages: pagesInput.value.trim(),
+          });
+          saveExportButton.disabled = true;
+          setExportStatus('保存中...');
+          try {
+            const response = await fetch(`/export-pdf/save?${params.toString()}`, {
+              method: 'POST',
+              headers: { 'Accept': 'application/json' },
+            });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) {
+              throw new Error(payload.detail || '保存に失敗しました');
+            }
+            setExportStatus(`保存しました: ${payload.saved_path}`);
+          } catch (error) {
+            setExportStatus(error instanceof Error ? error.message : '保存に失敗しました');
+          } finally {
+            setExportLink();
+          }
         }
 
         function openModal(url, label, scrapboxUrl, pdfPath, pages) {
@@ -949,6 +1009,7 @@
           currentPdfPath = pdfPath || '';
           pagesInput.value = pages || '';
           setExportLink();
+          setExportStatus(exportSaveDirConfigured ? '' : '保存先フォルダが未設定です。設定画面で指定してください。');
           renderShareMenu();
           modal.querySelector('.modal-share').removeAttribute('open');
           modal.classList.add('open');
@@ -972,6 +1033,11 @@
         });
 
         pagesInput.addEventListener('input', setExportLink);
+        pagesInput.addEventListener('input', () => setExportStatus(exportSaveDirConfigured ? '' : '保存先フォルダが未設定です。設定画面で指定してください。'));
+
+        saveExportButton?.addEventListener('click', () => {
+          void saveExportedPdf();
+        });
 
         fullscreenButton?.addEventListener('click', () => {
           void toggleFullscreen();

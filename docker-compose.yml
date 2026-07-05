@@ -22,5 +22,6 @@ services:
       PYTHONUNBUFFERED: "1"
       BOOKS_DIR: /data/books
       DB_DIR: /app/data
+      PDF_EXPORT_SAVE_DIR: ${PDF_EXPORT_SAVE_DIR:-}
       SCRAPBOX_BASE_URL: ${SCRAPBOX_BASE_URL:-}
       SCRAPBOX_EXPORT_JSON: ${SCRAPBOX_EXPORT_JSON:-}

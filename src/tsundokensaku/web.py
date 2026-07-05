@@ -25,6 +25,7 @@ from tsundokensaku.database import initialize
 from tsundokensaku.indexer import find_pdfs, index_books
 from tsundokensaku.metadata import (
     BookMetadata,
+    ENV_FILE,
     find_export_json,
     load_metadata_by_pdf_stem,
     metadata_for_pdf,
@@ -38,6 +39,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_BOOKS_DIR = Path("data/books")
 CONTAINER_BOOKS_DIRS = (Path("/data/books"), Path("/books/tech"))
 DEFAULT_DB_PATH = Path("data/index.db")
+PDF_EXPORT_SAVE_DIR_ENV = "PDF_EXPORT_SAVE_DIR"
 
 
 def _find_project_root() -> Path:
@@ -88,6 +90,14 @@ def get_books_dir() -> Path:
 def get_db_path() -> Path:
     db_dir = Path(os.environ.get("DB_DIR", str(DEFAULT_DB_PATH.parent)))
     return db_dir / DEFAULT_DB_PATH.name
+
+
+def get_pdf_export_save_dir() -> Path | None:
+    configured = os.environ.get(PDF_EXPORT_SAVE_DIR_ENV, "").strip()
+    return Path(configured).expanduser() if configured else None
+
+
+templates.env.globals["pdf_export_save_dir"] = get_pdf_export_save_dir
 
 
 def get_metadata() -> dict[str, BookMetadata]:
@@ -584,6 +594,42 @@ def _unique_destination_path(destination: Path) -> Path:
     raise FileExistsError(destination)
 
 
+def _unique_export_destination_path(destination: Path) -> Path:
+    if not destination.exists():
+        return destination
+
+    stem = destination.stem
+    suffix = destination.suffix
+    for index in range(2, 10_000):
+        candidate = destination.with_name(f"{stem}_{index}{suffix}")
+        if not candidate.exists():
+            return candidate
+    raise FileExistsError(destination)
+
+
+def update_env_setting(key: str, value: str, env_file: Path = ENV_FILE) -> None:
+    lines = env_file.read_text(encoding="utf-8").splitlines() if env_file.exists() else []
+    updated = False
+    rendered: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#") and "=" in stripped:
+            current_key, _current_value = stripped.split("=", 1)
+            if current_key.strip() == key:
+                rendered.append(f"{key}={value}")
+                updated = True
+                continue
+        rendered.append(line)
+
+    if not updated:
+        if rendered and rendered[-1].strip():
+            rendered.append("")
+        rendered.append(f"{key}={value}")
+
+    env_file.write_text("\n".join(rendered) + "\n", encoding="utf-8")
+    os.environ[key] = value
+
+
 def save_uploaded_pdf(filename: str, content: bytes, books_dir: Path, *, relative_path: str | None = None) -> Path:
     books_root = books_dir.expanduser().resolve()
     books_root.mkdir(parents=True, exist_ok=True)
@@ -600,6 +646,55 @@ def save_uploaded_pdf(filename: str, content: bytes, books_dir: Path, *, relativ
 
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination = _unique_destination_path(destination)
+    destination.write_bytes(content)
+    return destination
+
+
+def _resolve_pdf_file_or_404(pdf_path: str, books_dir: Path) -> Path:
+    books_root = books_dir.expanduser().resolve()
+    candidate = (books_root / pdf_path).resolve()
+    try:
+        candidate.relative_to(books_root)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="PDF not found") from exc
+    if not candidate.is_file():
+        raise HTTPException(status_code=404, detail="PDF not found")
+    return candidate
+
+
+def render_pdf_export(candidate: Path, pages: str) -> tuple[bytes, str]:
+    page_spec = pages.strip()
+    if not page_spec:
+        raise HTTPException(status_code=400, detail="pages is required")
+
+    from pypdf import PdfReader
+
+    try:
+        page_numbers = parse_page_selection(page_spec, len(PdfReader(str(candidate)).pages))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return render_selected_pages(candidate, page_numbers), default_output_path(candidate, page_numbers).name
+
+
+def save_pdf_export_to_configured_dir(pdf_path: str, pages: str, *, books_dir: Path, save_dir: Path | None) -> Path:
+    if save_dir is None:
+        raise ValueError("PDF切り出し保存先フォルダが未設定です")
+
+    save_root = save_dir.expanduser().resolve()
+    if not save_root.exists():
+        raise FileNotFoundError(save_root)
+    if not save_root.is_dir():
+        raise NotADirectoryError(save_root)
+
+    candidate = _resolve_pdf_file_or_404(pdf_path, books_dir)
+    content, filename = render_pdf_export(candidate, pages)
+    destination = (save_root / Path(filename).name).resolve()
+    try:
+        destination.relative_to(save_root)
+    except ValueError as exc:
+        raise ValueError("保存先が不正です") from exc
+
+    destination = _unique_export_destination_path(destination)
     destination.write_bytes(content)
     return destination
 
@@ -752,6 +847,7 @@ def settings_page(request: Request, message: str = "") -> HTMLResponse:
             "pdf_items": library["pdf_items"],
             "kindle_items": library["kindle_items"],
             "default_export_json": find_export_json(PROJECT_ROOT),
+            "pdf_export_save_dir": get_pdf_export_save_dir(),
             "message": message,
             "index_progress": _get_index_progress(),
         },
@@ -921,42 +1017,24 @@ def settings_progress() -> JSONResponse:
     return JSONResponse(_get_index_progress())
 
 
+@app.post("/settings/pdf-export-save-dir")
+def update_pdf_export_save_dir(save_dir: str = Form(default="")) -> RedirectResponse:
+    normalized = save_dir.strip()
+    update_env_setting(PDF_EXPORT_SAVE_DIR_ENV, normalized)
+    message = quote("PDF切り出し保存先を保存しました" if normalized else "PDF切り出し保存先を未設定にしました")
+    return RedirectResponse(url=f"/settings?message={message}", status_code=303)
+
+
 @app.get("/pdf/{pdf_path:path}")
 def open_pdf(pdf_path: str) -> FileResponse:
-    books_dir = get_books_dir().resolve()
-    candidate = (books_dir / pdf_path).resolve()
-    try:
-        candidate.relative_to(books_dir)
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail="PDF not found") from exc
-    if not candidate.is_file():
-        raise HTTPException(status_code=404, detail="PDF not found")
+    candidate = _resolve_pdf_file_or_404(pdf_path, get_books_dir())
     return FileResponse(candidate, media_type="application/pdf")
 
 
 @app.get("/export-pdf")
 def export_pdf(pdf_path: str, pages: str) -> Response:
-    books_dir = get_books_dir().resolve()
-    candidate = (books_dir / pdf_path).resolve()
-    try:
-        candidate.relative_to(books_dir)
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail="PDF not found") from exc
-    if not candidate.is_file():
-        raise HTTPException(status_code=404, detail="PDF not found")
-
-    page_spec = pages.strip()
-    if not page_spec:
-        raise HTTPException(status_code=400, detail="pages is required")
-
-    from pypdf import PdfReader
-
-    try:
-        page_numbers = parse_page_selection(page_spec, len(PdfReader(str(candidate)).pages))
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    content = render_selected_pages(candidate, page_numbers)
-    filename = default_output_path(candidate, page_numbers).name
+    candidate = _resolve_pdf_file_or_404(pdf_path, get_books_dir())
+    content, filename = render_pdf_export(candidate, pages)
     return Response(
         content=content,
         media_type="application/pdf",
@@ -964,6 +1042,27 @@ def export_pdf(pdf_path: str, pages: str) -> Response:
             "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}",
         },
     )
+
+
+@app.post("/export-pdf/save")
+def save_export_pdf(pdf_path: str, pages: str) -> JSONResponse:
+    try:
+        saved = save_pdf_export_to_configured_dir(
+            pdf_path,
+            pages,
+            books_dir=get_books_dir(),
+            save_dir=get_pdf_export_save_dir(),
+        )
+    except HTTPException:
+        raise
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=400, detail=f"保存先フォルダが存在しません: {exc.filename or exc}") from exc
+    except NotADirectoryError as exc:
+        raise HTTPException(status_code=400, detail=f"保存先がフォルダではありません: {exc.filename or exc}") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return JSONResponse({"saved_path": str(saved)})
 
 
 @app.get("/view/{pdf_path:path}", response_class=HTMLResponse)

@@ -169,6 +169,26 @@
     </section>
 
     <section class="card">
+      <h2 style="margin-top: 0;">PDF切り出し保存先</h2>
+      <p class="muted">切り出したPDFをブラウザでダウンロードせず、サーバー側から直接保存するフォルダです。</p>
+      <form class="search" action="/settings/pdf-export-save-dir" method="post">
+        <input
+          type="search"
+          name="save_dir"
+          value="{{ pdf_export_save_dir or '' }}"
+          placeholder="/path/to/NotebookLM-folder"
+          aria-label="PDF切り出し保存先フォルダ"
+        >
+        <button class="primary" type="submit">保存する</button>
+      </form>
+      {% if pdf_export_save_dir %}
+        <p class="muted" style="margin-top: 10px;">現在の保存先: <code>{{ pdf_export_save_dir }}</code></p>
+      {% else %}
+        <p class="muted" style="margin-top: 10px;">未設定の場合、PDFモーダルの「指定フォルダへ保存」は無効になります。</p>
+      {% endif %}
+    </section>
+
+    <section class="card">
       <h2 style="margin-top: 0;">インデックス実行</h2>
       <p class="muted">保存先フォルダにある PDF を、検索用 DB に取り込みます。</p>
       <div class="progress-shell" id="index-progress-card" style="margin-bottom: 16px;">
