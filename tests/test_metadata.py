@@ -188,6 +188,18 @@ class MetadataTest(unittest.TestCase):
             self.assertEqual(resolve_pdf_display_title(pdf_without_metadata, metadata_by_stem), "Scrapbox Title")
             self.assertEqual(resolve_pdf_display_title(pdf_fallback, {}), "Programming Ruby 5th ja")
 
+    def test_resolve_pdf_display_title_ignores_source_file_metadata_title(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            pdf_path = Path(temp_dir) / "魔法のおなべ.pdf"
+
+            writer = PdfWriter()
+            writer.add_blank_page(width=72, height=72)
+            writer.add_metadata({"/Title": "C:/Temp/magicpot.dvi"})
+            with pdf_path.open("wb") as handle:
+                writer.write(handle)
+
+            self.assertEqual(resolve_pdf_display_title(pdf_path, {}), "魔法のおなべ")
+
 
 if __name__ == "__main__":
     unittest.main()

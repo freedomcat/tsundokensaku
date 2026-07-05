@@ -248,7 +248,23 @@ def _normalize_title_value(value: object) -> str | None:
     if value is None:
         return None
     text = re.sub(r"\s+", " ", str(value).replace("\x00", " ")).strip()
+    if _looks_like_source_file_title(text):
+        return None
     return text or None
+
+
+def _looks_like_source_file_title(text: str) -> bool:
+    if not text:
+        return False
+    lower_text = text.lower()
+    source_suffixes = (".pdf", ".dvi", ".ps", ".tex")
+    if not lower_text.endswith(source_suffixes):
+        return False
+    if re.match(r"^[a-z]:[\\/]", text, flags=re.IGNORECASE):
+        return True
+    if "/" in text or "\\" in text:
+        return True
+    return True
 
 
 def read_pdf_metadata_title(pdf_path: str | Path) -> str | None:

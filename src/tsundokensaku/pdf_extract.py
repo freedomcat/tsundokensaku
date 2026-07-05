@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -53,28 +54,28 @@ def _open_fitz_doc(pdf_path: Path):
 def extract_pages(pdf_path: Path) -> Iterator[ExtractedPage]:
     """Yield 1-based PDF pages with extracted text.
 
-    Extracts with pypdf by default. If pypdf can't decode a page's
-    CID font encoding (garbled text instead of an error), that page
-    is re-extracted with PyMuPDF as a fallback.
+    PyMuPDF handles legacy Japanese PDF encodings more reliably than pypdf.
+    Fall back to pypdf only when PyMuPDF cannot open the document.
     """
+    fitz_doc = _open_fitz_doc(pdf_path)
+    if fitz_doc is not None:
+        try:
+            for index in range(fitz_doc.page_count):
+                text = fitz_doc[index].get_text() or ""
+                yield ExtractedPage(page_number=index + 1, text=normalize_text(text))
+            return
+        finally:
+            fitz_doc.close()
+
     from pypdf import PdfReader
 
     reader = PdfReader(str(pdf_path))
-    fitz_doc = None
-    try:
-        for index, page in enumerate(reader.pages, start=1):
-            text, unsupported_encoding = _extract_with_pypdf(page)
-            if unsupported_encoding:
-                if fitz_doc is None:
-                    fitz_doc = _open_fitz_doc(pdf_path)
-                if fitz_doc is not None:
-                    text = fitz_doc[index - 1].get_text() or text
-            yield ExtractedPage(page_number=index, text=normalize_text(text))
-    finally:
-        if fitz_doc is not None:
-            fitz_doc.close()
+    for index, page in enumerate(reader.pages, start=1):
+        text, _unsupported_encoding = _extract_with_pypdf(page)
+        yield ExtractedPage(page_number=index, text=normalize_text(text))
 
 
 def normalize_text(text: str) -> str:
-    lines = [line.strip() for line in text.replace("\x00", "").splitlines()]
+    text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", text)
+    lines = [line.strip() for line in text.splitlines()]
     return "\n".join(line for line in lines if line)
