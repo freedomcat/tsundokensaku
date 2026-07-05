@@ -163,6 +163,29 @@ class HighlightQueryTest(unittest.TestCase):
                 reader = PdfReader(output.name)
                 self.assertEqual(len(reader.pages), 2)
 
+    def test_export_pdf_accepts_absolute_book_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            books_dir = root / "books" / "tech"
+            books_dir.mkdir(parents=True)
+            pdf_path = books_dir / "sample.pdf"
+
+            writer = PdfWriter()
+            for _ in range(3):
+                writer.add_blank_page(width=72, height=72)
+            with pdf_path.open("wb") as handle:
+                writer.write(handle)
+
+            with patch("tsundokensaku.web.get_books_dir", return_value=books_dir):
+                response = export_pdf(pdf_path=str(pdf_path), pages="1-2")
+
+            self.assertEqual(response.status_code, 200)
+            with tempfile.NamedTemporaryFile(suffix=".pdf") as output:
+                output.write(response.body)
+                output.flush()
+                reader = PdfReader(output.name)
+                self.assertEqual(len(reader.pages), 2)
+
     def test_save_pdf_export_requires_configured_dir(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             books_dir = Path(temp_dir) / "books"

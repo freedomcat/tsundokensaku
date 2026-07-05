@@ -653,14 +653,10 @@ def save_uploaded_pdf(filename: str, content: bytes, books_dir: Path, *, relativ
 
 def _resolve_pdf_file_or_404(pdf_path: str, books_dir: Path) -> Path:
     books_root = books_dir.expanduser().resolve()
-    candidate = (books_root / pdf_path).resolve()
-    try:
-        candidate.relative_to(books_root)
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail="PDF not found") from exc
-    if not candidate.is_file():
+    relative = resolve_pdf_path(pdf_path, books_root)
+    if relative is None:
         raise HTTPException(status_code=404, detail="PDF not found")
-    return candidate
+    return books_root / relative
 
 
 def render_pdf_export(candidate: Path, pages: str) -> tuple[bytes, str]:
