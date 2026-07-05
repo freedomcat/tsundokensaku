@@ -20,6 +20,11 @@
       }
 
       * { box-sizing: border-box; }
+
+      [hidden] {
+        display: none !important;
+      }
+
       body {
         margin: 0;
         font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -941,9 +946,23 @@
           updateFullscreenButton();
         }
 
+        function normalizeExternalUrl(url) {
+          const normalized = String(url || '').trim();
+          if (!normalized || ['none', 'null', 'undefined'].includes(normalized.toLowerCase())) {
+            return '';
+          }
+          try {
+            const parsed = new URL(normalized, window.location.origin);
+            return ['http:', 'https:'].includes(parsed.protocol) ? parsed.href : '';
+          } catch (error) {
+            return '';
+          }
+        }
+
         function setScrapboxLink(url) {
-          if (url) {
-            scrapboxLink.href = url;
+          const normalizedUrl = normalizeExternalUrl(url);
+          if (normalizedUrl) {
+            scrapboxLink.href = normalizedUrl;
             scrapboxLink.hidden = false;
           } else {
             scrapboxLink.hidden = true;
