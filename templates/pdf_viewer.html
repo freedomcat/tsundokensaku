@@ -6,7 +6,12 @@
     <div class="muted">p.{{ page }}</div>
     <h2>{{ pdf_path }}</h2>
   </div>
-  <a class="button" href="{{ pdf_src }}" target="_blank" rel="noreferrer">別タブで開く</a>
+  <div style="display:flex; gap:8px; flex-wrap:wrap;">
+    <a class="button" href="{{ pdf_src }}" target="_blank" rel="noreferrer">別タブで開く</a>
+    {% if scrapbox_url %}
+      <a class="button" href="{{ scrapbox_url }}" target="_blank" rel="noreferrer">Scrapboxで開く</a>
+    {% endif %}
+  </div>
 </section>
 
 <section class="viewer-frame">

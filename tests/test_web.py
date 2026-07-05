@@ -15,9 +15,11 @@ from tsundokensaku.web import (
     import_pdfs_from_directory,
     import_scrapbox_export_bytes,
     format_indexed_at,
+    resolve_pdf_scrapbox_url,
     save_pdf_export_to_configured_dir,
     save_uploaded_pdf,
 )
+from tsundokensaku.database import connect, initialize, upsert_book
 
 
 class HighlightQueryTest(unittest.TestCase):
@@ -210,6 +212,34 @@ class HighlightQueryTest(unittest.TestCase):
             self.assertTrue(saved.exists())
             reader = PdfReader(str(saved))
             self.assertEqual(len(reader.pages), 2)
+
+    def test_resolve_pdf_scrapbox_url_prefers_database_value(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            books_dir = root / "books"
+            books_dir.mkdir()
+            pdf_path = books_dir / "sample.pdf"
+            pdf_path.write_bytes(b"%PDF-1.4 sample")
+            db_path = root / "index.db"
+            connection = connect(db_path)
+            try:
+                initialize(connection)
+                upsert_book(
+                    connection,
+                    path=pdf_path,
+                    title="sample",
+                    size_bytes=pdf_path.stat().st_size,
+                    modified_at=pdf_path.stat().st_mtime,
+                    scrapbox_url="https://scrapbox.io/custom-project/sample",
+                )
+                connection.commit()
+            finally:
+                connection.close()
+
+            self.assertEqual(
+                resolve_pdf_scrapbox_url("sample.pdf", books_dir=books_dir, db_path=db_path),
+                "https://scrapbox.io/custom-project/sample",
+            )
 
     def test_build_scrapbox_page_url_includes_prefilled_body(self) -> None:
         with patch.dict("os.environ", {"SCRAPBOX_BASE_URL": "https://scrapbox.io/custom-project"}, clear=False):

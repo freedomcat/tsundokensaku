@@ -20,7 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from markupsafe import Markup, escape
 
-from tsundokensaku.database import SEARCH_SCOPES, connect, list_books, search, sync_kindle_books, sync_memos
+from tsundokensaku.database import SEARCH_SCOPES, connect, get_book, list_books, search, sync_kindle_books, sync_memos
 from tsundokensaku.database import initialize
 from tsundokensaku.indexer import find_pdfs, index_books
 from tsundokensaku.metadata import (
@@ -679,7 +679,7 @@ def render_pdf_export(candidate: Path, pages: str) -> tuple[bytes, str]:
 
 def save_pdf_export_to_configured_dir(pdf_path: str, pages: str, *, books_dir: Path, save_dir: Path | None) -> Path:
     if save_dir is None:
-        raise ValueError("PDF切り出し保存先フォルダが未設定です")
+        raise ValueError("保存先フォルダが未設定です。設定画面で指定してください。")
 
     save_root = save_dir.expanduser().resolve()
     if not save_root.exists():
@@ -698,6 +698,29 @@ def save_pdf_export_to_configured_dir(pdf_path: str, pages: str, *, books_dir: P
     destination = _unique_export_destination_path(destination)
     destination.write_bytes(content)
     return destination
+
+
+def resolve_pdf_scrapbox_url(pdf_path: str, *, books_dir: Path, db_path: Path) -> str | None:
+    relative = resolve_pdf_path(pdf_path, books_dir)
+    if relative is None:
+        return None
+
+    connection = None
+    try:
+        connection = connect(db_path)
+        path_candidates = [relative, books_dir.expanduser().resolve() / relative]
+        for path_candidate in path_candidates:
+            book = get_book(connection, path=path_candidate)
+            if book and book.scrapbox_url:
+                return book.scrapbox_url
+    except sqlite3.OperationalError:
+        pass
+    finally:
+        if connection is not None:
+            connection.close()
+
+    metadata = metadata_for_pdf(str(relative), get_metadata())
+    return metadata.scrapbox_url if metadata else None
 
 
 def import_scrapbox_export_bytes(content: bytes, db_path: Path) -> tuple[int, int]:
@@ -1069,19 +1092,22 @@ def save_export_pdf(pdf_path: str, pages: str) -> JSONResponse:
 @app.get("/view/{pdf_path:path}", response_class=HTMLResponse)
 def view_pdf(request: Request, pdf_path: str, page: int = 1) -> HTMLResponse:
     books_dir = get_books_dir()
+    db_path = get_db_path()
     pdf_src = raw_pdf_url(pdf_path, books_dir, page_number=page)
     if pdf_src is None:
         raise HTTPException(status_code=404, detail="PDF not found")
+    scrapbox_url = resolve_pdf_scrapbox_url(pdf_path, books_dir=books_dir, db_path=db_path)
     return templates.TemplateResponse(
         request,
         "pdf_viewer.html",
         {
             "request": request,
             "books_dir": books_dir,
-            "db_path": get_db_path(),
+            "db_path": db_path,
             "pdf_src": pdf_src,
             "pdf_path": pdf_path,
             "page": page,
+            "scrapbox_url": scrapbox_url,
         },
     )
 
