@@ -23,6 +23,4 @@ services:
       BOOKS_DIR: /data/books
       DB_DIR: /app/data
       SCRAPBOX_BASE_URL: ${SCRAPBOX_BASE_URL:-}
-      BASE_URL: ${BASE_URL:-}
-      SCRAPBOX_PROJECT_URL: ${SCRAPBOX_PROJECT_URL:-}
       SCRAPBOX_EXPORT_JSON: ${SCRAPBOX_EXPORT_JSON:-}

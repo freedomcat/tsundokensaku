@@ -63,11 +63,7 @@ load_env_file()
 
 
 def get_scrapbox_project_url() -> str | None:
-    configured = (
-        os.environ.get("SCRAPBOX_BASE_URL")
-        or os.environ.get("BASE_URL")
-        or os.environ.get("SCRAPBOX_PROJECT_URL")
-    )
+    configured = os.environ.get("SCRAPBOX_BASE_URL")
     return configured.rstrip("/") if configured else None
 
 

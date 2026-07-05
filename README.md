@@ -93,8 +93,6 @@ docker compose up --build
 | `DB_DIR` | `./data` | SQLite DBの保存先ディレクトリ |
 | `WEB_PORT` | `8000` | Web UIの公開ポート |
 | `SCRAPBOX_BASE_URL` | 空 | Scrapbox/Cosense連携用URL |
-| `BASE_URL` | 空 | Scrapbox/Cosense連携用URLの別名 |
-| `SCRAPBOX_PROJECT_URL` | 空 | Scrapbox/CosenseプロジェクトURL |
 | `SCRAPBOX_EXPORT_JSON` | 空 | Scrapbox/CosenseエクスポートJSONのパス |
 
 Scrapbox/Cosense関連を設定しない場合、メモ検索やScrapboxリンク表示は使わずにPDF検索だけで動きます。
