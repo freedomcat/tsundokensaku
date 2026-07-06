@@ -170,7 +170,7 @@
       openPdfButton.type = 'button';
       openPdfButton.className = 'ws-remove';
       openPdfButton.textContent = 'PDFで選ぶ';
-      openPdfButton.dataset.pdfModalUrl = `/pdf${path.startsWith('/') ? '' : '/'}${path.split('/').map(encodeURIComponent).join('/')}`;
+      openPdfButton.dataset.pdfModalUrl = `/pdf/${encodeURIComponent(path)}`;
       openPdfButton.dataset.pdfModalTitle = entry.title;
       openPdfButton.dataset.pdfModalPath = path;
       openPdfButton.dataset.pdfModalPages = '';
