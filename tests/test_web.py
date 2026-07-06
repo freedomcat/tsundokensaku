@@ -159,6 +159,7 @@ class HighlightQueryTest(unittest.TestCase):
 
             self.assertEqual(response.status_code, 200)
             payload = json.loads(response.body)
+            self.assertEqual(payload["page_count"], 6)
             self.assertEqual(
                 payload["chapters"],
                 [
@@ -182,7 +183,7 @@ class HighlightQueryTest(unittest.TestCase):
                 response = pdf_outline(pdf_path="sample.pdf")
 
             self.assertEqual(response.status_code, 200)
-            self.assertEqual(json.loads(response.body), {"chapters": []})
+            self.assertEqual(json.loads(response.body), {"page_count": 1, "chapters": []})
 
     def test_export_pdf_returns_selected_pages(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

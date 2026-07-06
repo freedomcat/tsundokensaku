@@ -33,7 +33,7 @@ from tsundokensaku.metadata import (
 )
 from tsundokensaku.markdown_export import default_markdown_output_name, render_markdown_pages
 from tsundokensaku.pdf_export import default_output_path, parse_page_selection, render_selected_pages
-from tsundokensaku.pdf_outline import list_chapters
+from tsundokensaku.pdf_outline import get_page_count, list_chapters
 from tsundokensaku.tokenizer import tokenize_query
 
 
@@ -1141,7 +1141,7 @@ def pdf_outline(pdf_path: str) -> JSONResponse:
         }
         for chapter in list_chapters(candidate)
     ]
-    return JSONResponse({"chapters": chapters})
+    return JSONResponse({"page_count": get_page_count(candidate), "chapters": chapters})
 
 
 @app.get("/export-pdf")

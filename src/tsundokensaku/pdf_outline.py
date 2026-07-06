@@ -12,6 +12,21 @@ class Chapter:
     end_page: int
 
 
+def get_page_count(pdf_path: Path) -> int | None:
+    try:
+        import fitz  # PyMuPDF
+    except ImportError:
+        return None
+    try:
+        doc = fitz.open(str(pdf_path))
+    except Exception:
+        return None
+    try:
+        return int(doc.page_count)
+    finally:
+        doc.close()
+
+
 def list_chapters(pdf_path: Path) -> list[Chapter]:
     """Return outline entries as chapters with 1-based page ranges.
 

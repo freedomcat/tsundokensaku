@@ -4,7 +4,7 @@ from pathlib import Path
 
 import fitz
 
-from tsundokensaku.pdf_outline import list_chapters
+from tsundokensaku.pdf_outline import get_page_count, list_chapters
 
 
 def _make_pdf_with_toc(path: Path, page_count: int, toc: list[list]) -> None:
@@ -60,6 +60,20 @@ class ListChaptersTest(unittest.TestCase):
 
             self.assertEqual(len(chapters), 1)
             self.assertEqual(chapters[0].title, "正常")
+
+    def test_get_page_count_returns_document_pages(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            pdf_path = Path(temp_dir) / "book.pdf"
+            _make_pdf_with_toc(pdf_path, 5, [])
+
+            self.assertEqual(get_page_count(pdf_path), 5)
+
+    def test_get_page_count_returns_none_for_broken_pdf(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            pdf_path = Path(temp_dir) / "broken.pdf"
+            pdf_path.write_bytes(b"not a pdf")
+
+            self.assertIsNone(get_page_count(pdf_path))
 
     def test_list_chapters_returns_empty_without_toc(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

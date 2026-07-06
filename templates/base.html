@@ -764,7 +764,7 @@
               </details>
               <label class="modal-pages">
                 <span>ページ</span>
-                <input id="pdf-modal-pages" type="text" inputmode="numeric" placeholder="11-15,18">
+                <input id="pdf-modal-pages" type="text" inputmode="numeric" placeholder="例: 11-15,18">
               </label>
               <a class="button" id="pdf-modal-export" href="#" target="_blank" rel="noreferrer">指定ページ切出</a>
               <a class="button" id="pdf-modal-export-md" href="#" target="_blank" rel="noreferrer">MD切出</a>
@@ -1060,6 +1060,8 @@
 
         function setExportLink() {
           const pages = pagesInput.value.trim();
+          const validationError = currentPdfPath && pages ? validatePageSpec(pages) : '';
+          const usable = Boolean(currentPdfPath && pages && !validationError);
           const links = [
             [exportLink, '/export-pdf'],
             [exportMdLink, '/export-md'],
@@ -1068,7 +1070,7 @@
             if (!link) {
               continue;
             }
-            if (!currentPdfPath || !pages) {
+            if (!usable) {
               link.href = '#';
               link.removeAttribute('target');
               link.setAttribute('aria-disabled', 'true');
@@ -1082,10 +1084,52 @@
             link.target = '_blank';
             link.removeAttribute('aria-disabled');
           }
+          setExportStatus(validationError);
           renderShareMenu();
         }
 
         let chaptersRequestToken = 0;
+        let currentPageCount = null;
+
+        function validatePageSpec(spec) {
+          let validChunks = 0;
+          for (const raw of spec.split(',')) {
+            const chunk = raw.trim();
+            if (!chunk) {
+              continue;
+            }
+            const match = /^(\d*)-(\d*)$|^(\d+)$/.exec(chunk);
+            if (!match || (match[3] === undefined && !match[1] && !match[2])) {
+              return `ページ指定が不正です: ${chunk}`;
+            }
+            let start;
+            let end;
+            if (match[3] !== undefined) {
+              start = parseInt(match[3], 10);
+              end = start;
+            } else {
+              start = match[1] ? parseInt(match[1], 10) : 1;
+              end = match[2] ? parseInt(match[2], 10) : null;
+            }
+            if (start < 1 || (end !== null && end < 1)) {
+              return `ページ番号は1以上で指定してください: ${chunk}`;
+            }
+            if (end !== null && start > end) {
+              return `範囲の始まりが終わりより大きいです: ${chunk}`;
+            }
+            if (currentPageCount !== null) {
+              const upper = end === null ? start : end;
+              if (start > currentPageCount || upper > currentPageCount) {
+                return `ページ番号が範囲外です: ${chunk}（1-${currentPageCount}）`;
+              }
+            }
+            validChunks += 1;
+          }
+          if (validChunks === 0) {
+            return 'ページを指定してください';
+          }
+          return '';
+        }
 
         function mergePageRanges(specs) {
           const ranges = [];
@@ -1122,7 +1166,6 @@
           pagesInput.value = '';
           updateChaptersSummary(0);
           setExportLink();
-          setExportStatus('');
         }
 
         function updateChaptersSummary(selectedCount) {
@@ -1143,11 +1186,13 @@
 
         async function loadChapters(pdfPath) {
           resetChapters();
+          currentPageCount = null;
           if (!chaptersWrap || !chaptersMenu || !pdfPath) {
             return;
           }
           const token = ++chaptersRequestToken;
           let chapters = [];
+          let pageCount = null;
           try {
             const response = await fetch(`/pdf-outline?${new URLSearchParams({ pdf_path: pdfPath })}`);
             if (!response.ok) {
@@ -1155,11 +1200,17 @@
             }
             const payload = await response.json();
             chapters = Array.isArray(payload.chapters) ? payload.chapters : [];
+            pageCount = Number.isInteger(payload.page_count) && payload.page_count > 0 ? payload.page_count : null;
           } catch (error) {
             console.warn('Failed to load PDF outline', error);
             return;
           }
-          if (token !== chaptersRequestToken || chapters.length === 0) {
+          if (token !== chaptersRequestToken) {
+            return;
+          }
+          currentPageCount = pageCount;
+          setExportLink();
+          if (chapters.length === 0) {
             return;
           }
           const clearButton = document.createElement('button');
@@ -1281,7 +1332,6 @@
           currentPdfPath = pdfPath || '';
           pagesInput.value = pages || '';
           setExportLink();
-          setExportStatus('');
           void loadChapters(currentPdfPath);
           renderShareMenu();
           modal.querySelector('.modal-share').removeAttribute('open');
@@ -1306,14 +1356,12 @@
         });
 
         pagesInput.addEventListener('input', setExportLink);
-        pagesInput.addEventListener('input', () => setExportStatus(''));
 
         chaptersMenu?.addEventListener('change', () => {
           const selected = [...chaptersMenu.querySelectorAll('input:checked')].map((input) => input.value);
           pagesInput.value = mergePageRanges(selected);
           updateChaptersSummary(selected.length);
           setExportLink();
-          setExportStatus('');
         });
 
         fullscreenButton?.addEventListener('click', () => {
