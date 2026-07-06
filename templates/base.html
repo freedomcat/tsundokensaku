@@ -516,6 +516,18 @@
         text-align: right;
       }
 
+      .modal-export-status.is-error {
+        color: #b91c1c;
+        background: rgba(220, 38, 38, 0.08);
+        border: 1px solid rgba(220, 38, 38, 0.28);
+        border-radius: 8px;
+        padding: 6px 10px;
+      }
+
+      .modal-export-status.is-error::before {
+        content: "⚠ ";
+      }
+
       .modal-share {
         position: relative;
       }
@@ -1084,7 +1096,7 @@
             link.target = '_blank';
             link.removeAttribute('aria-disabled');
           }
-          setExportStatus(validationError);
+          setExportStatus(validationError, true);
           renderShareMenu();
         }
 
@@ -1238,9 +1250,10 @@
           chaptersWrap.hidden = false;
         }
 
-        function setExportStatus(message) {
+        function setExportStatus(message, isError = false) {
           if (exportStatus) {
             exportStatus.textContent = message || '';
+            exportStatus.classList.toggle('is-error', Boolean(isError && message));
           }
         }
 
@@ -1318,7 +1331,7 @@
               setExportStatus('');
               return;
             }
-            setExportStatus(error instanceof Error ? error.message : '共有に失敗しました');
+            setExportStatus(error instanceof Error ? error.message : '共有に失敗しました', true);
           } finally {
             shareDetails?.removeAttribute('open');
           }
