@@ -7,6 +7,29 @@ window.TsundokuCart = (() => {
     return { version: 2, books: {} };
   }
 
+  // 旧形式: { "<pdf_path>": { title, pages: [番号...] } }（versionなし）
+  function migrateLegacy(parsed) {
+    const cart = emptyCart();
+    let migrated = false;
+    for (const [path, entry] of Object.entries(parsed)) {
+      if (!entry || typeof entry !== 'object' || !Array.isArray(entry.pages)) {
+        continue;
+      }
+      const spec = window.TsundokuPages.pagesToSpec(entry.pages);
+      if (!spec) {
+        continue;
+      }
+      cart.books[path] = {
+        title: typeof entry.title === 'string' && entry.title ? entry.title : path,
+        pages: spec,
+        collapsed: false,
+        addedAt: new Date().toISOString(),
+      };
+      migrated = true;
+    }
+    return migrated ? cart : null;
+  }
+
   function load() {
     try {
       const parsed = JSON.parse(sessionStorage.getItem(STORAGE_KEY) || 'null');
@@ -19,6 +42,13 @@ window.TsundokuCart = (() => {
         !Array.isArray(parsed.books)
       ) {
         return parsed;
+      }
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && parsed.version === undefined) {
+        const migrated = migrateLegacy(parsed);
+        if (migrated) {
+          sessionStorage.setItem(STORAGE_KEY, JSON.stringify(migrated));
+          return migrated;
+        }
       }
     } catch (error) {
       console.warn('Failed to read export cart', error);
