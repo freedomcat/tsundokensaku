@@ -12,11 +12,125 @@
       </section>
     {% endif %}
 
-    <details class="card collapsible-card" open id="pdf-list-section">
-      <summary>PDF一覧</summary>
+    <section class="card">
+      <h2 style="margin-top: 0;">インデックス実行</h2>
+      <p class="muted">保存先フォルダにある PDF を、検索用 DB に取り込みます。</p>
+      <div class="progress-shell" id="index-progress-card" style="margin-bottom: 16px;">
+        <div class="progress" aria-hidden="true">
+          <div class="progress-fill" id="index-progress-fill" style="width: 0%;"></div>
+        </div>
+        <div class="muted" id="index-progress-text">{{ index_progress.message or '待機中' }}</div>
+        <div class="muted" id="index-progress-count"></div>
+        <div class="muted" id="index-progress-title"></div>
+      </div>
+      <form action="/settings/index" method="post">
+        <button class="primary" type="submit" id="index-start-button">インデックスを更新</button>
+      </form>
+    </section>
+
+    <section class="card">
+      <h2 style="margin-top: 0;">PDFを追加</h2>
+      <p>保存先: <code>{{ books_dir }}</code></p>
+      <input id="pdf-file-input" type="file" accept=".pdf,application/pdf" multiple webkitdirectory directory hidden>
+      <div
+        id="pdf-dropzone"
+        style="border: 1px dashed var(--border-subtle); border-radius: 8px; padding: 18px; background: rgba(255,255,255,0.32); cursor: pointer;"
+        tabindex="0"
+        role="button"
+        aria-label="PDF をドラッグ&ドロップしてインポート"
+      >
+        <div style="font-weight: 600;">① PDFをドラッグ&amp;ドロップ</div>
+        <div class="muted" style="margin-top: 6px;">またはクリックして選択</div>
+        <div class="muted" id="pdf-upload-status" style="margin-top: 10px;">待機中</div>
+      </div>
+      <div id="pdf-upload-list" class="muted" style="margin-top: 10px;"></div>
+      <div style="margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--border-subtle);">
+        <h3 style="margin: 0 0 8px 0; font-size: 1rem;">② フォルダからまとめて追加</h3>
+        <form class="search" action="/settings/pdf-import" method="get">
+          <input
+            type="search"
+            name="source_dir"
+            value="{{ '' }}"
+            placeholder="/path/to/pdf-folder"
+            aria-label="PDF取り込み元フォルダ"
+          >
+          <button class="primary" type="submit">追加する</button>
+        </form>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2 style="margin-top: 0;">scrapbox.json インポート</h2>
+      <p class="muted">ScrapboxのメモとKindle本情報を検索対象に追加・更新します。</p>
+      <input id="scrapbox-file-input" type="file" accept=".json,application/json" hidden>
+      <div
+        id="scrapbox-dropzone"
+        style="border: 1px dashed var(--border-subtle); border-radius: 8px; padding: 18px; background: rgba(255,255,255,0.32); cursor: pointer;"
+        tabindex="0"
+        role="button"
+        aria-label="scrapbox.json をドラッグ&ドロップしてインポート"
+      >
+        <div style="font-weight: 600;">scrapbox.json をここにドロップ</div>
+        <div class="muted" style="margin-top: 6px;">またはクリックして選択</div>
+        <div class="muted" id="scrapbox-upload-status" style="margin-top: 10px;">待機中</div>
+      </div>
+      <div id="scrapbox-upload-list" class="muted" style="margin-top: 10px;"></div>
+      <p class="muted" style="margin-top: 12px;">空欄なら最近の `shino-books_*.json` を使います。</p>
+      <form class="search" action="/settings/scrapbox-import" method="get">
+        <input
+          type="search"
+          name="export_json_path"
+          value="{{ default_export_json or '' }}"
+          placeholder="/path/to/shino-books_20260628_000000.json"
+          aria-label="Scrapbox export JSON"
+        >
+        <button class="primary" type="submit">メモとKindleを取り込む</button>
+      </form>
+    </section>
+
+    <section class="card">
+      <h2 style="margin-top: 0;">PDF切り出し保存先</h2>
+      <p class="muted">切り出したPDFをブラウザでダウンロードせず、サーバー側から直接保存するフォルダです。</p>
+      <form class="search" action="/settings/pdf-export-save-dir" method="post">
+        <input
+          type="search"
+          name="save_dir"
+          value="{{ pdf_export_save_dir or '' }}"
+          placeholder="/path/to/NotebookLM-folder"
+          aria-label="PDF切り出し保存先フォルダ"
+        >
+        <button class="primary" type="submit">保存する</button>
+      </form>
+      {% if pdf_export_save_dir %}
+        <p class="muted" style="margin-top: 10px;">現在の保存先: <code>{{ pdf_export_save_dir }}</code></p>
+      {% else %}
+        <p class="muted" style="margin-top: 10px;">未設定の場合、PDFモーダルの「指定フォルダへ保存」は無効になります。</p>
+      {% endif %}
+    </section>
+
+    {% set unindexed_count = pdf_items | rejectattr('indexed') | list | length %}
+    <details class="card collapsible-card" id="pdf-list-section">
+      <summary>PDF一覧（{{ pdf_items | length }}冊{% if unindexed_count %}・未インデックス{{ unindexed_count }}冊{% endif %}）</summary>
       <div class="card-body">
         {% if pdf_items %}
           <form id="reindex-form" action="/settings/index" method="post">
+            <div style="display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin-bottom: 12px;">
+              <input
+                type="search"
+                id="pdf-filter-input"
+                placeholder="タイトルで絞り込み"
+                aria-label="PDF一覧をタイトルで絞り込み"
+                style="flex: 1; min-width: 200px;"
+              >
+              <label style="display:flex; align-items:center; gap:6px; white-space:nowrap;">
+                <input type="checkbox" id="pdf-filter-not-indexed">
+                <span>未インデックスのみ</span>
+              </label>
+              <span class="muted" id="pdf-filter-count"></span>
+            </div>
+            <div style="margin-bottom: 12px;">
+              <button class="button reindex-submit" type="submit" disabled>選択したPDFを再インデックス</button>
+            </div>
             <table>
               <thead>
                 <tr>
@@ -30,7 +144,7 @@
               </thead>
               <tbody>
                 {% for item in pdf_items %}
-                  <tr>
+                  <tr class="pdf-row" data-title="{{ item.title }}" data-indexed="{{ '1' if item.indexed else '0' }}">
                     <td><input type="checkbox" name="force" value="{{ item.path }}" class="reindex-checkbox"></td>
                     <td>{{ item.title }}</td>
                     <td>{% if item.indexed %}<span class="pill">indexed</span>{% else %}<span class="muted">not indexed</span>{% endif %}</td>
@@ -59,8 +173,8 @@
                 {% endfor %}
               </tbody>
             </table>
-            <button class="button" type="submit" id="reindex-selected-button" disabled style="margin-top: 12px;">
-              選択したPDFを強制再インデックス
+            <button class="button reindex-submit" type="submit" disabled style="margin-top: 12px;">
+              選択したPDFを再インデックス
             </button>
           </form>
         {% else %}
@@ -69,8 +183,8 @@
       </div>
     </details>
 
-    <details class="card collapsible-card" open id="kindle-list-section">
-      <summary>Kindle本一覧</summary>
+    <details class="card collapsible-card" id="kindle-list-section">
+      <summary>Kindle本一覧（{{ kindle_items | length }}冊）</summary>
       <div class="card-body">
         {% if kindle_items %}
           <table class="kindle-table">
@@ -108,101 +222,6 @@
         {% endif %}
       </div>
     </details>
-    <section class="card">
-      <h2 style="margin-top: 0;">scrapbox.json インポート</h2>
-      <p class="muted">ScrapboxのメモとKindle本情報を検索対象に追加・更新します。</p>
-      <input id="scrapbox-file-input" type="file" accept=".json,application/json" hidden>
-      <div
-        id="scrapbox-dropzone"
-        style="border: 1px dashed var(--border-subtle); border-radius: 8px; padding: 18px; background: rgba(255,255,255,0.32); cursor: pointer;"
-        tabindex="0"
-        role="button"
-        aria-label="scrapbox.json をドラッグ&ドロップしてインポート"
-      >
-        <div style="font-weight: 600;">scrapbox.json をここにドロップ</div>
-        <div class="muted" style="margin-top: 6px;">またはクリックして選択</div>
-        <div class="muted" id="scrapbox-upload-status" style="margin-top: 10px;">待機中</div>
-      </div>
-      <div id="scrapbox-upload-list" class="muted" style="margin-top: 10px;"></div>
-      <p class="muted" style="margin-top: 12px;">空欄なら最近の `shino-books_*.json` を使います。</p>
-      <form class="search" action="/settings/scrapbox-import" method="get">
-        <input
-          type="search"
-          name="export_json_path"
-          value="{{ default_export_json or '' }}"
-          placeholder="/path/to/shino-books_20260628_000000.json"
-          aria-label="Scrapbox export JSON"
-        >
-        <button class="primary" type="submit">メモとKindleを取り込む</button>
-      </form>
-    </section>
-
-    <section class="card">
-      <h2 style="margin-top: 0;">PDFを追加</h2>
-      <p>保存先: <code>{{ books_dir }}</code></p>
-      <input id="pdf-file-input" type="file" accept=".pdf,application/pdf" multiple webkitdirectory directory hidden>
-      <div
-        id="pdf-dropzone"
-        style="border: 1px dashed var(--border-subtle); border-radius: 8px; padding: 18px; background: rgba(255,255,255,0.32); cursor: pointer;"
-        tabindex="0"
-        role="button"
-        aria-label="PDF をドラッグ&ドロップしてインポート"
-      >
-        <div style="font-weight: 600;">① PDFをドラッグ&amp;ドロップ</div>
-        <div class="muted" style="margin-top: 6px;">またはクリックして選択</div>
-        <div class="muted" id="pdf-upload-status" style="margin-top: 10px;">待機中</div>
-      </div>
-      <div id="pdf-upload-list" class="muted" style="margin-top: 10px;"></div>
-      <div style="margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--border-subtle);">
-        <h3 style="margin: 0 0 8px 0; font-size: 1rem;">② フォルダからまとめて追加</h3>
-        <form class="search" action="/settings/pdf-import" method="get">
-          <input
-            type="search"
-            name="source_dir"
-            value="{{ '' }}"
-            placeholder="/path/to/pdf-folder"
-            aria-label="PDF取り込み元フォルダ"
-          >
-          <button class="primary" type="submit">追加する</button>
-        </form>
-      </div>
-    </section>
-
-    <section class="card">
-      <h2 style="margin-top: 0;">PDF切り出し保存先</h2>
-      <p class="muted">切り出したPDFをブラウザでダウンロードせず、サーバー側から直接保存するフォルダです。</p>
-      <form class="search" action="/settings/pdf-export-save-dir" method="post">
-        <input
-          type="search"
-          name="save_dir"
-          value="{{ pdf_export_save_dir or '' }}"
-          placeholder="/path/to/NotebookLM-folder"
-          aria-label="PDF切り出し保存先フォルダ"
-        >
-        <button class="primary" type="submit">保存する</button>
-      </form>
-      {% if pdf_export_save_dir %}
-        <p class="muted" style="margin-top: 10px;">現在の保存先: <code>{{ pdf_export_save_dir }}</code></p>
-      {% else %}
-        <p class="muted" style="margin-top: 10px;">未設定の場合、PDFモーダルの「指定フォルダへ保存」は無効になります。</p>
-      {% endif %}
-    </section>
-
-    <section class="card">
-      <h2 style="margin-top: 0;">インデックス実行</h2>
-      <p class="muted">保存先フォルダにある PDF を、検索用 DB に取り込みます。</p>
-      <div class="progress-shell" id="index-progress-card" style="margin-bottom: 16px;">
-        <div class="progress" aria-hidden="true">
-          <div class="progress-fill" id="index-progress-fill" style="width: 0%;"></div>
-        </div>
-        <div class="muted" id="index-progress-text">{{ index_progress.message or '待機中' }}</div>
-        <div class="muted" id="index-progress-count"></div>
-        <div class="muted" id="index-progress-title"></div>
-      </div>
-      <form action="/settings/index" method="post">
-        <button class="primary" type="submit" id="index-start-button">インデックスを更新</button>
-      </form>
-    </section>
   </main>
 </div>
 
@@ -224,7 +243,11 @@
     const scrapboxUploadList = document.getElementById('scrapbox-upload-list');
     const reindexSelectAll = document.getElementById('reindex-select-all');
     const reindexCheckboxes = Array.from(document.querySelectorAll('.reindex-checkbox'));
-    const reindexSelectedButton = document.getElementById('reindex-selected-button');
+    const reindexSubmitButtons = Array.from(document.querySelectorAll('.reindex-submit'));
+    const pdfRows = Array.from(document.querySelectorAll('.pdf-row'));
+    const filterInput = document.getElementById('pdf-filter-input');
+    const filterNotIndexed = document.getElementById('pdf-filter-not-indexed');
+    const filterCount = document.getElementById('pdf-filter-count');
 
     function setUploadStatus(text) {
       if (uploadStatus) {
@@ -395,6 +418,8 @@
       });
     }
 
+    let pollDelayMs = 5000;
+
     function render(progress) {
       const total = Number(progress.total || 0);
       const current = Number(progress.current || 0);
@@ -406,6 +431,7 @@
       title.textContent = progress.title ? `対象: ${progress.title}` : '';
       startButton.disabled = running;
       startButton.textContent = running ? 'インデックス中...' : 'インデックスを更新';
+      pollDelayMs = running ? 1000 : 5000;
     }
 
     async function refresh() {
@@ -420,20 +446,57 @@
       }
     }
 
-    refresh();
-    setInterval(refresh, 1000);
+    async function pollLoop() {
+      await refresh();
+      setTimeout(pollLoop, pollDelayMs);
+    }
 
-    function updateReindexButton() {
-      if (!reindexSelectedButton) {
-        return;
+    void pollLoop();
+
+    function isRowVisible(box) {
+      const row = box.closest('tr');
+      return !row || row.style.display !== 'none';
+    }
+
+    function updateReindexButtons() {
+      const selected = reindexCheckboxes.filter((box) => box.checked).length;
+      reindexSubmitButtons.forEach((button) => {
+        button.disabled = selected === 0;
+        button.textContent = selected > 0 ? `選択した${selected}件を再インデックス` : '選択したPDFを再インデックス';
+      });
+    }
+
+    function applyPdfFilter() {
+      const query = (filterInput?.value || '').trim().toLowerCase();
+      const onlyNotIndexed = Boolean(filterNotIndexed?.checked);
+      let visible = 0;
+      pdfRows.forEach((row) => {
+        const titleText = (row.dataset.title || '').toLowerCase();
+        const matches = (!query || titleText.includes(query)) && (!onlyNotIndexed || row.dataset.indexed === '0');
+        row.style.display = matches ? '' : 'none';
+        if (matches) {
+          visible += 1;
+        }
+      });
+      if (filterCount) {
+        filterCount.textContent = visible === pdfRows.length ? `${pdfRows.length} 件` : `表示 ${visible} / ${pdfRows.length} 件`;
       }
-      reindexSelectedButton.disabled = !reindexCheckboxes.some((box) => box.checked);
+    }
+
+    filterInput?.addEventListener('input', applyPdfFilter);
+    filterNotIndexed?.addEventListener('change', applyPdfFilter);
+    if (pdfRows.length) {
+      applyPdfFilter();
     }
 
     if (reindexSelectAll) {
       reindexSelectAll.addEventListener('change', () => {
-        reindexCheckboxes.forEach((box) => { box.checked = reindexSelectAll.checked; });
-        updateReindexButton();
+        reindexCheckboxes.forEach((box) => {
+          if (isRowVisible(box)) {
+            box.checked = reindexSelectAll.checked;
+          }
+        });
+        updateReindexButtons();
       });
     }
 
@@ -442,9 +505,23 @@
         if (!box.checked && reindexSelectAll) {
           reindexSelectAll.checked = false;
         }
-        updateReindexButton();
+        updateReindexButtons();
       });
     });
+
+    function openHashTargetSection() {
+      const hash = window.location.hash.replace('#', '');
+      if (!hash) {
+        return;
+      }
+      const target = document.getElementById(hash);
+      if (target && target.tagName === 'DETAILS') {
+        target.open = true;
+      }
+    }
+
+    window.addEventListener('hashchange', openHashTargetSection);
+    openHashTargetSection();
   })();
 </script>
 {% endblock %}
