@@ -997,30 +997,6 @@ def settings_page(request: Request, message: str = "") -> HTMLResponse:
     )
 
 
-@app.get("/settings/share", response_class=HTMLResponse)
-def settings_share_page(request: Request, message: str = "") -> HTMLResponse:
-    books_dir = get_books_dir()
-    db_path = get_db_path()
-    db_stats = get_db_stats(db_path)
-    library = get_library_items(books_dir, db_path)
-    return templates.TemplateResponse(
-        request,
-        "settings_share.html",
-        {
-            "request": request,
-            "books_dir": books_dir,
-            "db_path": db_path,
-            "pdf_count": library["pdf_count"],
-            "book_count": db_stats["book_count"],
-            "kindle_count": db_stats["kindle_count"],
-            "page_count": db_stats["page_count"],
-            "pdf_items": library["pdf_items"],
-            "kindle_items": library["kindle_items"],
-            "message": message,
-        },
-    )
-
-
 @app.get("/settings/info", response_class=HTMLResponse)
 def settings_info_page(request: Request, message: str = "") -> HTMLResponse:
     books_dir = get_books_dir()
@@ -1041,14 +1017,6 @@ def settings_info_page(request: Request, message: str = "") -> HTMLResponse:
             "message": message,
         },
     )
-
-
-@app.get("/manage")
-def manage_index(message: str = "") -> RedirectResponse:
-    target = "/settings"
-    if message:
-        target = f"{target}?message={message}"
-    return RedirectResponse(url=target, status_code=302)
 
 
 @app.get("/settings/scrapbox-import")
@@ -1148,11 +1116,6 @@ def run_index(force: list[str] = Form(default=[])) -> RedirectResponse:
         f"選択した {len(force_paths)} 件の強制再インデックスを開始しました" if force_paths else "インデックスを開始しました"
     )
     return RedirectResponse(url=f"/settings?message={message}", status_code=303)
-
-
-@app.post("/manage/index")
-def manage_run_index(force: list[str] = Form(default=[])) -> RedirectResponse:
-    return run_index(force=force)
 
 
 @app.get("/settings/progress")
