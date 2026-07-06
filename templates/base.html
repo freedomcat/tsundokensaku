@@ -986,6 +986,7 @@
                 <span>ページ</span>
                 <input id="pdf-modal-pages" type="text" inputmode="numeric" placeholder="例: 11-15,18">
               </label>
+              <button type="button" id="pdf-modal-add-workspace" hidden>ワークスペースに追加</button>
               <a class="button" id="pdf-modal-export" href="#" target="_blank" rel="noreferrer">指定ページ切出</a>
               <a class="button" id="pdf-modal-export-md" href="#" target="_blank" rel="noreferrer">MD切出</a>
               <details class="modal-share">
@@ -1018,6 +1019,7 @@
         const chaptersSummary = document.getElementById('pdf-modal-chapters-summary');
         const exportLink = document.getElementById('pdf-modal-export');
         const exportMdLink = document.getElementById('pdf-modal-export-md');
+        const addWorkspaceButton = document.getElementById('pdf-modal-add-workspace');
         const exportStatus = document.getElementById('pdf-modal-export-status');
         const fullscreenButton = document.getElementById('pdf-modal-fullscreen');
         const openLink = document.getElementById('pdf-modal-open');
@@ -1304,6 +1306,9 @@
             link.target = '_blank';
             link.removeAttribute('aria-disabled');
           }
+          if (addWorkspaceButton) {
+            addWorkspaceButton.disabled = !usable;
+          }
           setExportStatus(validationError, true);
           renderShareMenu();
         }
@@ -1479,13 +1484,16 @@
           }
         }
 
-        function openModal(url, label, scrapboxUrl, pdfPath, pages) {
+        function openModal(url, label, scrapboxUrl, pdfPath, pages, fromWorkspace = false) {
           frame.src = url;
           openLink.href = url;
           title.textContent = label || 'PDF';
           setScrapboxLink(scrapboxUrl);
           currentPdfPath = pdfPath || '';
           pagesInput.value = pages || '';
+          if (addWorkspaceButton) {
+            addWorkspaceButton.hidden = !fromWorkspace;
+          }
           setExportLink();
           void loadChapters(currentPdfPath);
           renderShareMenu();
@@ -1507,7 +1515,35 @@
             trigger.dataset.pdfModalScrapboxUrl,
             trigger.dataset.pdfModalPath,
             trigger.dataset.pdfModalPages,
+            trigger.dataset.pdfModalWorkspace === '1',
           );
+        });
+
+        addWorkspaceButton?.addEventListener('click', () => {
+          const pages = pagesInput.value.trim();
+          if (!currentPdfPath || !pages) {
+            return;
+          }
+          const error = TsundokuPages.validatePageSpec(pages, currentPageCount);
+          if (error) {
+            setExportStatus(error, true);
+            return;
+          }
+          const cart = TsundokuCart.load();
+          const entry = cart.books[currentPdfPath];
+          if (entry) {
+            entry.pages = TsundokuPages.mergeSpecs([entry.pages, pages]);
+          } else {
+            cart.books[currentPdfPath] = {
+              title: title.textContent || currentPdfPath,
+              pages: TsundokuPages.mergeSpecs([pages]),
+              collapsed: false,
+              addedAt: new Date().toISOString(),
+            };
+          }
+          TsundokuCart.save(cart);
+          setExportStatus('ワークスペースに追加しました');
+          document.dispatchEvent(new CustomEvent('tsundoku-cart-updated'));
         });
 
         pagesInput.addEventListener('input', setExportLink);

@@ -166,6 +166,15 @@
       const rangePill = document.createElement('span');
       rangePill.className = 'pill ws-book-range';
       rangePill.textContent = entry.pages ? `p.${entry.pages}` : '未指定';
+      const openPdfButton = document.createElement('button');
+      openPdfButton.type = 'button';
+      openPdfButton.className = 'ws-remove';
+      openPdfButton.textContent = 'PDFで選ぶ';
+      openPdfButton.dataset.pdfModalUrl = `/pdf${path.startsWith('/') ? '' : '/'}${path.split('/').map(encodeURIComponent).join('/')}`;
+      openPdfButton.dataset.pdfModalTitle = entry.title;
+      openPdfButton.dataset.pdfModalPath = path;
+      openPdfButton.dataset.pdfModalPages = '';
+      openPdfButton.dataset.pdfModalWorkspace = '1';
       const addPagesButton = document.createElement('button');
       addPagesButton.type = 'button';
       addPagesButton.className = 'ws-remove';
@@ -188,6 +197,7 @@
       });
       summary.appendChild(title);
       summary.appendChild(rangePill);
+      summary.appendChild(openPdfButton);
       summary.appendChild(addPagesButton);
       summary.appendChild(removeButton);
 
@@ -547,6 +557,11 @@
       TsundokuCart.save({ version: 2, books: {} });
       renderAll();
       setStatus('');
+    });
+
+    // PDFプレビューモーダルの「ワークスペースに追加」から発火
+    document.addEventListener('tsundoku-cart-updated', () => {
+      renderAll();
     });
 
     renderAll();
