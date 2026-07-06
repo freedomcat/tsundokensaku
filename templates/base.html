@@ -749,6 +749,7 @@
                 <input id="pdf-modal-pages" type="text" inputmode="numeric" placeholder="11-15,18">
               </label>
               <a class="button" id="pdf-modal-export" href="#" target="_blank" rel="noreferrer">指定ページ切出</a>
+              <a class="button" id="pdf-modal-export-md" href="#" target="_blank" rel="noreferrer">MD切出</a>
               <details class="modal-share">
                 <summary class="modal-share-button" aria-label="シェア">
                   <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
@@ -778,6 +779,7 @@
         const chaptersMenu = document.getElementById('pdf-modal-chapters');
         const chaptersSummary = document.getElementById('pdf-modal-chapters-summary');
         const exportLink = document.getElementById('pdf-modal-export');
+        const exportMdLink = document.getElementById('pdf-modal-export-md');
         const exportStatus = document.getElementById('pdf-modal-export-status');
         const fullscreenButton = document.getElementById('pdf-modal-fullscreen');
         const openLink = document.getElementById('pdf-modal-open');
@@ -1039,29 +1041,29 @@
         }
 
         function setExportLink() {
-          const hasPages = Boolean(pagesInput.value.trim());
-          if (!currentPdfPath) {
-            exportLink.href = '#';
-            exportLink.removeAttribute('target');
-            exportLink.setAttribute('aria-disabled', 'true');
-            renderShareMenu();
-            return;
-          }
-          if (!hasPages) {
-            exportLink.href = '#';
-            exportLink.removeAttribute('target');
-            exportLink.setAttribute('aria-disabled', 'true');
-            renderShareMenu();
-            return;
-          }
           const pages = pagesInput.value.trim();
-          const params = new URLSearchParams({
-            pdf_path: currentPdfPath,
-            pages,
-          });
-          exportLink.href = `/export-pdf?${params.toString()}`;
-          exportLink.target = '_blank';
-          exportLink.removeAttribute('aria-disabled');
+          const links = [
+            [exportLink, '/export-pdf'],
+            [exportMdLink, '/export-md'],
+          ];
+          for (const [link, endpoint] of links) {
+            if (!link) {
+              continue;
+            }
+            if (!currentPdfPath || !pages) {
+              link.href = '#';
+              link.removeAttribute('target');
+              link.setAttribute('aria-disabled', 'true');
+              continue;
+            }
+            const params = new URLSearchParams({
+              pdf_path: currentPdfPath,
+              pages,
+            });
+            link.href = `${endpoint}?${params.toString()}`;
+            link.target = '_blank';
+            link.removeAttribute('aria-disabled');
+          }
           renderShareMenu();
         }
 

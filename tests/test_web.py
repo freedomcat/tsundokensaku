@@ -9,6 +9,7 @@ from pypdf import PdfReader, PdfWriter
 from tsundokensaku.web import (
     build_scrapbox_page_url,
     build_search_scrapbox_body,
+    export_markdown,
     export_pdf,
     group_pdf_results,
     highlight_query,
@@ -231,6 +232,85 @@ class HighlightQueryTest(unittest.TestCase):
                 output.flush()
                 reader = PdfReader(output.name)
                 self.assertEqual(len(reader.pages), 2)
+
+    def test_export_markdown_uses_indexed_text(self) -> None:
+        from tsundokensaku.database import PageRecord, replace_pages
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            books_dir = root / "books"
+            books_dir.mkdir()
+            db_path = root / "index.db"
+            pdf_path = books_dir / "sample.pdf"
+
+            writer = PdfWriter()
+            for _ in range(3):
+                writer.add_blank_page(width=72, height=72)
+            with pdf_path.open("wb") as handle:
+                writer.write(handle)
+
+            connection = connect(db_path)
+            initialize(connection)
+            book_id = upsert_book(
+                connection,
+                path=pdf_path,
+                title="テスト本",
+                size_bytes=pdf_path.stat().st_size,
+                modified_at=pdf_path.stat().st_mtime,
+            )
+            replace_pages(
+                connection,
+                book_id=book_id,
+                title="テスト本",
+                pages=[
+                    PageRecord(page_number=2, text="2ページ目の本文"),
+                    PageRecord(page_number=3, text="3ページ目の本文"),
+                ],
+            )
+            connection.commit()
+            connection.close()
+
+            with (
+                patch("tsundokensaku.web.get_books_dir", return_value=books_dir),
+                patch("tsundokensaku.web.get_db_path", return_value=db_path),
+            ):
+                response = export_markdown(pdf_path="sample.pdf", pages="2-3")
+
+            self.assertEqual(response.status_code, 200)
+            self.assertIn("text/markdown", response.headers["content-type"])
+            self.assertIn("attachment", response.headers["content-disposition"])
+            body = response.body.decode("utf-8")
+            self.assertIn("# テスト本（抜粋）", body)
+            self.assertIn("- ページ: 2-3", body)
+            self.assertIn("## p.2", body)
+            self.assertIn("2ページ目の本文", body)
+            self.assertIn("3ページ目の本文", body)
+
+    def test_export_markdown_falls_back_to_extraction_without_db(self) -> None:
+        import fitz
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            books_dir = root / "books"
+            books_dir.mkdir()
+            pdf_path = books_dir / "sample.pdf"
+
+            doc = fitz.open()
+            page = doc.new_page(width=400, height=400)
+            page.insert_text((50, 100), "live extracted text")
+            doc.save(str(pdf_path))
+            doc.close()
+
+            with (
+                patch("tsundokensaku.web.get_books_dir", return_value=books_dir),
+                patch("tsundokensaku.web.get_db_path", return_value=root / "missing.db"),
+            ):
+                response = export_markdown(pdf_path="sample.pdf", pages="1")
+
+            self.assertEqual(response.status_code, 200)
+            body = response.body.decode("utf-8")
+            self.assertIn("# sample（抜粋）", body)
+            self.assertIn("live extracted text", body)
 
     def test_save_pdf_export_requires_configured_dir(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

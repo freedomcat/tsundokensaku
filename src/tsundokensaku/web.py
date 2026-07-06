@@ -31,6 +31,7 @@ from tsundokensaku.metadata import (
     metadata_for_pdf,
     get_scrapbox_project_url,
 )
+from tsundokensaku.markdown_export import default_markdown_output_name, render_markdown_pages
 from tsundokensaku.pdf_export import default_output_path, parse_page_selection, render_selected_pages
 from tsundokensaku.pdf_outline import list_chapters
 from tsundokensaku.tokenizer import tokenize_query
@@ -697,6 +698,79 @@ def save_pdf_export_to_configured_dir(pdf_path: str, pages: str, *, books_dir: P
     return destination
 
 
+def _get_indexed_book(candidate: Path, *, books_dir: Path, db_path: Path):
+    relative = resolve_pdf_path(candidate, books_dir)
+    if relative is None:
+        return None
+    connection = None
+    try:
+        connection = connect(db_path)
+        for path_candidate in [relative, books_dir.expanduser().resolve() / relative]:
+            book = get_book(connection, path=path_candidate)
+            if book:
+                return book
+    except sqlite3.OperationalError:
+        pass
+    finally:
+        if connection is not None:
+            connection.close()
+    return None
+
+
+def load_pages_text(candidate: Path, page_numbers: list[int], *, books_dir: Path, db_path: Path) -> dict[int, str]:
+    texts: dict[int, str] = {}
+    book = _get_indexed_book(candidate, books_dir=books_dir, db_path=db_path)
+    if book is not None:
+        connection = None
+        try:
+            connection = connect(db_path)
+            placeholders = ",".join("?" for _ in page_numbers)
+            rows = connection.execute(
+                f"SELECT page_number, text FROM pages WHERE book_id = ? AND page_number IN ({placeholders})",
+                [book.id, *page_numbers],
+            ).fetchall()
+            texts = {int(row["page_number"]): str(row["text"]) for row in rows}
+        except sqlite3.OperationalError:
+            texts = {}
+        finally:
+            if connection is not None:
+                connection.close()
+
+    missing = {number for number in page_numbers if number not in texts}
+    if missing:
+        from tsundokensaku.pdf_extract import extract_pages
+
+        for page in extract_pages(candidate):
+            if page.page_number in missing:
+                texts[page.page_number] = page.text
+    return texts
+
+
+def render_markdown_export(candidate: Path, pages: str, *, books_dir: Path, db_path: Path) -> tuple[str, str]:
+    page_spec = pages.strip()
+    if not page_spec:
+        raise HTTPException(status_code=400, detail="pages is required")
+
+    from pypdf import PdfReader
+
+    try:
+        page_numbers = parse_page_selection(page_spec, len(PdfReader(str(candidate)).pages))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    book = _get_indexed_book(candidate, books_dir=books_dir, db_path=db_path)
+    title = book.title if book is not None else candidate.stem
+    texts = load_pages_text(candidate, page_numbers, books_dir=books_dir, db_path=db_path)
+    content = render_markdown_pages(
+        title=title,
+        source_name=candidate.name,
+        page_numbers=page_numbers,
+        texts=texts,
+        exported_at=_now_jst(),
+    )
+    return content, default_markdown_output_name(candidate, page_numbers)
+
+
 def resolve_pdf_scrapbox_url(pdf_path: str, *, books_dir: Path, db_path: Path) -> str | None:
     relative = resolve_pdf_path(pdf_path, books_dir)
     if relative is None:
@@ -1077,6 +1151,24 @@ def export_pdf(pdf_path: str, pages: str) -> Response:
     return Response(
         content=content,
         media_type="application/pdf",
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}",
+        },
+    )
+
+
+@app.get("/export-md")
+def export_markdown(pdf_path: str, pages: str) -> Response:
+    candidate = _resolve_pdf_file_or_404(pdf_path, get_books_dir())
+    content, filename = render_markdown_export(
+        candidate,
+        pages,
+        books_dir=get_books_dir(),
+        db_path=get_db_path(),
+    )
+    return Response(
+        content=content,
+        media_type="text/markdown; charset=utf-8",
         headers={
             "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}",
         },
