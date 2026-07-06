@@ -144,13 +144,9 @@
   <div class="cart-summary">
     <strong>エクスポートカート</strong>
     <span class="pill" id="cart-count"></span>
-    <button type="button" id="cart-toggle-items">内容を表示</button>
-    <button type="button" class="primary" id="cart-export-pdf">PDFエクスポート</button>
-    <button type="button" id="cart-export-md">MDエクスポート</button>
+    <a class="button primary" href="/workspace">ワークスペースで編集</a>
     <button type="button" id="cart-clear">全てクリア</button>
-    <span class="muted cart-status" id="cart-status"></span>
   </div>
-  <div class="cart-items" id="cart-items" hidden></div>
 </section>
 
 <script>
@@ -166,35 +162,11 @@
   })();
 
   (() => {
-    const CART_STORAGE_KEY = 'tsundokensaku-export-cart';
     const cartBar = document.getElementById('export-cart');
     const cartCount = document.getElementById('cart-count');
-    const cartItems = document.getElementById('cart-items');
-    const toggleItemsButton = document.getElementById('cart-toggle-items');
-    const exportPdfButton = document.getElementById('cart-export-pdf');
-    const exportMdButton = document.getElementById('cart-export-md');
     const clearButton = document.getElementById('cart-clear');
-    const cartStatus = document.getElementById('cart-status');
     if (!cartBar) {
       return;
-    }
-
-    function loadCart() {
-      try {
-        const parsed = JSON.parse(sessionStorage.getItem(CART_STORAGE_KEY) || '{}');
-        return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
-      } catch (error) {
-        console.warn('Failed to read export cart', error);
-        return {};
-      }
-    }
-
-    function saveCart(cart) {
-      try {
-        sessionStorage.setItem(CART_STORAGE_KEY, JSON.stringify(cart));
-      } catch (error) {
-        console.warn('Failed to save export cart', error);
-      }
     }
 
     function parsePages(csv) {
@@ -204,68 +176,20 @@
         .filter((value) => Number.isInteger(value) && value >= 1);
     }
 
-    function pagesToSpec(pages) {
-      const sorted = [...new Set(pages)].sort((a, b) => a - b);
-      const ranges = [];
-      for (const page of sorted) {
-        const last = ranges[ranges.length - 1];
-        if (last && page <= last[1] + 1) {
-          last[1] = page;
-        } else {
-          ranges.push([page, page]);
-        }
-      }
-      return ranges
-        .map(([start, end]) => (start === end ? String(start) : `${start}-${end}`))
-        .join(',');
-    }
-
-    function setCartStatus(message) {
-      if (cartStatus) {
-        cartStatus.textContent = message || '';
-      }
-    }
-
-    function renderCart(cart) {
-      const paths = Object.keys(cart);
-      const pageTotal = paths.reduce((total, path) => total + cart[path].pages.length, 0);
-      cartBar.hidden = paths.length === 0;
+    function renderBar(cart) {
+      const count = TsundokuCart.bookCount(cart);
+      cartBar.hidden = count === 0;
       if (cartCount) {
-        cartCount.textContent = `${paths.length}冊 / ${pageTotal}ページ`;
-      }
-      if (!cartItems) {
-        return;
-      }
-      cartItems.innerHTML = '';
-      for (const path of paths) {
-        const entry = cart[path];
-        const row = document.createElement('div');
-        row.className = 'cart-item';
-        const label = document.createElement('span');
-        label.className = 'cart-item-label';
-        label.textContent = `${entry.title}（p.${pagesToSpec(entry.pages)}）`;
-        const remove = document.createElement('button');
-        remove.type = 'button';
-        remove.textContent = '削除';
-        remove.addEventListener('click', () => {
-          const current = loadCart();
-          delete current[path];
-          saveCart(current);
-          renderCart(current);
-          syncCheckboxes(current);
-        });
-        row.appendChild(label);
-        row.appendChild(remove);
-        cartItems.appendChild(row);
+        cartCount.textContent = TsundokuCart.summaryLabel(cart);
       }
     }
 
     function syncCheckboxes(cart) {
       for (const checkbox of document.querySelectorAll('.cart-checkbox')) {
-        const path = checkbox.dataset.cartPath;
+        const entry = cart.books[checkbox.dataset.cartPath];
         const pages = parsePages(checkbox.dataset.cartPages);
-        const entry = cart[path];
-        checkbox.checked = Boolean(entry) && pages.length > 0 && pages.every((page) => entry.pages.includes(page));
+        checkbox.checked =
+          Boolean(entry) && pages.length > 0 && TsundokuPages.specContainsPages(entry.pages, pages);
       }
     }
 
@@ -276,87 +200,27 @@
       if (!path || pages.length === 0) {
         return;
       }
-      const cart = loadCart();
+      const cart = TsundokuCart.load();
+      const entry = cart.books[path];
       if (checkbox.checked) {
-        const entry = cart[path] || { title, pages: [] };
-        entry.title = title;
-        entry.pages = [...new Set([...entry.pages, ...pages])].sort((a, b) => a - b);
-        cart[path] = entry;
-      } else if (cart[path]) {
-        cart[path].pages = cart[path].pages.filter((page) => !pages.includes(page));
-        if (cart[path].pages.length === 0) {
-          delete cart[path];
+        const merged = TsundokuPages.mergeSpecs([entry ? entry.pages : '', TsundokuPages.pagesToSpec(pages)]);
+        cart.books[path] = {
+          title,
+          pages: merged,
+          collapsed: entry ? entry.collapsed : false,
+          addedAt: entry ? entry.addedAt : new Date().toISOString(),
+        };
+      } else if (entry) {
+        const remaining = TsundokuPages.subtractPages(entry.pages, pages);
+        if (remaining) {
+          entry.pages = remaining;
+        } else {
+          delete cart.books[path];
         }
       }
-      saveCart(cart);
-      renderCart(cart);
+      TsundokuCart.save(cart);
+      renderBar(cart);
       syncCheckboxes(cart);
-      setCartStatus('');
-    }
-
-    function filenameFromContentDisposition(header) {
-      const utf8Match = /filename\*=UTF-8''([^;]+)/i.exec(header || '');
-      if (utf8Match) {
-        try {
-          return decodeURIComponent(utf8Match[1]);
-        } catch (error) {
-          console.warn('Failed to decode filename', error);
-        }
-      }
-      const asciiMatch = /filename="?([^";]+)"?/i.exec(header || '');
-      return asciiMatch ? asciiMatch[1] : '';
-    }
-
-    function downloadBlob(blob, filename) {
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = filename || 'export';
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      URL.revokeObjectURL(url);
-    }
-
-    async function exportCart(endpoint, fallbackExtension) {
-      const cart = loadCart();
-      const paths = Object.keys(cart);
-      if (paths.length === 0) {
-        return;
-      }
-      const buttons = [exportPdfButton, exportMdButton, clearButton];
-      for (const button of buttons) {
-        if (button) {
-          button.disabled = true;
-        }
-      }
-      try {
-        let done = 0;
-        for (const path of paths) {
-          const entry = cart[path];
-          setCartStatus(`エクスポート中... ${done + 1}/${paths.length}冊`);
-          const params = new URLSearchParams({ pdf_path: path, pages: pagesToSpec(entry.pages) });
-          const response = await fetch(`${endpoint}?${params.toString()}`);
-          if (!response.ok) {
-            const message = await response.text().catch(() => '');
-            throw new Error(`${entry.title}: ${message || 'エクスポートに失敗しました'}`);
-          }
-          const blob = await response.blob();
-          const filename = filenameFromContentDisposition(response.headers.get('Content-Disposition'))
-            || `export${fallbackExtension}`;
-          downloadBlob(blob, filename);
-          done += 1;
-        }
-        setCartStatus(`${done}冊をダウンロードしました`);
-      } catch (error) {
-        setCartStatus(error instanceof Error ? error.message : 'エクスポートに失敗しました');
-      } finally {
-        for (const button of buttons) {
-          if (button) {
-            button.disabled = false;
-          }
-        }
-      }
     }
 
     document.addEventListener('change', (event) => {
@@ -366,30 +230,15 @@
       }
     });
 
-    toggleItemsButton?.addEventListener('click', () => {
-      if (cartItems) {
-        cartItems.hidden = !cartItems.hidden;
-        toggleItemsButton.textContent = cartItems.hidden ? '内容を表示' : '内容を隠す';
-      }
-    });
-
-    exportPdfButton?.addEventListener('click', () => {
-      void exportCart('/export-pdf', '.pdf');
-    });
-
-    exportMdButton?.addEventListener('click', () => {
-      void exportCart('/export-md', '.md');
-    });
-
     clearButton?.addEventListener('click', () => {
-      saveCart({});
-      renderCart({});
-      syncCheckboxes({});
-      setCartStatus('');
+      const cart = { version: 2, books: {} };
+      TsundokuCart.save(cart);
+      renderBar(cart);
+      syncCheckboxes(cart);
     });
 
-    const initialCart = loadCart();
-    renderCart(initialCart);
+    const initialCart = TsundokuCart.load();
+    renderBar(initialCart);
     syncCheckboxes(initialCart);
   })();
 </script>

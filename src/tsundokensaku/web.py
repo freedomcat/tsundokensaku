@@ -922,6 +922,11 @@ def search_scrapbox_export(
     return RedirectResponse(url=url, status_code=303)
 
 
+@app.get("/workspace", response_class=HTMLResponse)
+def workspace_page(request: Request) -> HTMLResponse:
+    return templates.TemplateResponse(request, "workspace.html", {"request": request})
+
+
 @app.get("/settings", response_class=HTMLResponse)
 def settings_page(request: Request, message: str = "") -> HTMLResponse:
     books_dir = get_books_dir()

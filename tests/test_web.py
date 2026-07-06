@@ -20,6 +20,7 @@ from tsundokensaku.web import (
     resolve_pdf_scrapbox_url,
     save_pdf_export_to_configured_dir,
     save_uploaded_pdf,
+    workspace_page,
 )
 from tsundokensaku.database import connect, initialize, upsert_book
 
@@ -233,6 +234,19 @@ class HighlightQueryTest(unittest.TestCase):
                 output.flush()
                 reader = PdfReader(output.name)
                 self.assertEqual(len(reader.pages), 2)
+
+    def test_workspace_page_renders(self) -> None:
+        from unittest.mock import MagicMock
+
+        request = MagicMock()
+        request.url.path = "/workspace"
+        response = workspace_page(request)
+
+        self.assertEqual(response.status_code, 200)
+        body = response.body.decode("utf-8")
+        self.assertIn("ワークスペース", body)
+        self.assertIn("ws-export-pdf", body)
+        self.assertIn("ws-export-md", body)
 
     def test_export_markdown_uses_indexed_text(self) -> None:
         from tsundokensaku.database import PageRecord, replace_pages
