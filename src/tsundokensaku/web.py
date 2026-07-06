@@ -746,6 +746,49 @@ def load_pages_text(candidate: Path, page_numbers: list[int], *, books_dir: Path
     return texts
 
 
+def _page_snippet(text: str, query: str, *, width: int = 80) -> str:
+    flat = " ".join(text.split())
+    index = flat.lower().find(query.lower())
+    if index < 0:
+        return flat[:width]
+    start = max(0, index - 20)
+    end = min(len(flat), index + len(query) + width - 20)
+    prefix = "…" if start > 0 else ""
+    suffix = "…" if end < len(flat) else ""
+    return f"{prefix}{flat[start:end]}{suffix}"
+
+
+def search_book_pages(candidate: Path, query: str, *, books_dir: Path, db_path: Path, limit: int = 100) -> dict[str, object]:
+    book = _get_indexed_book(candidate, books_dir=books_dir, db_path=db_path)
+    if book is None:
+        return {"indexed": False, "pages": []}
+
+    escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    connection = connect(db_path)
+    try:
+        rows = connection.execute(
+            "SELECT page_number, text FROM pages "
+            "WHERE book_id = ? AND text LIKE ? ESCAPE '\\' "
+            "ORDER BY page_number LIMIT ?",
+            (book.id, f"%{escaped}%", limit),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return {"indexed": False, "pages": []}
+    finally:
+        connection.close()
+
+    return {
+        "indexed": True,
+        "pages": [
+            {
+                "page_number": int(row["page_number"]),
+                "snippet": _page_snippet(str(row["text"]), query),
+            }
+            for row in rows
+        ],
+    }
+
+
 def render_markdown_export(candidate: Path, pages: str, *, books_dir: Path, db_path: Path) -> tuple[str, str]:
     page_spec = pages.strip()
     if not page_spec:
@@ -1159,6 +1202,17 @@ def export_pdf(pdf_path: str, pages: str) -> Response:
         headers={
             "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}",
         },
+    )
+
+
+@app.get("/search-pages")
+def search_pages(pdf_path: str, q: str = "") -> JSONResponse:
+    query = q.strip()
+    if not query:
+        return JSONResponse({"indexed": True, "pages": []})
+    candidate = _resolve_pdf_file_or_404(pdf_path, get_books_dir())
+    return JSONResponse(
+        search_book_pages(candidate, query, books_dir=get_books_dir(), db_path=get_db_path())
     )
 
 

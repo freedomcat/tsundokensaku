@@ -20,6 +20,7 @@ from tsundokensaku.web import (
     resolve_pdf_scrapbox_url,
     save_pdf_export_to_configured_dir,
     save_uploaded_pdf,
+    search_pages,
     workspace_page,
 )
 from tsundokensaku.database import connect, initialize, upsert_book
@@ -247,6 +248,84 @@ class HighlightQueryTest(unittest.TestCase):
         self.assertIn("ワークスペース", body)
         self.assertIn("ws-export-pdf", body)
         self.assertIn("ws-export-md", body)
+
+    def test_search_pages_returns_matching_pages_with_snippets(self) -> None:
+        from tsundokensaku.database import PageRecord, replace_pages
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            books_dir = root / "books"
+            books_dir.mkdir()
+            db_path = root / "index.db"
+            pdf_path = books_dir / "sample.pdf"
+
+            writer = PdfWriter()
+            for _ in range(3):
+                writer.add_blank_page(width=72, height=72)
+            with pdf_path.open("wb") as handle:
+                writer.write(handle)
+
+            connection = connect(db_path)
+            initialize(connection)
+            book_id = upsert_book(
+                connection,
+                path=pdf_path,
+                title="テスト本",
+                size_bytes=pdf_path.stat().st_size,
+                modified_at=pdf_path.stat().st_mtime,
+            )
+            replace_pages(
+                connection,
+                book_id=book_id,
+                title="テスト本",
+                pages=[
+                    PageRecord(page_number=1, text="SQLiteの話はここには出てこない"),
+                    PageRecord(page_number=2, text="全文検索エンジンとしてSQLite FTS5を使う"),
+                    PageRecord(page_number=3, text="100%_LIKE記号のエスケープ確認"),
+                ],
+            )
+            connection.commit()
+            connection.close()
+
+            with (
+                patch("tsundokensaku.web.get_books_dir", return_value=books_dir),
+                patch("tsundokensaku.web.get_db_path", return_value=db_path),
+            ):
+                response = search_pages(pdf_path="sample.pdf", q="FTS5")
+                payload = json.loads(response.body)
+                self.assertTrue(payload["indexed"])
+                self.assertEqual([hit["page_number"] for hit in payload["pages"]], [2])
+                self.assertIn("FTS5", payload["pages"][0]["snippet"])
+
+                escaped = json.loads(search_pages(pdf_path="sample.pdf", q="%_LIKE").body)
+                self.assertEqual([hit["page_number"] for hit in escaped["pages"]], [3])
+
+                no_hit = json.loads(search_pages(pdf_path="sample.pdf", q="存在しない語").body)
+                self.assertEqual(no_hit["pages"], [])
+
+                empty_query = json.loads(search_pages(pdf_path="sample.pdf", q="  ").body)
+                self.assertEqual(empty_query["pages"], [])
+
+    def test_search_pages_reports_unindexed_pdf(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            books_dir = root / "books"
+            books_dir.mkdir()
+            pdf_path = books_dir / "sample.pdf"
+
+            writer = PdfWriter()
+            writer.add_blank_page(width=72, height=72)
+            with pdf_path.open("wb") as handle:
+                writer.write(handle)
+
+            with (
+                patch("tsundokensaku.web.get_books_dir", return_value=books_dir),
+                patch("tsundokensaku.web.get_db_path", return_value=root / "missing.db"),
+            ):
+                payload = json.loads(search_pages(pdf_path="sample.pdf", q="キーワード").body)
+
+            self.assertFalse(payload["indexed"])
+            self.assertEqual(payload["pages"], [])
 
     def test_export_markdown_uses_indexed_text(self) -> None:
         from tsundokensaku.database import PageRecord, replace_pages
