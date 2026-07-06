@@ -1,0 +1,570 @@
+{% extends "base.html" %}
+{% block title %}つんどけんさく | ワークスペース{% endblock %}
+{% block content %}
+<section class="card">
+  <h2 style="margin: 0 0 6px;">ワークスペース</h2>
+  <p class="muted" style="margin: 0 0 14px;">AIへ渡す資料を組み立てます。検索結果から追加したページ範囲を、章の選び直しや直接編集で調整してからエクスポートしてください。</p>
+  <div class="ws-toolbar">
+    <span class="pill" id="ws-count"></span>
+    <button type="button" id="ws-add-open">ページを追加</button>
+    <button type="button" class="primary" id="ws-export-pdf">PDFエクスポート</button>
+    <button type="button" id="ws-export-md">MDエクスポート</button>
+    <button type="button" id="ws-clear">すべてクリア</button>
+    <span class="ws-status" id="ws-status"></span>
+  </div>
+</section>
+
+<div class="modal" id="ws-add-modal" aria-hidden="true">
+  <div class="modal-panel ws-add-panel" role="dialog" aria-modal="true" aria-labelledby="ws-add-title">
+    <div class="modal-bar">
+      <div class="modal-title" id="ws-add-title">ページを追加</div>
+      <div class="modal-actions">
+        <button type="button" id="ws-add-close">閉じる</button>
+      </div>
+    </div>
+    <form class="ws-add-form" id="ws-add-form">
+      <select id="ws-add-scope" aria-label="検索対象の本"></select>
+      <input type="search" id="ws-add-query" placeholder="キーワードでページを検索">
+      <button type="submit" class="primary">検索</button>
+    </form>
+    <div class="ws-add-results" id="ws-add-results">
+      <p class="muted" style="margin: 0;">ワークスペース内のPDF本文からページを検索します。</p>
+    </div>
+    <div class="ws-add-footer">
+      <button type="button" class="primary" id="ws-add-submit" disabled>選択したページを追加</button>
+      <button type="button" id="ws-add-cancel">キャンセル</button>
+      <span class="ws-status" id="ws-add-status"></span>
+    </div>
+  </div>
+</div>
+
+<section class="card">
+  <div id="ws-books"></div>
+  <p class="muted" id="ws-empty" hidden>ワークスペースは空です。検索結果の「カートに追加」からページを追加してください。</p>
+</section>
+
+<script>
+  (() => {
+    const booksContainer = document.getElementById('ws-books');
+    const emptyMessage = document.getElementById('ws-empty');
+    const countBadge = document.getElementById('ws-count');
+    const exportPdfButton = document.getElementById('ws-export-pdf');
+    const exportMdButton = document.getElementById('ws-export-md');
+    const clearButton = document.getElementById('ws-clear');
+    const statusLine = document.getElementById('ws-status');
+    const addOpenButton = document.getElementById('ws-add-open');
+    const addModal = document.getElementById('ws-add-modal');
+    const addForm = document.getElementById('ws-add-form');
+    const addScope = document.getElementById('ws-add-scope');
+    const addQuery = document.getElementById('ws-add-query');
+    const addResults = document.getElementById('ws-add-results');
+    const addSubmitButton = document.getElementById('ws-add-submit');
+    const addStatus = document.getElementById('ws-add-status');
+    const outlineCache = new Map();
+
+    function setStatus(message, isError = false) {
+      statusLine.textContent = message || '';
+      statusLine.classList.toggle('is-error', Boolean(isError && message));
+    }
+
+    function refreshSummary() {
+      const cart = TsundokuCart.load();
+      const count = TsundokuCart.bookCount(cart);
+      countBadge.textContent = TsundokuCart.summaryLabel(cart);
+      emptyMessage.hidden = count > 0;
+      for (const button of [exportPdfButton, exportMdButton, clearButton, addOpenButton]) {
+        button.disabled = count === 0;
+      }
+    }
+
+    function updateBook(path, updater) {
+      const cart = TsundokuCart.load();
+      const entry = cart.books[path];
+      if (!entry) {
+        return;
+      }
+      updater(entry);
+      TsundokuCart.save(cart);
+      refreshSummary();
+    }
+
+    function removeBook(path) {
+      const cart = TsundokuCart.load();
+      delete cart.books[path];
+      TsundokuCart.save(cart);
+      refreshSummary();
+    }
+
+    async function fetchOutline(path) {
+      if (outlineCache.has(path)) {
+        return outlineCache.get(path);
+      }
+      let outline = { pageCount: null, chapters: [] };
+      try {
+        const response = await fetch(`/pdf-outline?${new URLSearchParams({ pdf_path: path })}`);
+        if (response.ok) {
+          const payload = await response.json();
+          outline = {
+            pageCount:
+              Number.isInteger(payload.page_count) && payload.page_count > 0 ? payload.page_count : null,
+            chapters: Array.isArray(payload.chapters) ? payload.chapters : [],
+          };
+        }
+      } catch (error) {
+        console.warn('Failed to load PDF outline', error);
+      }
+      outlineCache.set(path, outline);
+      return outline;
+    }
+
+    function renderChapters(card, path, outline) {
+      const holder = card.querySelector('.ws-chapters-holder');
+      holder.innerHTML = '';
+      if (outline.chapters.length === 0) {
+        return;
+      }
+      const caption = document.createElement('div');
+      caption.className = 'ws-chapters-caption';
+      caption.textContent = '章から選ぶ（チェックした章の範囲でページ範囲を置き換えます）';
+      const list = document.createElement('div');
+      list.className = 'ws-chapters';
+      for (const chapter of outline.chapters) {
+        const item = document.createElement('label');
+        item.className = 'modal-chapter-item';
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.value = chapter.pages;
+        const text = document.createElement('span');
+        const indent = '　'.repeat(Math.max(0, (chapter.level || 1) - 1));
+        const range = chapter.start_page === chapter.end_page
+          ? `p.${chapter.start_page}`
+          : `p.${chapter.start_page}-${chapter.end_page}`;
+        text.textContent = `${indent}${chapter.title} (${range})`;
+        item.appendChild(checkbox);
+        item.appendChild(text);
+        list.appendChild(item);
+      }
+      list.addEventListener('change', () => {
+        const selected = [...list.querySelectorAll('input:checked')].map((input) => input.value);
+        const input = card.querySelector('.ws-pages-input');
+        input.value = TsundokuPages.mergeSpecs(selected);
+        input.dispatchEvent(new Event('input'));
+      });
+      holder.appendChild(caption);
+      holder.appendChild(list);
+    }
+
+    function buildCard(path, entry) {
+      const card = document.createElement('details');
+      card.className = 'ws-book';
+      card.open = !entry.collapsed;
+
+      const summary = document.createElement('summary');
+      const title = document.createElement('span');
+      title.className = 'ws-book-title';
+      title.textContent = entry.title;
+      const rangePill = document.createElement('span');
+      rangePill.className = 'pill ws-book-range';
+      rangePill.textContent = entry.pages ? `p.${entry.pages}` : '未指定';
+      const openPdfButton = document.createElement('button');
+      openPdfButton.type = 'button';
+      openPdfButton.className = 'ws-remove';
+      openPdfButton.textContent = 'PDFで選ぶ';
+      openPdfButton.dataset.pdfModalUrl = `/pdf/${encodeURIComponent(path)}`;
+      openPdfButton.dataset.pdfModalTitle = entry.title;
+      openPdfButton.dataset.pdfModalPath = path;
+      openPdfButton.dataset.pdfModalPages = '';
+      openPdfButton.dataset.pdfModalWorkspace = '1';
+      const addPagesButton = document.createElement('button');
+      addPagesButton.type = 'button';
+      addPagesButton.className = 'ws-remove';
+      addPagesButton.textContent = 'ページを追加';
+      addPagesButton.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        openAddModal(path);
+      });
+      const removeButton = document.createElement('button');
+      removeButton.type = 'button';
+      removeButton.className = 'ws-remove';
+      removeButton.textContent = '削除';
+      removeButton.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        removeBook(path);
+        card.remove();
+        setStatus('');
+      });
+      summary.appendChild(title);
+      summary.appendChild(rangePill);
+      summary.appendChild(openPdfButton);
+      summary.appendChild(addPagesButton);
+      summary.appendChild(removeButton);
+
+      const body = document.createElement('div');
+      body.className = 'ws-book-body';
+
+      const pagesRow = document.createElement('label');
+      pagesRow.className = 'ws-pages-row';
+      const pagesLabel = document.createElement('span');
+      pagesLabel.textContent = 'ページ範囲';
+      const pagesInput = document.createElement('input');
+      pagesInput.type = 'text';
+      pagesInput.className = 'ws-pages-input';
+      pagesInput.value = entry.pages;
+      pagesInput.placeholder = '例: 11-15,18';
+      pagesRow.appendChild(pagesLabel);
+      pagesRow.appendChild(pagesInput);
+
+      const errorLine = document.createElement('div');
+      errorLine.className = 'ws-error';
+      errorLine.hidden = true;
+
+      const chaptersHolder = document.createElement('div');
+      chaptersHolder.className = 'ws-chapters-holder';
+
+      pagesInput.addEventListener('input', () => {
+        const value = pagesInput.value.trim();
+        const outline = outlineCache.get(path);
+        const error = value ? TsundokuPages.validatePageSpec(value, outline ? outline.pageCount : null) : 'ページを指定してください';
+        errorLine.textContent = error;
+        errorLine.hidden = !error;
+        rangePill.textContent = value ? `p.${value}` : '未指定';
+        updateBook(path, (book) => {
+          book.pages = value;
+        });
+        setStatus('');
+      });
+
+      card.addEventListener('toggle', () => {
+        updateBook(path, (book) => {
+          book.collapsed = !card.open;
+        });
+        if (card.open && !chaptersHolder.dataset.loaded) {
+          chaptersHolder.dataset.loaded = '1';
+          void fetchOutline(path).then((outline) => {
+            renderChapters(card, path, outline);
+            pagesInput.dispatchEvent(new Event('input'));
+          });
+        }
+      });
+
+      body.appendChild(pagesRow);
+      body.appendChild(errorLine);
+      body.appendChild(chaptersHolder);
+      card.appendChild(summary);
+      card.appendChild(body);
+
+      if (card.open) {
+        chaptersHolder.dataset.loaded = '1';
+        void fetchOutline(path).then((outline) => {
+          renderChapters(card, path, outline);
+          const value = pagesInput.value.trim();
+          const error = value ? TsundokuPages.validatePageSpec(value, outline.pageCount) : 'ページを指定してください';
+          errorLine.textContent = error;
+          errorLine.hidden = !error;
+        });
+      }
+      return card;
+    }
+
+    function renderAll() {
+      const cart = TsundokuCart.load();
+      booksContainer.innerHTML = '';
+      for (const [path, entry] of Object.entries(cart.books)) {
+        booksContainer.appendChild(buildCard(path, entry));
+      }
+      refreshSummary();
+    }
+
+    function filenameFromContentDisposition(header) {
+      const utf8Match = /filename\*=UTF-8''([^;]+)/i.exec(header || '');
+      if (utf8Match) {
+        try {
+          return decodeURIComponent(utf8Match[1]);
+        } catch (error) {
+          console.warn('Failed to decode filename', error);
+        }
+      }
+      const asciiMatch = /filename="?([^";]+)"?/i.exec(header || '');
+      return asciiMatch ? asciiMatch[1] : '';
+    }
+
+    function downloadBlob(blob, filename) {
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = filename || 'export';
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    }
+
+    async function errorMessageFromResponse(response) {
+      const text = await response.text().catch(() => '');
+      try {
+        const parsed = JSON.parse(text);
+        if (parsed && typeof parsed.detail === 'string') {
+          return parsed.detail;
+        }
+      } catch (error) {
+        // JSONでなければ本文をそのまま使う
+      }
+      return text || 'エクスポートに失敗しました';
+    }
+
+    async function exportAll(endpoint, fallbackExtension) {
+      const cart = TsundokuCart.load();
+      const entries = Object.entries(cart.books);
+      if (entries.length === 0) {
+        return;
+      }
+      for (const [path, entry] of entries) {
+        const outline = outlineCache.get(path);
+        const error = entry.pages.trim()
+          ? TsundokuPages.validatePageSpec(entry.pages, outline ? outline.pageCount : null)
+          : 'ページを指定してください';
+        if (error) {
+          setStatus(`${entry.title}: ${error}`, true);
+          return;
+        }
+      }
+      const buttons = [exportPdfButton, exportMdButton, clearButton];
+      for (const button of buttons) {
+        button.disabled = true;
+      }
+      try {
+        let done = 0;
+        for (const [path, entry] of entries) {
+          setStatus(`エクスポート中... ${done + 1}/${entries.length}冊`);
+          const params = new URLSearchParams({ pdf_path: path, pages: entry.pages.trim() });
+          const response = await fetch(`${endpoint}?${params.toString()}`);
+          if (!response.ok) {
+            throw new Error(`${entry.title}: ${await errorMessageFromResponse(response)}`);
+          }
+          const blob = await response.blob();
+          const filename = filenameFromContentDisposition(response.headers.get('Content-Disposition'))
+            || `export${fallbackExtension}`;
+          downloadBlob(blob, filename);
+          done += 1;
+        }
+        setStatus(`${done}冊をダウンロードしました`);
+      } catch (error) {
+        setStatus(error instanceof Error ? error.message : 'エクスポートに失敗しました', true);
+      } finally {
+        for (const button of buttons) {
+          button.disabled = false;
+        }
+        refreshSummary();
+      }
+    }
+
+    function setAddStatus(message, isError = false) {
+      addStatus.textContent = message || '';
+      addStatus.classList.toggle('is-error', Boolean(isError && message));
+    }
+
+    function updateAddSubmitState() {
+      addSubmitButton.disabled = addResults.querySelectorAll('input:checked').length === 0;
+    }
+
+    function openAddModal(scopePath = '') {
+      addQuery.value = '';
+      addScope.innerHTML = '';
+      const allOption = document.createElement('option');
+      allOption.value = '';
+      allOption.textContent = 'すべての本';
+      addScope.appendChild(allOption);
+      const cart = TsundokuCart.load();
+      for (const [path, entry] of Object.entries(cart.books)) {
+        const option = document.createElement('option');
+        option.value = path;
+        option.textContent = entry.title;
+        addScope.appendChild(option);
+      }
+      addScope.value = scopePath && cart.books[scopePath] ? scopePath : '';
+      addResults.innerHTML = '<p class="muted" style="margin: 0;">対象の本の本文からページを検索します。</p>';
+      setAddStatus('');
+      updateAddSubmitState();
+      addModal.classList.add('open');
+      addModal.setAttribute('aria-hidden', 'false');
+      addQuery.focus();
+    }
+
+    function closeAddModal() {
+      addModal.classList.remove('open');
+      addModal.setAttribute('aria-hidden', 'true');
+    }
+
+    function renderSearchGroup(entry, payload, query) {
+      const group = document.createElement('div');
+      const heading = document.createElement('div');
+      heading.className = 'ws-add-book-title';
+      heading.textContent = entry.title;
+      group.appendChild(heading);
+      if (!payload.indexed) {
+        const note = document.createElement('p');
+        note.className = 'muted';
+        note.style.margin = '0';
+        note.textContent = '未インデックスのため検索できません。設定画面でインデックスを実行してください。';
+        group.appendChild(note);
+        return group;
+      }
+      if (payload.pages.length === 0) {
+        const note = document.createElement('p');
+        note.className = 'muted';
+        note.style.margin = '0';
+        note.textContent = `「${query}」に一致するページはありません。`;
+        group.appendChild(note);
+        return group;
+      }
+      for (const hit of payload.pages) {
+        const row = document.createElement('label');
+        row.className = 'modal-chapter-item';
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.value = String(hit.page_number);
+        checkbox.dataset.path = entry.path;
+        const text = document.createElement('span');
+        const alreadyAdded = TsundokuPages.specContainsPages(entry.pages, [hit.page_number]);
+        text.textContent = `p.${hit.page_number}  ${hit.snippet}${alreadyAdded ? '（追加済み）' : ''}`;
+        if (alreadyAdded) {
+          checkbox.disabled = true;
+          row.classList.add('ws-add-row-added');
+        }
+        row.appendChild(checkbox);
+        row.appendChild(text);
+        group.appendChild(row);
+      }
+      return group;
+    }
+
+    async function runPageSearch() {
+      const query = addQuery.value.trim();
+      if (!query) {
+        setAddStatus('検索キーワードを入力してください', true);
+        return;
+      }
+      const cart = TsundokuCart.load();
+      const scopePath = addScope.value;
+      const entries = Object.entries(cart.books).filter(
+        ([path]) => !scopePath || path === scopePath
+      );
+      addResults.innerHTML = '<p class="muted" style="margin: 0;">検索中...</p>';
+      setAddStatus('');
+      const groups = [];
+      for (const [path, entry] of entries) {
+        try {
+          const response = await fetch(
+            `/search-pages?${new URLSearchParams({ pdf_path: path, q: query })}`
+          );
+          if (!response.ok) {
+            throw new Error(await errorMessageFromResponse(response));
+          }
+          const payload = await response.json();
+          groups.push(renderSearchGroup({ path, title: entry.title, pages: entry.pages }, payload, query));
+        } catch (error) {
+          const group = document.createElement('div');
+          const heading = document.createElement('div');
+          heading.className = 'ws-add-book-title';
+          heading.textContent = entry.title;
+          const note = document.createElement('div');
+          note.className = 'ws-error';
+          note.textContent = error instanceof Error ? error.message : '検索に失敗しました';
+          group.appendChild(heading);
+          group.appendChild(note);
+          groups.push(group);
+        }
+      }
+      addResults.innerHTML = '';
+      for (const group of groups) {
+        addResults.appendChild(group);
+      }
+      updateAddSubmitState();
+    }
+
+    function addSelectedPages() {
+      const selectedByPath = new Map();
+      for (const checkbox of addResults.querySelectorAll('input:checked')) {
+        const path = checkbox.dataset.path;
+        const page = parseInt(checkbox.value, 10);
+        if (!path || !Number.isInteger(page)) {
+          continue;
+        }
+        if (!selectedByPath.has(path)) {
+          selectedByPath.set(path, []);
+        }
+        selectedByPath.get(path).push(page);
+      }
+      if (selectedByPath.size === 0) {
+        return;
+      }
+      const cart = TsundokuCart.load();
+      let addedCount = 0;
+      for (const [path, pages] of selectedByPath) {
+        const entry = cart.books[path];
+        if (!entry) {
+          continue;
+        }
+        const newPages = pages.filter((page) => !TsundokuPages.specContainsPages(entry.pages, [page]));
+        if (newPages.length === 0) {
+          continue;
+        }
+        entry.pages = TsundokuPages.mergeSpecs([entry.pages, TsundokuPages.pagesToSpec(newPages)]);
+        addedCount += newPages.length;
+      }
+      TsundokuCart.save(cart);
+      renderAll();
+      closeAddModal();
+      setStatus(addedCount > 0 ? `${addedCount}ページを追加しました` : '追加するページはありませんでした');
+    }
+
+    addOpenButton.addEventListener('click', openAddModal);
+    document.getElementById('ws-add-close').addEventListener('click', closeAddModal);
+    document.getElementById('ws-add-cancel').addEventListener('click', closeAddModal);
+    addModal.addEventListener('click', (event) => {
+      if (event.target === addModal) {
+        closeAddModal();
+      }
+    });
+    document.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape' && addModal.classList.contains('open')) {
+        closeAddModal();
+      }
+    });
+    addForm.addEventListener('submit', (event) => {
+      event.preventDefault();
+      void runPageSearch();
+    });
+    addScope.addEventListener('change', () => {
+      if (addQuery.value.trim()) {
+        void runPageSearch();
+      }
+    });
+    addResults.addEventListener('change', updateAddSubmitState);
+    addSubmitButton.addEventListener('click', addSelectedPages);
+
+    exportPdfButton.addEventListener('click', () => {
+      void exportAll('/export-pdf', '.pdf');
+    });
+
+    exportMdButton.addEventListener('click', () => {
+      void exportAll('/export-md', '.md');
+    });
+
+    clearButton.addEventListener('click', () => {
+      TsundokuCart.save({ version: 2, books: {} });
+      renderAll();
+      setStatus('');
+    });
+
+    // PDFプレビューモーダルの「ワークスペースに追加」から発火
+    document.addEventListener('tsundoku-cart-updated', () => {
+      renderAll();
+    });
+
+    renderAll();
+  })();
+</script>
+{% endblock %}

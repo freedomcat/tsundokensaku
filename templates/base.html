@@ -6,6 +6,8 @@
     <title>{% block title %}つんどけんさく{% endblock %}</title>
     <link rel="icon" href="/static/tsundokensaku-logo.png" type="image/png">
     <link rel="apple-touch-icon" href="/static/tsundokensaku-logo.png">
+    <script src="/static/pages-spec.js"></script>
+    <script src="/static/export-cart.js"></script>
     <style>
       :root {
         color-scheme: light;
@@ -378,6 +380,211 @@
         margin-top: 28px;
         color: var(--muted);
         font-size: 0.92rem;
+      }
+
+      .cart-toggle {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 10px 14px;
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        background: var(--panel);
+        box-shadow: var(--shadow);
+        cursor: pointer;
+        line-height: 1.2;
+      }
+
+      .cart-bar {
+        position: sticky;
+        bottom: 12px;
+        z-index: 30;
+        border-color: var(--accent);
+      }
+
+      .cart-summary {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+
+      .cart-status {
+        font-size: 0.88rem;
+        overflow-wrap: anywhere;
+      }
+
+      .nav a .pill {
+        margin-left: 6px;
+        padding: 2px 8px;
+      }
+
+      .ws-toolbar {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+
+      .ws-status {
+        flex-basis: 100%;
+        color: var(--muted);
+        font-size: 0.88rem;
+        overflow-wrap: anywhere;
+      }
+
+      .ws-status.is-error,
+      .ws-error {
+        color: #b91c1c;
+        background: rgba(220, 38, 38, 0.08);
+        border: 1px solid rgba(220, 38, 38, 0.28);
+        border-radius: 8px;
+        padding: 6px 10px;
+        font-size: 0.88rem;
+      }
+
+      .ws-status.is-error::before,
+      .ws-error::before {
+        content: "⚠ ";
+      }
+
+      .ws-book {
+        border: 1px solid var(--border);
+        border-radius: 16px;
+        background: rgba(255, 255, 255, 0.75);
+        margin-bottom: 12px;
+        overflow: hidden;
+      }
+
+      .ws-book > summary {
+        list-style: none;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 14px 16px;
+      }
+
+      .ws-book > summary::-webkit-details-marker {
+        display: none;
+      }
+
+      .ws-book > summary::before {
+        content: "▸";
+        color: var(--muted);
+      }
+
+      .ws-book[open] > summary::before {
+        content: "▾";
+      }
+
+      .ws-book-title {
+        flex: 1;
+        min-width: 0;
+        font-weight: 600;
+        overflow-wrap: anywhere;
+      }
+
+      .ws-book-body {
+        padding: 0 16px 16px;
+        display: grid;
+        gap: 10px;
+      }
+
+      .ws-pages-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+        color: var(--muted);
+        font-size: 0.92rem;
+      }
+
+      .ws-pages-row input {
+        flex: 1 1 200px;
+        max-width: 320px;
+        padding: 7px 9px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: white;
+        font: inherit;
+      }
+
+      .ws-chapters {
+        display: grid;
+        gap: 2px;
+        max-height: 280px;
+        overflow-y: auto;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 8px;
+        background: white;
+      }
+
+      .ws-chapters-caption {
+        color: var(--muted);
+        font-size: 0.88rem;
+      }
+
+      .ws-remove {
+        padding: 6px 12px;
+        font-size: 0.88rem;
+      }
+
+      .modal-panel.ws-add-panel {
+        width: min(720px, 100%);
+        height: auto;
+        max-height: min(85vh, 900px);
+        grid-template-rows: auto auto minmax(0, 1fr) auto;
+      }
+
+      .ws-add-form {
+        display: flex;
+        gap: 8px;
+        padding: 12px;
+        border-bottom: 1px solid var(--border);
+      }
+
+      .ws-add-form input[type="search"] {
+        flex: 1;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 10px 12px;
+        font: inherit;
+      }
+
+      .ws-add-form select {
+        max-width: 220px;
+        padding: 10px 12px;
+        border-radius: 10px;
+      }
+
+      .ws-add-results {
+        overflow-y: auto;
+        padding: 12px;
+        display: grid;
+        gap: 10px;
+        align-content: start;
+        min-height: 160px;
+      }
+
+      .ws-add-book-title {
+        font-weight: 600;
+        margin-bottom: 4px;
+      }
+
+      .ws-add-row-added {
+        color: var(--muted);
+        cursor: default;
+      }
+
+      .ws-add-footer {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+        padding: 12px;
+        border-top: 1px solid var(--border);
       }
 
       .viewer-header {
@@ -760,6 +967,7 @@
           </a>
         </div>
         <nav class="nav">
+          <a href="/workspace" class="{% if request.url.path == '/workspace' %}active{% endif %}" style="min-width: 88px;">ワークスペース<span class="pill" id="nav-workspace-count" hidden></span></a>
           <a href="/settings" class="{% if request.url.path.startswith('/settings') or request.url.path == '/manage' %}active{% endif %}" style="min-width: 88px;">設定</a>
         </nav>
       </div>
@@ -778,6 +986,7 @@
                 <span>ページ</span>
                 <input id="pdf-modal-pages" type="text" inputmode="numeric" placeholder="例: 11-15,18">
               </label>
+              <button type="button" id="pdf-modal-add-workspace" hidden>ワークスペースに追加</button>
               <a class="button" id="pdf-modal-export" href="#" target="_blank" rel="noreferrer">指定ページ切出</a>
               <a class="button" id="pdf-modal-export-md" href="#" target="_blank" rel="noreferrer">MD切出</a>
               <details class="modal-share">
@@ -810,6 +1019,7 @@
         const chaptersSummary = document.getElementById('pdf-modal-chapters-summary');
         const exportLink = document.getElementById('pdf-modal-export');
         const exportMdLink = document.getElementById('pdf-modal-export-md');
+        const addWorkspaceButton = document.getElementById('pdf-modal-add-workspace');
         const exportStatus = document.getElementById('pdf-modal-export-status');
         const fullscreenButton = document.getElementById('pdf-modal-fullscreen');
         const openLink = document.getElementById('pdf-modal-open');
@@ -1072,7 +1282,7 @@
 
         function setExportLink() {
           const pages = pagesInput.value.trim();
-          const validationError = currentPdfPath && pages ? validatePageSpec(pages) : '';
+          const validationError = currentPdfPath && pages ? TsundokuPages.validatePageSpec(pages, currentPageCount) : '';
           const usable = Boolean(currentPdfPath && pages && !validationError);
           const links = [
             [exportLink, '/export-pdf'],
@@ -1096,78 +1306,15 @@
             link.target = '_blank';
             link.removeAttribute('aria-disabled');
           }
+          if (addWorkspaceButton) {
+            addWorkspaceButton.disabled = !usable;
+          }
           setExportStatus(validationError, true);
           renderShareMenu();
         }
 
         let chaptersRequestToken = 0;
         let currentPageCount = null;
-
-        function validatePageSpec(spec) {
-          let validChunks = 0;
-          for (const raw of spec.split(',')) {
-            const chunk = raw.trim();
-            if (!chunk) {
-              continue;
-            }
-            const match = /^(\d*)-(\d*)$|^(\d+)$/.exec(chunk);
-            if (!match || (match[3] === undefined && !match[1] && !match[2])) {
-              return `ページ指定が不正です: ${chunk}`;
-            }
-            let start;
-            let end;
-            if (match[3] !== undefined) {
-              start = parseInt(match[3], 10);
-              end = start;
-            } else {
-              start = match[1] ? parseInt(match[1], 10) : 1;
-              end = match[2] ? parseInt(match[2], 10) : null;
-            }
-            if (start < 1 || (end !== null && end < 1)) {
-              return `ページ番号は1以上で指定してください: ${chunk}`;
-            }
-            if (end !== null && start > end) {
-              return `範囲の始まりが終わりより大きいです: ${chunk}`;
-            }
-            if (currentPageCount !== null) {
-              const upper = end === null ? start : end;
-              if (start > currentPageCount || upper > currentPageCount) {
-                return `ページ番号が範囲外です: ${chunk}（1-${currentPageCount}）`;
-              }
-            }
-            validChunks += 1;
-          }
-          if (validChunks === 0) {
-            return 'ページを指定してください';
-          }
-          return '';
-        }
-
-        function mergePageRanges(specs) {
-          const ranges = [];
-          for (const spec of specs) {
-            const match = /^(\d+)(?:-(\d+))?$/.exec(String(spec).trim());
-            if (!match) {
-              continue;
-            }
-            const first = parseInt(match[1], 10);
-            const second = match[2] ? parseInt(match[2], 10) : first;
-            ranges.push([Math.min(first, second), Math.max(first, second)]);
-          }
-          ranges.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
-          const merged = [];
-          for (const [start, end] of ranges) {
-            const last = merged[merged.length - 1];
-            if (last && start <= last[1] + 1) {
-              last[1] = Math.max(last[1], end);
-            } else {
-              merged.push([start, end]);
-            }
-          }
-          return merged
-            .map(([start, end]) => (start === end ? String(start) : `${start}-${end}`))
-            .join(',');
-        }
 
         function clearChapterSelection() {
           if (chaptersMenu) {
@@ -1337,13 +1484,16 @@
           }
         }
 
-        function openModal(url, label, scrapboxUrl, pdfPath, pages) {
+        function openModal(url, label, scrapboxUrl, pdfPath, pages, fromWorkspace = false) {
           frame.src = url;
           openLink.href = url;
           title.textContent = label || 'PDF';
           setScrapboxLink(scrapboxUrl);
           currentPdfPath = pdfPath || '';
           pagesInput.value = pages || '';
+          if (addWorkspaceButton) {
+            addWorkspaceButton.hidden = !fromWorkspace;
+          }
           setExportLink();
           void loadChapters(currentPdfPath);
           renderShareMenu();
@@ -1365,14 +1515,42 @@
             trigger.dataset.pdfModalScrapboxUrl,
             trigger.dataset.pdfModalPath,
             trigger.dataset.pdfModalPages,
+            trigger.dataset.pdfModalWorkspace === '1',
           );
+        });
+
+        addWorkspaceButton?.addEventListener('click', () => {
+          const pages = pagesInput.value.trim();
+          if (!currentPdfPath || !pages) {
+            return;
+          }
+          const error = TsundokuPages.validatePageSpec(pages, currentPageCount);
+          if (error) {
+            setExportStatus(error, true);
+            return;
+          }
+          const cart = TsundokuCart.load();
+          const entry = cart.books[currentPdfPath];
+          if (entry) {
+            entry.pages = TsundokuPages.mergeSpecs([entry.pages, pages]);
+          } else {
+            cart.books[currentPdfPath] = {
+              title: title.textContent || currentPdfPath,
+              pages: TsundokuPages.mergeSpecs([pages]),
+              collapsed: false,
+              addedAt: new Date().toISOString(),
+            };
+          }
+          TsundokuCart.save(cart);
+          setExportStatus('ワークスペースに追加しました');
+          document.dispatchEvent(new CustomEvent('tsundoku-cart-updated'));
         });
 
         pagesInput.addEventListener('input', setExportLink);
 
         chaptersMenu?.addEventListener('change', () => {
           const selected = [...chaptersMenu.querySelectorAll('input:checked')].map((input) => input.value);
-          pagesInput.value = mergePageRanges(selected);
+          pagesInput.value = TsundokuPages.mergeSpecs(selected);
           updateChaptersSummary(selected.length);
           setExportLink();
         });

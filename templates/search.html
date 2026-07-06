@@ -92,6 +92,18 @@
                       <a class="button" href="{{ result.scrapbox_url }}" target="_blank" rel="noreferrer">Scrapbox</a>
                     {% endif %}
                   {% else %}
+                    {% if result.page_numbers %}
+                      <label class="cart-toggle">
+                        <input
+                          type="checkbox"
+                          class="cart-checkbox"
+                          data-cart-path="{{ result.path or '' }}"
+                          data-cart-title="{{ result.title }}"
+                          data-cart-pages="{{ result.page_numbers | join(',') }}"
+                        >
+                        カートに追加
+                      </label>
+                    {% endif %}
                     {% if result.open_url %}
                       <button
                         type="button"
@@ -128,6 +140,15 @@
   {% endif %}
 </section>
 
+<section class="card cart-bar" id="export-cart" hidden>
+  <div class="cart-summary">
+    <strong>エクスポートカート</strong>
+    <span class="pill" id="cart-count"></span>
+    <a class="button primary" href="/workspace">ワークスペースで編集</a>
+    <button type="button" id="cart-clear">全てクリア</button>
+  </div>
+</section>
+
 <script>
   (() => {
     const form = document.getElementById('search-display-form');
@@ -138,6 +159,87 @@
     for (const control of form.querySelectorAll('[data-auto-submit]')) {
       control.addEventListener('change', () => form.submit());
     }
+  })();
+
+  (() => {
+    const cartBar = document.getElementById('export-cart');
+    const cartCount = document.getElementById('cart-count');
+    const clearButton = document.getElementById('cart-clear');
+    if (!cartBar) {
+      return;
+    }
+
+    function parsePages(csv) {
+      return String(csv || '')
+        .split(',')
+        .map((value) => parseInt(value.trim(), 10))
+        .filter((value) => Number.isInteger(value) && value >= 1);
+    }
+
+    function renderBar(cart) {
+      const count = TsundokuCart.bookCount(cart);
+      cartBar.hidden = count === 0;
+      if (cartCount) {
+        cartCount.textContent = TsundokuCart.summaryLabel(cart);
+      }
+    }
+
+    function syncCheckboxes(cart) {
+      for (const checkbox of document.querySelectorAll('.cart-checkbox')) {
+        const entry = cart.books[checkbox.dataset.cartPath];
+        const pages = parsePages(checkbox.dataset.cartPages);
+        checkbox.checked =
+          Boolean(entry) && pages.length > 0 && TsundokuPages.specContainsPages(entry.pages, pages);
+      }
+    }
+
+    function handleToggle(checkbox) {
+      const path = checkbox.dataset.cartPath;
+      const title = checkbox.dataset.cartTitle || path;
+      const pages = parsePages(checkbox.dataset.cartPages);
+      if (!path || pages.length === 0) {
+        return;
+      }
+      const cart = TsundokuCart.load();
+      const entry = cart.books[path];
+      if (checkbox.checked) {
+        const merged = TsundokuPages.mergeSpecs([entry ? entry.pages : '', TsundokuPages.pagesToSpec(pages)]);
+        cart.books[path] = {
+          title,
+          pages: merged,
+          collapsed: entry ? entry.collapsed : false,
+          addedAt: entry ? entry.addedAt : new Date().toISOString(),
+        };
+      } else if (entry) {
+        const remaining = TsundokuPages.subtractPages(entry.pages, pages);
+        if (remaining) {
+          entry.pages = remaining;
+        } else {
+          delete cart.books[path];
+        }
+      }
+      TsundokuCart.save(cart);
+      renderBar(cart);
+      syncCheckboxes(cart);
+    }
+
+    document.addEventListener('change', (event) => {
+      const checkbox = event.target.closest('.cart-checkbox');
+      if (checkbox) {
+        handleToggle(checkbox);
+      }
+    });
+
+    clearButton?.addEventListener('click', () => {
+      const cart = { version: 2, books: {} };
+      TsundokuCart.save(cart);
+      renderBar(cart);
+      syncCheckboxes(cart);
+    });
+
+    const initialCart = TsundokuCart.load();
+    renderBar(initialCart);
+    syncCheckboxes(initialCart);
   })();
 </script>
 
