@@ -1,4 +1,4 @@
-// エクスポートカート（ワークスペース）の sessionStorage ストア。
+// ワークスペースの sessionStorage ストア。
 // 形式: { version: 2, books: { "<pdf_path>": { title, pages(spec文字列), collapsed, addedAt } } }
 window.TsundokuCart = (() => {
   const STORAGE_KEY = 'tsundokensaku-export-cart';
@@ -93,7 +93,7 @@ window.TsundokuCart = (() => {
       return;
     }
     const count = bookCount(load());
-    badge.textContent = String(count);
+    badge.textContent = `${count}冊`;
     badge.hidden = count === 0;
   }
 
