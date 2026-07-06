@@ -144,6 +144,10 @@ make run
 make search QUERY=SQLite
 ```
 
+## 補助スクリプト
+
+運用・取り込み・移行・開発補助のための単独CLIツール群が `scripts/` にあります。Web UIの機能ではなく、ターミナルから直接実行するものです。一覧と使い方は [scripts/README.md](scripts/README.md) を参照してください。
+
 ## Cosense/Scrapbox連携
 
 Cosense/ScrapboxのエクスポートJSONを取り込むと、メモ検索やPDFに対応するScrapboxページへのリンク表示ができます。
