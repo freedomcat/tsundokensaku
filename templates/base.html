@@ -627,6 +627,66 @@
         font: inherit;
       }
 
+      .modal-chapters {
+        position: relative;
+      }
+
+      .modal-chapters > summary {
+        list-style: none;
+        cursor: pointer;
+        display: inline-flex;
+        align-items: center;
+        border: 1px solid var(--border);
+        background: white;
+        color: var(--text);
+        padding: 7px 12px;
+        border-radius: 8px;
+        font-size: 0.92rem;
+        white-space: nowrap;
+      }
+
+      .modal-chapters > summary::-webkit-details-marker {
+        display: none;
+      }
+
+      .modal-chapters-menu {
+        position: absolute;
+        left: 0;
+        top: calc(100% + 8px);
+        min-width: 300px;
+        max-width: 420px;
+        max-height: 50vh;
+        overflow-y: auto;
+        padding: 8px;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        background: white;
+        box-shadow: 0 16px 40px rgba(15, 23, 42, 0.18);
+        z-index: 10;
+      }
+
+      .modal-chapter-item {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 7px 10px;
+        border-radius: 8px;
+        cursor: pointer;
+        font-size: 0.92rem;
+      }
+
+      .modal-chapter-item:hover {
+        background: var(--panel);
+      }
+
+      .modal-chapter-item input {
+        flex: none;
+      }
+
+      .modal-chapter-item span {
+        overflow-wrap: anywhere;
+      }
+
       .modal-viewport {
         width: 100%;
         height: 100%;
@@ -680,6 +740,10 @@
           <div class="modal-bar">
             <div class="modal-title" id="pdf-modal-title"></div>
             <div class="modal-actions">
+              <details class="modal-chapters" id="pdf-modal-chapters-wrap" hidden>
+                <summary id="pdf-modal-chapters-summary">章を選択</summary>
+                <div class="modal-chapters-menu" id="pdf-modal-chapters"></div>
+              </details>
               <label class="modal-pages">
                 <span>ページ</span>
                 <input id="pdf-modal-pages" type="text" inputmode="numeric" placeholder="11-15,18">
@@ -710,6 +774,9 @@
         const frame = document.getElementById('pdf-modal-frame');
         const title = document.getElementById('pdf-modal-title');
         const pagesInput = document.getElementById('pdf-modal-pages');
+        const chaptersWrap = document.getElementById('pdf-modal-chapters-wrap');
+        const chaptersMenu = document.getElementById('pdf-modal-chapters');
+        const chaptersSummary = document.getElementById('pdf-modal-chapters-summary');
         const exportLink = document.getElementById('pdf-modal-export');
         const exportStatus = document.getElementById('pdf-modal-export-status');
         const fullscreenButton = document.getElementById('pdf-modal-fullscreen');
@@ -943,6 +1010,7 @@
           modal.setAttribute('aria-hidden', 'true');
           frame.src = 'about:blank';
           modal.querySelector('.modal-share')?.removeAttribute('open');
+          chaptersWrap?.removeAttribute('open');
           updateFullscreenButton();
         }
 
@@ -995,6 +1063,64 @@
           exportLink.target = '_blank';
           exportLink.removeAttribute('aria-disabled');
           renderShareMenu();
+        }
+
+        let chaptersRequestToken = 0;
+
+        function updateChaptersSummary(selectedCount) {
+          if (chaptersSummary) {
+            chaptersSummary.textContent = selectedCount > 0 ? `章 ${selectedCount}件選択` : '章を選択';
+          }
+        }
+
+        function resetChapters() {
+          if (!chaptersWrap || !chaptersMenu) {
+            return;
+          }
+          chaptersWrap.hidden = true;
+          chaptersWrap.removeAttribute('open');
+          chaptersMenu.innerHTML = '';
+          updateChaptersSummary(0);
+        }
+
+        async function loadChapters(pdfPath) {
+          resetChapters();
+          if (!chaptersWrap || !chaptersMenu || !pdfPath) {
+            return;
+          }
+          const token = ++chaptersRequestToken;
+          let chapters = [];
+          try {
+            const response = await fetch(`/pdf-outline?${new URLSearchParams({ pdf_path: pdfPath })}`);
+            if (!response.ok) {
+              return;
+            }
+            const payload = await response.json();
+            chapters = Array.isArray(payload.chapters) ? payload.chapters : [];
+          } catch (error) {
+            console.warn('Failed to load PDF outline', error);
+            return;
+          }
+          if (token !== chaptersRequestToken || chapters.length === 0) {
+            return;
+          }
+          for (const chapter of chapters) {
+            const item = document.createElement('label');
+            item.className = 'modal-chapter-item';
+            const checkbox = document.createElement('input');
+            checkbox.type = 'checkbox';
+            checkbox.value = chapter.pages;
+            const text = document.createElement('span');
+            const indent = '　'.repeat(Math.max(0, (chapter.level || 1) - 1));
+            const range = chapter.start_page === chapter.end_page
+              ? `p.${chapter.start_page}`
+              : `p.${chapter.start_page}-${chapter.end_page}`;
+            text.textContent = `${indent}${chapter.title} (${range})`;
+            item.appendChild(checkbox);
+            item.appendChild(text);
+            chaptersMenu.appendChild(item);
+          }
+          chaptersWrap.hidden = false;
         }
 
         function setExportStatus(message) {
@@ -1092,6 +1218,7 @@
           pagesInput.value = pages || '';
           setExportLink();
           setExportStatus('');
+          void loadChapters(currentPdfPath);
           renderShareMenu();
           modal.querySelector('.modal-share').removeAttribute('open');
           modal.classList.add('open');
@@ -1116,6 +1243,14 @@
 
         pagesInput.addEventListener('input', setExportLink);
         pagesInput.addEventListener('input', () => setExportStatus(''));
+
+        chaptersMenu?.addEventListener('change', () => {
+          const selected = [...chaptersMenu.querySelectorAll('input:checked')].map((input) => input.value);
+          pagesInput.value = selected.join(',');
+          updateChaptersSummary(selected.length);
+          setExportLink();
+          setExportStatus('');
+        });
 
         fullscreenButton?.addEventListener('click', () => {
           void toggleFullscreen();
