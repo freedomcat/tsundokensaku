@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlparse
@@ -265,6 +266,32 @@ def _looks_like_non_title_text(text: str) -> bool:
     return False
 
 
+_TITLE_WORD_CHAR = re.compile(
+    "[0-9A-Za-z"
+    "぀-ゟ"  # hiragana
+    "゠-ヿ"  # katakana
+    "々"  # 々
+    "一-鿿"  # kanji
+    "０-９Ａ-Ｚａ-ｚ"  # fullwidth alphanumerics
+    "]"
+)
+
+
+def _looks_like_ocr_noise(text: str) -> bool:
+    """Reject candidates that look like cover-OCR garbage (e.g. "オ ム",
+    "- Ⅱ1幅 -", "I7t"): too short, too few real characters, or mostly
+    symbols left over from decorative cover art."""
+    compact = re.sub(r"\s+", "", text)
+    if len(compact) <= 3:
+        return True
+    word_chars = _TITLE_WORD_CHAR.findall(compact)
+    if len(word_chars) < 2:
+        return True
+    if (len(compact) - len(word_chars)) / len(compact) > 0.3:
+        return True
+    return False
+
+
 def _looks_like_source_file_title(text: str) -> bool:
     if not text:
         return False
@@ -389,6 +416,79 @@ def read_outline_title_candidate(pdf_path: str | Path) -> str | None:
     return None
 
 
+_BOOK_ID_PATTERN = r"[0-9]{9}[0-9X]|[0-9]{13}|B[0-9A-Z]{9}"
+_BOOKSCAN_STEM_PATTERN = re.compile(
+    rf"^(?P<body>.+?)\s+\d{{1,4}}p_(?P<book_id>{_BOOK_ID_PATTERN})$",
+    re.IGNORECASE,
+)
+_ID_PREFIX_STEM_PATTERN = re.compile(
+    rf"^(?P<book_id>{_BOOK_ID_PATTERN})_(?P<title>.+)$",
+    re.IGNORECASE,
+)
+_LATIN_AUTHOR_TOKEN = re.compile(r"[A-Z][A-Za-z'.\-]*")
+_KATAKANA_AUTHOR_TOKEN = re.compile(r"[゠-ヿ・=＝.A-Za-z]+")
+
+
+def _looks_like_author_token(token: str) -> bool:
+    if _LATIN_AUTHOR_TOKEN.fullmatch(token):
+        return True
+    if re.search("[ァ-ヺ]", token) and _KATAKANA_AUTHOR_TOKEN.fullmatch(token):
+        return True
+    return False
+
+
+def extract_bookscan_filename_title(filename: str | Path) -> str | None:
+    """Extract the title part from a BookScan-style filename such as
+    "More Effective C# 6．0／7．0 Bill Wagner 320p_4798153982.pdf".
+
+    Trailing tokens that look like an author name (Latin name words or
+    katakana words) are dropped. When the whole remainder would also look
+    like an author name the split is ambiguous, so the full body is kept."""
+    stem = Path(str(filename)).stem
+    match = _BOOKSCAN_STEM_PATTERN.match(stem)
+    if not match:
+        return None
+
+    tokens = match.group("body").split()
+    kept = list(tokens)
+    stripped = 0
+    while len(kept) > 1 and stripped < 4 and _looks_like_author_token(kept[-1]):
+        kept.pop()
+        stripped += 1
+    if stripped and all(_looks_like_author_token(token) for token in kept):
+        kept = tokens
+
+    title = " ".join(kept).strip(" .")
+    return title or None
+
+
+def extract_id_prefix_filename_title(filename: str | Path) -> str | None:
+    """Extract the title part from an import-style filename such as
+    "4798153982_More Effective C#.pdf" or "B08XXXXXXX_タイトル.pdf"."""
+    stem = Path(str(filename)).stem
+    match = _ID_PREFIX_STEM_PATTERN.match(stem)
+    if not match:
+        return None
+    title = re.sub(r"\s+", " ", match.group("title")).strip(" .")
+    return title or None
+
+
+# Structured filename formats, tried in order. Support for a new naming
+# scheme only needs another parser function appended here.
+_FILENAME_TITLE_PARSERS: tuple[Callable[[str | Path], str | None], ...] = (
+    extract_bookscan_filename_title,
+    extract_id_prefix_filename_title,
+)
+
+
+def extract_structured_filename_title(filename: str | Path) -> str | None:
+    for parser in _FILENAME_TITLE_PARSERS:
+        title = parser(filename)
+        if title:
+            return title
+    return None
+
+
 def sanitize_pdf_filename_title(filename: str | Path) -> str:
     stem = Path(filename).stem
     cleaned = stem.replace("_", " ").replace("-", " ")
@@ -397,23 +497,27 @@ def sanitize_pdf_filename_title(filename: str | Path) -> str:
 
 
 def resolve_pdf_display_title(path: str | Path, metadata_by_stem: dict[str, BookMetadata]) -> str:
-    pdf_title = read_pdf_metadata_title(path)
-    if pdf_title:
-        return pdf_title
-
-    cover_title = read_cover_title_candidate(path)
-    if cover_title:
-        return cover_title
-
-    outline_title = read_outline_title_candidate(path)
-    if outline_title:
-        return outline_title
-
     metadata = metadata_for_pdf(path, metadata_by_stem)
     if metadata:
         metadata_title = _normalize_title_value(metadata.title)
         if metadata_title:
             return metadata_title
+
+    pdf_title = read_pdf_metadata_title(path)
+    if pdf_title and not _looks_like_ocr_noise(pdf_title):
+        return pdf_title
+
+    filename_title = extract_structured_filename_title(path)
+    if filename_title:
+        return filename_title
+
+    outline_title = read_outline_title_candidate(path)
+    if outline_title and not _looks_like_ocr_noise(outline_title):
+        return outline_title
+
+    cover_title = read_cover_title_candidate(path)
+    if cover_title and not _looks_like_ocr_noise(cover_title):
+        return cover_title
 
     return sanitize_pdf_filename_title(path)
 
@@ -492,7 +596,7 @@ def sanitize_filename_part(value: str, *, max_length: int) -> str:
 
 def extract_book_id(filename: str) -> str:
     stem = Path(filename).stem
-    match = re.search(r"_([0-9]{9}[0-9X]|[0-9]{13}|B[0-9A-Z]{9})$", stem, re.IGNORECASE)
+    match = re.search(rf"_({_BOOK_ID_PATTERN})$", stem, re.IGNORECASE)
     if match:
         return match.group(1)
     return sanitize_filename_part(stem, max_length=24)

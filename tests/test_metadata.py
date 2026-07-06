@@ -8,6 +8,9 @@ from pypdf import PdfWriter
 
 from tsundokensaku.metadata import (
     BookMetadata,
+    extract_bookscan_filename_title,
+    extract_id_prefix_filename_title,
+    extract_structured_filename_title,
     load_kindle_books,
     load_metadata_by_pdf_stem,
     load_scrapbox_memos,
@@ -189,35 +192,23 @@ class MetadataTest(unittest.TestCase):
             self.assertEqual(books[0].scrapbox_url, "https://scrapbox.io/custom-project/JavaScript%3A%20The%20Definitive%20Guide")
             self.assertEqual(books[0].cover_url, "https://m.media-amazon.com/images/I/cover.jpg")
 
-    def test_resolve_pdf_display_title_prefers_pdf_metadata_then_scrapbox_then_filename(self) -> None:
+    def test_resolve_pdf_display_title_prefers_scrapbox_then_pdf_metadata_then_filename(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             pdf_with_metadata = root / "metadata.pdf"
-            pdf_without_metadata = root / "scrapbox.pdf"
+            pdf_with_both = root / "scrapbox.pdf"
             pdf_fallback = root / "Programming_Ruby_5th_ja.pdf"
 
-            writer = PdfWriter()
-            writer.add_blank_page(width=72, height=72)
-            writer.add_metadata({"/Title": "PDF Metadata Title"})
-            with pdf_with_metadata.open("wb") as handle:
-                writer.write(handle)
-
-            writer = PdfWriter()
-            writer.add_blank_page(width=72, height=72)
-            with pdf_without_metadata.open("wb") as handle:
-                writer.write(handle)
-
-            writer = PdfWriter()
-            writer.add_blank_page(width=72, height=72)
-            with pdf_fallback.open("wb") as handle:
-                writer.write(handle)
+            _write_blank_pdf(pdf_with_metadata, title="PDF Metadata Title")
+            _write_blank_pdf(pdf_with_both, title="PDF Metadata Title")
+            _write_blank_pdf(pdf_fallback)
 
             metadata_by_stem = {
                 "scrapbox": BookMetadata(title="Scrapbox Title"),
             }
 
             self.assertEqual(resolve_pdf_display_title(pdf_with_metadata, metadata_by_stem), "PDF Metadata Title")
-            self.assertEqual(resolve_pdf_display_title(pdf_without_metadata, metadata_by_stem), "Scrapbox Title")
+            self.assertEqual(resolve_pdf_display_title(pdf_with_both, metadata_by_stem), "Scrapbox Title")
             self.assertEqual(resolve_pdf_display_title(pdf_fallback, {}), "Programming Ruby 5th ja")
 
     def test_resolve_pdf_display_title_prefers_metadata_over_cover(self) -> None:
@@ -257,14 +248,92 @@ class MetadataTest(unittest.TestCase):
 
             self.assertEqual(resolve_pdf_display_title(pdf_path, metadata_by_stem), "Scrapbox Title")
 
-    def test_resolve_pdf_display_title_prefers_cover_over_scrapbox(self) -> None:
+    def test_resolve_pdf_display_title_prefers_scrapbox_over_cover(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             pdf_path = Path(temp_dir) / "scrapbox.pdf"
             _write_cover_pdf(pdf_path, "Cover Title")
 
             metadata_by_stem = {"scrapbox": BookMetadata(title="Scrapbox Title")}
 
-            self.assertEqual(resolve_pdf_display_title(pdf_path, metadata_by_stem), "Cover Title")
+            self.assertEqual(resolve_pdf_display_title(pdf_path, metadata_by_stem), "Scrapbox Title")
+
+    def test_resolve_pdf_display_title_extracts_title_from_bookscan_filename(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            pdf_path = Path(temp_dir) / "More Effective C# 6．0／7．0 Bill Wagner 320p_4798153982.pdf"
+            _write_blank_pdf(pdf_path)
+
+            self.assertEqual(resolve_pdf_display_title(pdf_path, {}), "More Effective C# 6．0／7．0")
+
+    def test_resolve_pdf_display_title_prefers_bookscan_filename_over_cover(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            pdf_path = Path(temp_dir) / "Real Book Title 著者 320p_4798153982.pdf"
+            _write_cover_pdf(pdf_path, "Cover Title")
+
+            self.assertEqual(resolve_pdf_display_title(pdf_path, {}), "Real Book Title 著者")
+
+    def test_resolve_pdf_display_title_rejects_noise_metadata_title(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            for noise in ("- Ⅱ1幅 -", "オム", "I7t"):
+                pdf_path = Path(temp_dir) / f"CODE_COMPLETE_{len(noise)}.pdf"
+                _write_blank_pdf(pdf_path, title=noise)
+
+                self.assertEqual(
+                    resolve_pdf_display_title(pdf_path, {}),
+                    f"CODE COMPLETE {len(noise)}",
+                )
+
+    def test_extract_bookscan_filename_title_strips_author_tokens(self) -> None:
+        cases = {
+            "More Effective C# 6．0／7．0 Bill Wagner 320p_4798153982.pdf": "More Effective C# 6．0／7．0",
+            "オープンソースの成功-政治学者が分析するコミュニティの可能性 スティーブン ウェバー 354p_4839916586.pdf": "オープンソースの成功-政治学者が分析するコミュニティの可能性",
+            "チームが機能するとはどういうことか──「学習力」と「実行力」を高める実践アプローチ エイミー・C・エドモンドソン 392p_4862761828.pdf": "チームが機能するとはどういうことか──「学習力」と「実行力」を高める実践アプローチ",
+        }
+        for filename, expected in cases.items():
+            self.assertEqual(extract_bookscan_filename_title(filename), expected)
+
+    def test_extract_bookscan_filename_title_keeps_ambiguous_body(self) -> None:
+        # Title and author are both katakana/Latin words: cannot split safely.
+        self.assertEqual(
+            extract_bookscan_filename_title("リーダブルコード Dustin Boswell 260p_4873115655.pdf"),
+            "リーダブルコード Dustin Boswell",
+        )
+
+    def test_extract_bookscan_filename_title_ignores_non_bookscan_names(self) -> None:
+        self.assertIsNone(extract_bookscan_filename_title("cathedral.pdf"))
+        self.assertIsNone(extract_bookscan_filename_title("Programming_Ruby_5th_ja.pdf"))
+        self.assertIsNone(extract_bookscan_filename_title("4798153982_More Effective C#.pdf"))
+
+    def test_extract_id_prefix_filename_title(self) -> None:
+        cases = {
+            "9784798153988_More Effective C#.pdf": "More Effective C#",
+            "4274217884_テスト駆動開発 Kent Beck.pdf": "テスト駆動開発 Kent Beck",
+            "B08XYZ1234_プログラマー脳.pdf": "プログラマー脳",
+        }
+        for filename, expected in cases.items():
+            self.assertEqual(extract_id_prefix_filename_title(filename), expected)
+
+    def test_extract_id_prefix_filename_title_ignores_other_names(self) -> None:
+        self.assertIsNone(extract_id_prefix_filename_title("cathedral.pdf"))
+        self.assertIsNone(extract_id_prefix_filename_title("More Effective C# Bill Wagner 320p_4798153982.pdf"))
+        self.assertIsNone(extract_id_prefix_filename_title("12345_短すぎるID.pdf"))
+
+    def test_extract_structured_filename_title_tries_parsers_in_order(self) -> None:
+        self.assertEqual(
+            extract_structured_filename_title("More Effective C# Bill Wagner 320p_4798153982.pdf"),
+            "More Effective C#",
+        )
+        self.assertEqual(
+            extract_structured_filename_title("4798153982_More Effective C#.pdf"),
+            "More Effective C#",
+        )
+        self.assertIsNone(extract_structured_filename_title("cathedral.pdf"))
+
+    def test_resolve_pdf_display_title_extracts_title_from_id_prefix_filename(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            pdf_path = Path(temp_dir) / "4798153982_More Effective C#.pdf"
+            _write_blank_pdf(pdf_path)
+
+            self.assertEqual(resolve_pdf_display_title(pdf_path, {}), "More Effective C#")
 
     def test_resolve_pdf_display_title_uses_filename_when_all_candidates_are_empty(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
