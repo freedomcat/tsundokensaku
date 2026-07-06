@@ -23,6 +23,8 @@ services:
       PYTHONPATH: /app/src
       BOOKS_DIR: /data/books
       DB_DIR: /app/data
+      HOST_BOOKS_DIR: ${BOOKS_DIR:-./data/books}
+      HOST_DB_DIR: ${DB_DIR:-./data}
       PDF_EXPORT_SAVE_DIR: ${PDF_EXPORT_SAVE_DIR:-}
       SCRAPBOX_BASE_URL: ${SCRAPBOX_BASE_URL:-}
       SCRAPBOX_EXPORT_JSON: ${SCRAPBOX_EXPORT_JSON:-}

@@ -997,6 +997,21 @@ def settings_page(request: Request, message: str = "") -> HTMLResponse:
     )
 
 
+def get_host_books_dir() -> str | None:
+    """Host-side path of the books dir, passed in by docker-compose as
+    HOST_BOOKS_DIR. Unset outside Docker, where BOOKS_DIR itself is the
+    host path."""
+    configured = os.environ.get("HOST_BOOKS_DIR", "").strip()
+    return configured or None
+
+
+def get_host_db_path() -> str | None:
+    configured = os.environ.get("HOST_DB_DIR", "").strip()
+    if not configured:
+        return None
+    return f"{configured.rstrip('/')}/{get_db_path().name}"
+
+
 @app.get("/settings/info", response_class=HTMLResponse)
 def settings_info_page(request: Request, message: str = "") -> HTMLResponse:
     books_dir = get_books_dir()
@@ -1010,6 +1025,8 @@ def settings_info_page(request: Request, message: str = "") -> HTMLResponse:
             "request": request,
             "books_dir": books_dir,
             "db_path": db_path,
+            "host_books_dir": get_host_books_dir(),
+            "host_db_path": get_host_db_path(),
             "pdf_count": library["pdf_count"],
             "book_count": db_stats["book_count"],
             "kindle_count": db_stats["kindle_count"],

@@ -17,14 +17,20 @@
       <div class="grid">
         <div class="stat">
           <div class="label">Books</div>
-          <div class="value" style="font-size: 1rem; line-height: 1.5; word-break: break-all;">{{ books_dir }}</div>
+          <div class="value" style="font-size: 1rem; line-height: 1.5; word-break: break-all;">{{ host_books_dir or books_dir }}</div>
+          {% if host_books_dir %}
+            <div class="muted" style="margin-top: 6px; word-break: break-all;">コンテナ内: <code>{{ books_dir }}</code></div>
+          {% endif %}
         </div>
         <div class="stat">
           <div class="label">DB</div>
-          <div class="value" style="font-size: 1rem; line-height: 1.5; word-break: break-all;">{{ db_path }}</div>
+          <div class="value" style="font-size: 1rem; line-height: 1.5; word-break: break-all;">{{ host_db_path or db_path }}</div>
+          {% if host_db_path %}
+            <div class="muted" style="margin-top: 6px; word-break: break-all;">コンテナ内: <code>{{ db_path }}</code></div>
+          {% endif %}
         </div>
       </div>
-      <p class="muted" style="margin-top: 12px;">現在このアプリが参照している場所です。</p>
+      <p class="muted" style="margin-top: 12px;">実際に参照しているフォルダとデータベースです。</p>
     </section>
   </main>
 </div>
