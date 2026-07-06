@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from tsundokensaku.database import connect, search
+from tsundokensaku.database import connect, initialize, list_pdf_title_refresh_targets, refresh_pdf_titles, search
 from tsundokensaku.indexer import index_books
 from tsundokensaku.metadata import find_export_json, load_metadata_by_pdf_stem, metadata_for_pdf
 
@@ -94,6 +94,15 @@ def main(argv: list[str] | None = None) -> int:
         help="Search scope: all, title, body, or memo.",
     )
 
+    refresh_titles_parser = subparsers.add_parser(
+        "refresh-titles",
+        help="Refresh PDF display titles without re-extracting page text.",
+    )
+    refresh_titles_parser.add_argument("--db", type=Path, default=DEFAULT_DB_PATH)
+    refresh_titles_parser.add_argument("--pdf-path", type=Path, default=None, help="Refresh only one PDF path.")
+    refresh_titles_parser.add_argument("--path-like", default=None, help="Refresh PDFs whose path or filename contains this text.")
+    refresh_titles_parser.add_argument("--dry-run", action="store_true", help="Show targets without updating the DB.")
+
     args = parser.parse_args(argv)
 
     if args.command == "index":
@@ -128,6 +137,42 @@ def main(argv: list[str] | None = None) -> int:
             if result["kind"] != "pdf":
                 print(f"  {result['open_url'] or result['path']}")
             print()
+        return 0
+
+    if args.command == "refresh-titles":
+        connection = connect(args.db)
+        try:
+            initialize(connection)
+            export_json = find_export_json(PROJECT_ROOT)
+            metadata_by_stem = load_metadata_by_pdf_stem(export_json)
+            targets = list_pdf_title_refresh_targets(
+                connection,
+                metadata_by_stem,
+                pdf_path=args.pdf_path,
+                path_like=args.path_like,
+            )
+            changed = [target for target in targets if target.current_title != target.resolved_title]
+            print(f"Target PDFs: {len(targets)}")
+            for target in targets:
+                filename = target.filename or Path(target.path).name
+                marker = "CHANGE" if target.current_title != target.resolved_title else "KEEP"
+                print(f"[{marker}] {target.current_title} -> {target.resolved_title}")
+                print(f"  {filename}")
+                print(f"  {target.path}")
+
+            if args.dry_run:
+                print(f"Dry run: {len(changed)} title updates would be applied.")
+                return 0
+
+            updated = refresh_pdf_titles(
+                connection,
+                metadata_by_stem,
+                pdf_path=args.pdf_path,
+                path_like=args.path_like,
+            )
+        finally:
+            connection.close()
+        print(f"Updated PDF titles: {updated}")
         return 0
 
     parser.error(f"Unknown command: {args.command}")

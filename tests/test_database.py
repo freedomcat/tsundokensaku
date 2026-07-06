@@ -419,11 +419,25 @@ class DatabaseSearchTest(unittest.TestCase):
                 title="legacy",
                 pages=[PageRecord(page_number=1, text="Actual Title appears here")],
             )
+            page_before = connection.execute(
+                "SELECT id, page_number, text FROM pages WHERE book_id = ?",
+                (book_id,),
+            ).fetchone()
 
             updated = refresh_pdf_titles(connection, {"legacy": BookMetadata(title="Actual Title")})
             results = search(connection, "Actual Title", scope="title")
+            page_after = connection.execute(
+                "SELECT id, page_number, text FROM pages WHERE book_id = ?",
+                (book_id,),
+            ).fetchone()
+            page_fts_title = connection.execute(
+                "SELECT title FROM pages_fts WHERE book_id = ?",
+                (book_id,),
+            ).fetchone()
 
             self.assertEqual(updated, 1)
+            self.assertEqual(dict(page_after), dict(page_before))
+            self.assertEqual(page_fts_title["title"], "actual title")
             self.assertEqual(len(results), 1)
             self.assertEqual(results[0].title, "Actual Title")
             self.assertEqual(results[0].page_number, 1)

@@ -16,6 +16,38 @@ from tsundokensaku.metadata import (
 )
 
 
+def _write_blank_pdf(path: Path, *, title: str | None = None) -> None:
+    writer = PdfWriter()
+    writer.add_blank_page(width=300, height=300)
+    if title is not None:
+        writer.add_metadata({"/Title": title})
+    with path.open("wb") as handle:
+        writer.write(handle)
+
+
+def _write_cover_pdf(path: Path, title: str, *, metadata_title: str | None = None) -> None:
+    import fitz
+
+    doc = fitz.open()
+    page = doc.new_page(width=400, height=600)
+    page.insert_text((50, 120), title, fontsize=28)
+    page.insert_text((50, 180), "著者名", fontsize=12)
+    if metadata_title is not None:
+        doc.set_metadata({"title": metadata_title})
+    doc.save(str(path))
+    doc.close()
+
+
+def _write_outline_pdf(path: Path, outline_title: str) -> None:
+    import fitz
+
+    doc = fitz.open()
+    doc.new_page(width=300, height=300)
+    doc.set_toc([[1, outline_title, 1]])
+    doc.save(str(path))
+    doc.close()
+
+
 class MetadataTest(unittest.TestCase):
     def test_does_not_create_scrapbox_url_without_base_url(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -187,6 +219,59 @@ class MetadataTest(unittest.TestCase):
             self.assertEqual(resolve_pdf_display_title(pdf_with_metadata, metadata_by_stem), "PDF Metadata Title")
             self.assertEqual(resolve_pdf_display_title(pdf_without_metadata, metadata_by_stem), "Scrapbox Title")
             self.assertEqual(resolve_pdf_display_title(pdf_fallback, {}), "Programming Ruby 5th ja")
+
+    def test_resolve_pdf_display_title_prefers_metadata_over_cover(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            pdf_path = Path(temp_dir) / "cover.pdf"
+            _write_cover_pdf(pdf_path, "Cover Title", metadata_title="Metadata Title")
+
+            self.assertEqual(resolve_pdf_display_title(pdf_path, {}), "Metadata Title")
+
+    def test_resolve_pdf_display_title_falls_back_from_bad_metadata_to_cover(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            pdf_path = Path(temp_dir) / "cover.pdf"
+            _write_cover_pdf(pdf_path, "Readable Cover Title", metadata_title="C:/Temp/source.dvi")
+
+            self.assertEqual(resolve_pdf_display_title(pdf_path, {}), "Readable Cover Title")
+
+    def test_resolve_pdf_display_title_reads_cover_candidate(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            pdf_path = Path(temp_dir) / "cover.pdf"
+            _write_cover_pdf(pdf_path, "Natural Book Title")
+
+            self.assertEqual(resolve_pdf_display_title(pdf_path, {}), "Natural Book Title")
+
+    def test_resolve_pdf_display_title_falls_back_from_empty_cover_to_outline(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            pdf_path = Path(temp_dir) / "outline.pdf"
+            _write_outline_pdf(pdf_path, "Outline Book Title")
+
+            self.assertEqual(resolve_pdf_display_title(pdf_path, {}), "Outline Book Title")
+
+    def test_resolve_pdf_display_title_uses_scrapbox_after_pdf_candidates(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            pdf_path = Path(temp_dir) / "scrapbox.pdf"
+            _write_blank_pdf(pdf_path)
+
+            metadata_by_stem = {"scrapbox": BookMetadata(title="Scrapbox Title")}
+
+            self.assertEqual(resolve_pdf_display_title(pdf_path, metadata_by_stem), "Scrapbox Title")
+
+    def test_resolve_pdf_display_title_prefers_cover_over_scrapbox(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            pdf_path = Path(temp_dir) / "scrapbox.pdf"
+            _write_cover_pdf(pdf_path, "Cover Title")
+
+            metadata_by_stem = {"scrapbox": BookMetadata(title="Scrapbox Title")}
+
+            self.assertEqual(resolve_pdf_display_title(pdf_path, metadata_by_stem), "Cover Title")
+
+    def test_resolve_pdf_display_title_uses_filename_when_all_candidates_are_empty(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            pdf_path = Path(temp_dir) / "Programming_Ruby_5th_ja.pdf"
+            _write_blank_pdf(pdf_path)
+
+            self.assertEqual(resolve_pdf_display_title(pdf_path, {}), "Programming Ruby 5th ja")
 
     def test_resolve_pdf_display_title_ignores_source_file_metadata_title(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

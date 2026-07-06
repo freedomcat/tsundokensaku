@@ -35,6 +35,15 @@ class BookRecord:
 
 
 @dataclass(frozen=True)
+class PdfTitleRefreshTarget:
+    id: int
+    path: str
+    filename: str | None
+    current_title: str
+    resolved_title: str
+
+
+@dataclass(frozen=True)
 class PageRecord:
     page_number: int
     text: str
@@ -401,42 +410,81 @@ def sync_kindle_books(connection: sqlite3.Connection, export_json: Path | None, 
     return len(kindle_books)
 
 
-def refresh_pdf_titles(connection: sqlite3.Connection, metadata_by_stem: dict[str, BookMetadata]) -> int:
+def list_pdf_title_refresh_targets(
+    connection: sqlite3.Connection,
+    metadata_by_stem: dict[str, BookMetadata],
+    *,
+    pdf_path: str | Path | None = None,
+    path_like: str | None = None,
+) -> list[PdfTitleRefreshTarget]:
+    where_clauses = ["source_type = 'pdf'", "path IS NOT NULL"]
+    parameters: list[object] = []
+
+    if pdf_path is not None:
+        raw_path = str(pdf_path)
+        path_candidates = [raw_path, str(Path(raw_path).resolve())]
+        placeholders = ", ".join("?" for _ in path_candidates)
+        where_clauses.append(f"path IN ({placeholders})")
+        parameters.extend(path_candidates)
+
+    if path_like:
+        like_value = f"%{path_like}%"
+        where_clauses.append("(path LIKE ? OR filename LIKE ?)")
+        parameters.extend([like_value, like_value])
+
     rows = connection.execute(
-        """
-        SELECT id, path, title, filename
+        f"""
+        SELECT id, path, filename, title
         FROM books
-        WHERE source_type = 'pdf' AND path IS NOT NULL
+        WHERE {" AND ".join(where_clauses)}
         ORDER BY id
-        """
+        """,
+        parameters,
     ).fetchall()
 
-    updated = 0
+    targets: list[PdfTitleRefreshTarget] = []
     for row in rows:
         path = str(row["path"])
-        resolved_title = resolve_pdf_display_title(path, metadata_by_stem)
-        resolved_filename = Path(path).name
-        current_title = str(row["title"])
-        current_filename = str(row["filename"]) if "filename" in row.keys() and row["filename"] is not None else None
+        targets.append(
+            PdfTitleRefreshTarget(
+                id=int(row["id"]),
+                path=path,
+                filename=str(row["filename"]) if row["filename"] is not None else None,
+                current_title=str(row["title"]),
+                resolved_title=resolve_pdf_display_title(path, metadata_by_stem),
+            )
+        )
+    return targets
 
-        if current_title == resolved_title and current_filename == resolved_filename:
+
+def refresh_pdf_titles(
+    connection: sqlite3.Connection,
+    metadata_by_stem: dict[str, BookMetadata],
+    *,
+    pdf_path: str | Path | None = None,
+    path_like: str | None = None,
+) -> int:
+    targets = list_pdf_title_refresh_targets(
+        connection,
+        metadata_by_stem,
+        pdf_path=pdf_path,
+        path_like=path_like,
+    )
+
+    updated = 0
+    for target in targets:
+        if target.current_title == target.resolved_title:
             continue
 
         connection.execute(
-            "UPDATE books SET title = ?, filename = ? WHERE id = ?",
-            (resolved_title, resolved_filename, int(row["id"])),
+            "UPDATE books SET title = ? WHERE id = ?",
+            (target.resolved_title, target.id),
         )
-        _replace_book_search_index(connection, book_id=int(row["id"]), title=resolved_title)
-
-        if current_title != resolved_title:
-            pages = [
-                PageRecord(page_number=int(page_row["page_number"]), text=str(page_row["text"]))
-                for page_row in connection.execute(
-                    "SELECT page_number, text FROM pages WHERE book_id = ? ORDER BY page_number",
-                    (int(row["id"]),),
-                ).fetchall()
-            ]
-            replace_pages(connection, book_id=int(row["id"]), title=resolved_title, pages=pages)
+        _replace_book_search_index(connection, book_id=target.id, title=target.resolved_title)
+        connection.execute(
+            "UPDATE pages_fts SET title = ? WHERE book_id = ?",
+            (prepare_index_text(target.resolved_title), target.id),
+        )
         updated += 1
 
     if updated:

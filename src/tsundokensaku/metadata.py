@@ -244,9 +244,25 @@ def _normalize_title_value(value: object) -> str | None:
     if value is None:
         return None
     text = re.sub(r"\s+", " ", str(value).replace("\x00", " ")).strip()
+    if _looks_like_non_title_text(text):
+        return None
     if _looks_like_source_file_title(text):
         return None
     return text or None
+
+
+def _looks_like_non_title_text(text: str) -> bool:
+    if not text:
+        return False
+    if len(text) > 160:
+        return True
+    if re.fullmatch(r"https?://\S+", text, flags=re.IGNORECASE):
+        return True
+    if re.fullmatch(r"(?:page|p\.?)?\s*\d+", text, flags=re.IGNORECASE):
+        return True
+    if re.fullmatch(r"\d{4}[-/]\d{1,2}[-/]\d{1,2}", text):
+        return True
+    return False
 
 
 def _looks_like_source_file_title(text: str) -> bool:
@@ -284,6 +300,95 @@ def read_pdf_metadata_title(pdf_path: str | Path) -> str | None:
     return _normalize_title_value(title)
 
 
+def read_cover_title_candidate(pdf_path: str | Path) -> str | None:
+    try:
+        import fitz  # PyMuPDF
+    except Exception:
+        return None
+
+    try:
+        doc = fitz.open(str(pdf_path))
+    except Exception:
+        return None
+
+    try:
+        if doc.page_count == 0:
+            return None
+        page = doc[0]
+        page_height = float(page.rect.height) or 1.0
+        text_dict = page.get_text("dict")
+    except Exception:
+        return None
+    finally:
+        doc.close()
+
+    lines: list[tuple[float, float, str]] = []
+    for block in text_dict.get("blocks", []):
+        for line in block.get("lines", []):
+            spans = line.get("spans", [])
+            text = _normalize_title_value("".join(str(span.get("text", "")) for span in spans))
+            if not text:
+                continue
+            sizes = [float(span.get("size", 0.0)) for span in spans if float(span.get("size", 0.0)) > 0]
+            if not sizes:
+                continue
+            bbox = line.get("bbox") or block.get("bbox") or (0, 0, 0, 0)
+            y0 = float(bbox[1])
+            if y0 > page_height * 0.72:
+                continue
+            lines.append((y0, max(sizes), text))
+
+    if not lines:
+        return None
+
+    max_size = max(size for _y0, size, _text in lines)
+    if max_size <= 0:
+        return None
+
+    large_lines = [
+        (y0, size, text)
+        for y0, size, text in sorted(lines, key=lambda item: item[0])
+        if size >= max_size * 0.8
+    ]
+    if not large_lines:
+        return None
+
+    selected: list[str] = []
+    first_y = large_lines[0][0]
+    for y0, _size, text in large_lines:
+        if selected and y0 - first_y > 120:
+            break
+        selected.append(text)
+        if len(selected) >= 3:
+            break
+
+    return _normalize_title_value(" ".join(selected))
+
+
+def read_outline_title_candidate(pdf_path: str | Path) -> str | None:
+    try:
+        import fitz  # PyMuPDF
+    except Exception:
+        return None
+
+    try:
+        doc = fitz.open(str(pdf_path))
+    except Exception:
+        return None
+
+    try:
+        toc = doc.get_toc()
+    except Exception:
+        return None
+    finally:
+        doc.close()
+
+    for level, title, _page in toc:
+        if int(level) == 1:
+            return _normalize_title_value(title)
+    return None
+
+
 def sanitize_pdf_filename_title(filename: str | Path) -> str:
     stem = Path(filename).stem
     cleaned = stem.replace("_", " ").replace("-", " ")
@@ -295,6 +400,14 @@ def resolve_pdf_display_title(path: str | Path, metadata_by_stem: dict[str, Book
     pdf_title = read_pdf_metadata_title(path)
     if pdf_title:
         return pdf_title
+
+    cover_title = read_cover_title_candidate(path)
+    if cover_title:
+        return cover_title
+
+    outline_title = read_outline_title_candidate(path)
+    if outline_title:
+        return outline_title
 
     metadata = metadata_for_pdf(path, metadata_by_stem)
     if metadata:
