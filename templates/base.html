@@ -679,6 +679,24 @@
         background: var(--panel);
       }
 
+      .modal-chapters-clear {
+        display: block;
+        width: 100%;
+        border: 0;
+        background: transparent;
+        box-shadow: none;
+        padding: 7px 10px;
+        border-radius: 8px;
+        color: var(--accent-strong);
+        cursor: pointer;
+        font-size: 0.92rem;
+        text-align: left;
+      }
+
+      .modal-chapters-clear:hover {
+        background: var(--panel);
+      }
+
       .modal-chapter-item input {
         flex: none;
       }
@@ -1069,6 +1087,44 @@
 
         let chaptersRequestToken = 0;
 
+        function mergePageRanges(specs) {
+          const ranges = [];
+          for (const spec of specs) {
+            const match = /^(\d+)(?:-(\d+))?$/.exec(String(spec).trim());
+            if (!match) {
+              continue;
+            }
+            const first = parseInt(match[1], 10);
+            const second = match[2] ? parseInt(match[2], 10) : first;
+            ranges.push([Math.min(first, second), Math.max(first, second)]);
+          }
+          ranges.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+          const merged = [];
+          for (const [start, end] of ranges) {
+            const last = merged[merged.length - 1];
+            if (last && start <= last[1] + 1) {
+              last[1] = Math.max(last[1], end);
+            } else {
+              merged.push([start, end]);
+            }
+          }
+          return merged
+            .map(([start, end]) => (start === end ? String(start) : `${start}-${end}`))
+            .join(',');
+        }
+
+        function clearChapterSelection() {
+          if (chaptersMenu) {
+            for (const input of chaptersMenu.querySelectorAll('input:checked')) {
+              input.checked = false;
+            }
+          }
+          pagesInput.value = '';
+          updateChaptersSummary(0);
+          setExportLink();
+          setExportStatus('');
+        }
+
         function updateChaptersSummary(selectedCount) {
           if (chaptersSummary) {
             chaptersSummary.textContent = selectedCount > 0 ? `章 ${selectedCount}件選択` : '章を選択';
@@ -1106,6 +1162,12 @@
           if (token !== chaptersRequestToken || chapters.length === 0) {
             return;
           }
+          const clearButton = document.createElement('button');
+          clearButton.type = 'button';
+          clearButton.className = 'modal-chapters-clear';
+          clearButton.textContent = '選択をクリア';
+          clearButton.addEventListener('click', clearChapterSelection);
+          chaptersMenu.appendChild(clearButton);
           for (const chapter of chapters) {
             const item = document.createElement('label');
             item.className = 'modal-chapter-item';
@@ -1248,7 +1310,7 @@
 
         chaptersMenu?.addEventListener('change', () => {
           const selected = [...chaptersMenu.querySelectorAll('input:checked')].map((input) => input.value);
-          pagesInput.value = selected.join(',');
+          pagesInput.value = mergePageRanges(selected);
           updateChaptersSummary(selected.length);
           setExportLink();
           setExportStatus('');
