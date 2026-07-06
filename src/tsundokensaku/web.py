@@ -32,6 +32,7 @@ from tsundokensaku.metadata import (
     get_scrapbox_project_url,
 )
 from tsundokensaku.pdf_export import default_output_path, parse_page_selection, render_selected_pages
+from tsundokensaku.pdf_outline import list_chapters
 from tsundokensaku.tokenizer import tokenize_query
 
 
@@ -1049,6 +1050,24 @@ def update_pdf_export_save_dir(save_dir: str = Form(default="")) -> RedirectResp
 def open_pdf(pdf_path: str) -> FileResponse:
     candidate = _resolve_pdf_file_or_404(pdf_path, get_books_dir())
     return FileResponse(candidate, media_type="application/pdf")
+
+
+@app.get("/pdf-outline")
+def pdf_outline(pdf_path: str) -> JSONResponse:
+    candidate = _resolve_pdf_file_or_404(pdf_path, get_books_dir())
+    chapters = [
+        {
+            "title": chapter.title,
+            "level": chapter.level,
+            "start_page": chapter.start_page,
+            "end_page": chapter.end_page,
+            "pages": str(chapter.start_page)
+            if chapter.start_page == chapter.end_page
+            else f"{chapter.start_page}-{chapter.end_page}",
+        }
+        for chapter in list_chapters(candidate)
+    ]
+    return JSONResponse({"chapters": chapters})
 
 
 @app.get("/export-pdf")

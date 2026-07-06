@@ -13,6 +13,7 @@ from tsundokensaku.web import (
     group_pdf_results,
     highlight_query,
     import_pdfs_from_directory,
+    pdf_outline,
     import_scrapbox_export_bytes,
     format_indexed_at,
     resolve_pdf_scrapbox_url,
@@ -136,6 +137,51 @@ class HighlightQueryTest(unittest.TestCase):
             self.assertEqual(imported, 2)
             self.assertEqual(imported_kindle, 1)
             self.assertTrue(cache_path.exists())
+
+    def test_pdf_outline_returns_chapters_with_page_specs(self) -> None:
+        import fitz
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            books_dir = Path(temp_dir) / "books"
+            books_dir.mkdir()
+            pdf_path = books_dir / "sample.pdf"
+
+            doc = fitz.open()
+            for _ in range(6):
+                doc.new_page(width=72, height=72)
+            doc.set_toc([[1, "第1章", 1], [1, "第2章", 4]])
+            doc.save(str(pdf_path))
+            doc.close()
+
+            with patch("tsundokensaku.web.get_books_dir", return_value=books_dir):
+                response = pdf_outline(pdf_path="sample.pdf")
+
+            self.assertEqual(response.status_code, 200)
+            payload = json.loads(response.body)
+            self.assertEqual(
+                payload["chapters"],
+                [
+                    {"title": "第1章", "level": 1, "start_page": 1, "end_page": 4, "pages": "1-4"},
+                    {"title": "第2章", "level": 1, "start_page": 4, "end_page": 6, "pages": "4-6"},
+                ],
+            )
+
+    def test_pdf_outline_returns_empty_chapters_without_toc(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            books_dir = Path(temp_dir) / "books"
+            books_dir.mkdir()
+            pdf_path = books_dir / "sample.pdf"
+
+            writer = PdfWriter()
+            writer.add_blank_page(width=72, height=72)
+            with pdf_path.open("wb") as handle:
+                writer.write(handle)
+
+            with patch("tsundokensaku.web.get_books_dir", return_value=books_dir):
+                response = pdf_outline(pdf_path="sample.pdf")
+
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(json.loads(response.body), {"chapters": []})
 
     def test_export_pdf_returns_selected_pages(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
