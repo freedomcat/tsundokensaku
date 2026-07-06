@@ -23,6 +23,7 @@
       </div>
     </div>
     <form class="ws-add-form" id="ws-add-form">
+      <select id="ws-add-scope" aria-label="検索対象の本"></select>
       <input type="search" id="ws-add-query" placeholder="キーワードでページを検索">
       <button type="submit" class="primary">検索</button>
     </form>
@@ -54,6 +55,7 @@
     const addOpenButton = document.getElementById('ws-add-open');
     const addModal = document.getElementById('ws-add-modal');
     const addForm = document.getElementById('ws-add-form');
+    const addScope = document.getElementById('ws-add-scope');
     const addQuery = document.getElementById('ws-add-query');
     const addResults = document.getElementById('ws-add-results');
     const addSubmitButton = document.getElementById('ws-add-submit');
@@ -164,6 +166,15 @@
       const rangePill = document.createElement('span');
       rangePill.className = 'pill ws-book-range';
       rangePill.textContent = entry.pages ? `p.${entry.pages}` : '未指定';
+      const addPagesButton = document.createElement('button');
+      addPagesButton.type = 'button';
+      addPagesButton.className = 'ws-remove';
+      addPagesButton.textContent = 'ページを追加';
+      addPagesButton.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        openAddModal(path);
+      });
       const removeButton = document.createElement('button');
       removeButton.type = 'button';
       removeButton.className = 'ws-remove';
@@ -177,6 +188,7 @@
       });
       summary.appendChild(title);
       summary.appendChild(rangePill);
+      summary.appendChild(addPagesButton);
       summary.appendChild(removeButton);
 
       const body = document.createElement('div');
@@ -347,9 +359,22 @@
       addSubmitButton.disabled = addResults.querySelectorAll('input:checked').length === 0;
     }
 
-    function openAddModal() {
+    function openAddModal(scopePath = '') {
       addQuery.value = '';
-      addResults.innerHTML = '<p class="muted" style="margin: 0;">ワークスペース内のPDF本文からページを検索します。</p>';
+      addScope.innerHTML = '';
+      const allOption = document.createElement('option');
+      allOption.value = '';
+      allOption.textContent = 'すべての本';
+      addScope.appendChild(allOption);
+      const cart = TsundokuCart.load();
+      for (const [path, entry] of Object.entries(cart.books)) {
+        const option = document.createElement('option');
+        option.value = path;
+        option.textContent = entry.title;
+        addScope.appendChild(option);
+      }
+      addScope.value = scopePath && cart.books[scopePath] ? scopePath : '';
+      addResults.innerHTML = '<p class="muted" style="margin: 0;">対象の本の本文からページを検索します。</p>';
       setAddStatus('');
       updateAddSubmitState();
       addModal.classList.add('open');
@@ -412,12 +437,15 @@
         return;
       }
       const cart = TsundokuCart.load();
-      const entries = Object.entries(cart.books);
+      const scopePath = addScope.value;
+      const entries = Object.entries(cart.books).filter(
+        ([path]) => !scopePath || path === scopePath
+      );
       addResults.innerHTML = '<p class="muted" style="margin: 0;">検索中...</p>';
       setAddStatus('');
       const groups = [];
-      try {
-        for (const [path, entry] of entries) {
+      for (const [path, entry] of entries) {
+        try {
           const response = await fetch(
             `/search-pages?${new URLSearchParams({ pdf_path: path, q: query })}`
           );
@@ -426,12 +454,18 @@
           }
           const payload = await response.json();
           groups.push(renderSearchGroup({ path, title: entry.title, pages: entry.pages }, payload, query));
+        } catch (error) {
+          const group = document.createElement('div');
+          const heading = document.createElement('div');
+          heading.className = 'ws-add-book-title';
+          heading.textContent = entry.title;
+          const note = document.createElement('div');
+          note.className = 'ws-error';
+          note.textContent = error instanceof Error ? error.message : '検索に失敗しました';
+          group.appendChild(heading);
+          group.appendChild(note);
+          groups.push(group);
         }
-      } catch (error) {
-        addResults.innerHTML = '';
-        setAddStatus(error instanceof Error ? error.message : '検索に失敗しました', true);
-        updateAddSubmitState();
-        return;
       }
       addResults.innerHTML = '';
       for (const group of groups) {
@@ -492,6 +526,11 @@
     addForm.addEventListener('submit', (event) => {
       event.preventDefault();
       void runPageSearch();
+    });
+    addScope.addEventListener('change', () => {
+      if (addQuery.value.trim()) {
+        void runPageSearch();
+      }
     });
     addResults.addEventListener('change', updateAddSubmitState);
     addSubmitButton.addEventListener('click', addSelectedPages);
