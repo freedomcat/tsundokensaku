@@ -1348,7 +1348,7 @@
           }
         }
 
-        function openModal(url, label, scrapboxUrl, pdfPath, pages, fromWorkspace = false) {
+        function openModal(url, label, scrapboxUrl, pdfPath, pages) {
           frame.src = url;
           openLink.href = url;
           title.textContent = label || 'PDF';
@@ -1356,7 +1356,8 @@
           currentPdfPath = pdfPath || '';
           pagesInput.value = pages || '';
           if (addWorkspaceButton) {
-            addWorkspaceButton.hidden = !fromWorkspace;
+            // 検索・資料棚どちらの起点でも、PDFパスが分かるモーダルなら資料へ追加できる
+            addWorkspaceButton.hidden = !currentPdfPath;
           }
           setExportLink();
           void loadChapters(currentPdfPath);
@@ -1379,7 +1380,6 @@
             trigger.dataset.pdfModalScrapboxUrl,
             trigger.dataset.pdfModalPath,
             trigger.dataset.pdfModalPages,
-            trigger.dataset.pdfModalWorkspace === '1',
           );
         });
 

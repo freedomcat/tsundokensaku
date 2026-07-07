@@ -168,7 +168,6 @@
     <span class="muted">追加先:</span>
     <select id="cart-pack-select" aria-label="追加先の資料を選択"></select>
     <a class="button primary" href="/workspace">資料棚で編集</a>
-    <button type="button" id="cart-clear">全てクリア</button>
   </div>
 </section>
 
@@ -187,7 +186,6 @@
   (() => {
     const cartBar = document.getElementById('export-cart');
     const packSelect = document.getElementById('cart-pack-select');
-    const clearButton = document.getElementById('cart-clear');
     if (!cartBar) {
       return;
     }
@@ -221,7 +219,6 @@
         if (activePack) {
           packSelect.value = String(activePack.id);
         }
-        clearButton.hidden = !activePack;
         cartBar.hidden = false;
       } catch (error) {
         console.warn('Failed to render pack bar', error);
@@ -314,13 +311,6 @@
         console.warn('Failed to activate pack', error);
         restoreSelection();
       }
-    });
-
-    clearButton?.addEventListener('click', () => {
-      const cart = { version: 2, books: {} };
-      TsundokuCart.save(cart);
-      void renderBar(cart);
-      syncCheckboxes(cart);
     });
 
     // サーバからのパック取得完了・他画面での更新に追随して再描画する。
