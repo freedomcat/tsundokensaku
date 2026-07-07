@@ -73,6 +73,34 @@ SEARCH_SCOPES = {"all", "title", "body", "memo"}
 SEARCH_MATCH_MODES = {"all", "any"}
 
 
+@dataclass(frozen=True)
+class QueryTerm:
+    text: str
+    phrase: bool = False
+    exclude: bool = False
+
+
+def parse_query(query: str) -> list[QueryTerm]:
+    """検索クエリを語単位に分解する。
+
+    - 空白区切りの各チャンクが1語
+    - "..." で囲むとフレーズ（語順・隣接を保った一致）
+    - 先頭 - で除外（-語 / -"フレーズ"）
+    """
+    parts = re.findall(r'-?"[^"]*"|\S+', query)
+    terms: list[QueryTerm] = []
+    for part in parts:
+        exclude = part.startswith("-")
+        if exclude:
+            part = part[1:]
+        phrase = len(part) >= 2 and part.startswith('"') and part.endswith('"')
+        text = part.strip('"').strip()
+        if not text:
+            continue
+        terms.append(QueryTerm(text=text, phrase=phrase, exclude=exclude))
+    return terms
+
+
 def connect(db_path: Path) -> sqlite3.Connection:
     db_path = db_path.resolve()
     db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -597,12 +625,9 @@ def _search_title_fts(connection: sqlite3.Connection, query: str, *, limit: int,
 
 
 def _search_title_like(connection: sqlite3.Connection, query: str, *, limit: int, match: str = "all") -> list[sqlite3.Row]:
-    terms = _query_terms(query)
-    if not terms:
+    where_clause, parameters = _like_terms_clause(query, columns=("title",), match=match)
+    if not where_clause:
         return []
-
-    connector = " OR " if match == "any" else " AND "
-    where_clause = connector.join(["title LIKE ?" for _ in terms])
     return list(
         connection.execute(
             f"""
@@ -620,7 +645,7 @@ def _search_title_like(connection: sqlite3.Connection, query: str, *, limit: int
             ORDER BY title, path
             LIMIT ?
             """,
-            tuple([f"%{term}%" for term in terms] + [limit]),
+            tuple(parameters + [limit]),
         )
     )
 
@@ -640,6 +665,8 @@ def _search_body(connection: sqlite3.Connection, query: str, *, limit: int, matc
 
 def _search_body_fts(connection: sqlite3.Connection, query: str, *, limit: int, match: str = "all") -> list[sqlite3.Row]:
     fts_query = _to_scoped_fts_query(query, column="text", match=match)
+    if not fts_query:
+        return []
     return list(
         connection.execute(
             """
@@ -695,6 +722,8 @@ def _search_memo(connection: sqlite3.Connection, query: str, *, limit: int, matc
 
 def _search_memo_fts(connection: sqlite3.Connection, query: str, *, limit: int, match: str = "all") -> list[sqlite3.Row]:
     fts_query = _to_fts_query(query, match=match)
+    if not fts_query:
+        return []
     return list(
         connection.execute(
             """
@@ -753,6 +782,8 @@ def _search_book_notes(connection: sqlite3.Connection, query: str, *, limit: int
 
 def _search_book_notes_fts(connection: sqlite3.Connection, query: str, *, limit: int, match: str = "all") -> list[sqlite3.Row]:
     fts_query = _to_fts_query(query, match=match)
+    if not fts_query:
+        return []
     return list(
         connection.execute(
             """
@@ -804,71 +835,95 @@ def _search_book_notes_like(connection: sqlite3.Connection, query: str, *, limit
     )
 
 
-def _query_terms(query: str) -> list[str]:
-    terms = re.findall(r'"[^"]+"|\S+', query)
-    return [term.strip(chr(34)) for term in terms if term.strip(chr(34))]
+def _split_query_terms(query: str) -> tuple[list[QueryTerm], list[QueryTerm]]:
+    includes: list[QueryTerm] = []
+    excludes: list[QueryTerm] = []
+    for term in parse_query(query):
+        (excludes if term.exclude else includes).append(term)
+    return includes, excludes
 
 
-def _query_token_groups(query: str) -> list[list[str]]:
+def _fts_term_expression(term: QueryTerm, *, prefix: str = "") -> str:
     # OR の単位はユーザーが空白区切りした語。Sudachi が1語を複数トークンに
     # 分割しても、そのトークン群は同一グループとして常に AND で結合する。
-    groups: list[list[str]] = []
-    for term in _query_terms(query):
-        tokens = [token for token in tokenize_text(term) if token]
-        if tokens:
-            groups.append(tokens)
-    return groups
-
-
-def _fts_group_expression(tokens: list[str], *, prefix: str = "") -> str:
-    quoted = " ".join('"{}"'.format(token.replace('"', '""')) for token in tokens)
+    # フレーズ語はトークン列を1つの FTS5 フレーズ（隣接一致）にする。
+    tokens = [token.replace('"', '""') for token in tokenize_text(term.text) if token]
+    if not tokens:
+        return ""
+    if term.phrase:
+        quoted = '"{}"'.format(" ".join(tokens))
+        return f"{prefix}:{quoted}" if prefix else quoted
+    quoted = " ".join(f'"{token}"' for token in tokens)
     if prefix:
         return f"{prefix}:({quoted})"
-    if len(tokens) > 1:
-        return f"({quoted})"
-    return quoted
+    return f"({quoted})" if len(tokens) > 1 else quoted
+
+
+def _build_fts_query(query: str, *, match: str = "all", prefix: str = "") -> str:
+    includes, excludes = _split_query_terms(query)
+    include_exprs = [expr for expr in (_fts_term_expression(term, prefix=prefix) for term in includes) if expr]
+    if not include_exprs:
+        # 除外語だけの検索は結果なし扱い
+        return ""
+    separator = " OR " if match == "any" else " "
+    expression = separator.join(include_exprs)
+    exclude_exprs = [expr for expr in (_fts_term_expression(term, prefix=prefix) for term in excludes) if expr]
+    if exclude_exprs:
+        expression = f"({expression})" + "".join(f" NOT ({expr})" for expr in exclude_exprs)
+    return expression
 
 
 def _to_fts_query(query: str, *, match: str = "all") -> str:
-    expressions = [_fts_group_expression(tokens) for tokens in _query_token_groups(query)]
-    separator = " OR " if match == "any" else " "
-    return separator.join(expressions)
+    return _build_fts_query(query, match=match)
 
 
 def _to_scoped_fts_query(query: str, *, column: str, match: str = "all") -> str:
-    expressions = [_fts_group_expression(tokens, prefix=column) for tokens in _query_token_groups(query)]
-    separator = " OR " if match == "any" else " "
-    return separator.join(expressions)
+    return _build_fts_query(query, match=match, prefix=column)
 
 
 def _to_trigram_query(query: str, *, match: str = "all") -> str:
-    phrases: list[str] = []
-    for term in _query_terms(query):
-        normalized = normalize_trigram_text(term)
+    includes, excludes = _split_query_terms(query)
+    include_phrases: list[str] = []
+    for term in includes:
+        normalized = normalize_trigram_text(term.text)
         if len(normalized) < 3:
             # trigram で表現できない短い語。AND では全語一致を保証できないため
             # trigram 検索自体を諦める（FTS 側が短い語を拾う）。OR では単に読み飛ばす。
             if match != "any":
                 return ""
             continue
-        phrases.append('"{}"'.format(normalized.replace('"', '""')))
-    if not phrases:
+        include_phrases.append('"{}"'.format(normalized.replace('"', '""')))
+    if not include_phrases:
         return ""
+    exclude_phrases: list[str] = []
+    for term in excludes:
+        normalized = normalize_trigram_text(term.text)
+        if len(normalized) < 3:
+            # 除外語を trigram で表現できないと除外漏れが起きるため trigram 検索ごと諦める
+            return ""
+        exclude_phrases.append('"{}"'.format(normalized.replace('"', '""')))
     separator = " OR " if match == "any" else " "
-    return separator.join(phrases)
+    expression = separator.join(include_phrases)
+    if exclude_phrases:
+        expression = f"({expression})" + "".join(f" NOT {phrase}" for phrase in exclude_phrases)
+    return expression
 
 
 def _like_terms_clause(query: str, *, columns: tuple[str, ...], match: str = "all") -> tuple[str, list[str]]:
-    terms = _query_terms(query)
-    if not terms:
+    includes, excludes = _split_query_terms(query)
+    if not includes:
         return "", []
     clauses: list[str] = []
     parameters: list[str] = []
-    for term in terms:
+    for term in includes:
         clauses.append("(" + " OR ".join(f"{column} LIKE ?" for column in columns) + ")")
-        parameters.extend([f"%{term}%"] * len(columns))
+        parameters.extend([f"%{term.text}%"] * len(columns))
     connector = " OR " if match == "any" else " AND "
-    return connector.join(clauses), parameters
+    clause = "(" + connector.join(clauses) + ")"
+    for term in excludes:
+        clause += " AND NOT (" + " OR ".join(f"{column} LIKE ?" for column in columns) + ")"
+        parameters.extend([f"%{term.text}%"] * len(columns))
+    return clause, parameters
 
 
 def _clean_snippet(snippet: str) -> str:

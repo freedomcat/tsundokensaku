@@ -6,6 +6,8 @@ from pathlib import Path
 from tsundokensaku.database import (
     PageRecord,
     BookNoteRecord,
+    QueryTerm,
+    parse_query,
     replace_memos,
     connect,
     initialize,
@@ -587,6 +589,177 @@ class SearchMatchModeTest(unittest.TestCase):
             results = search(connection, "sqlite fts5", scope="body", match="bogus")
 
             self.assertEqual([result.page_number for result in results], [3])
+            connection.close()
+
+
+class ParseQueryTest(unittest.TestCase):
+    def test_parse_query_extracts_phrases_and_exclusions(self) -> None:
+        terms = parse_query('Ruby -Rails "Martin Fowler" -"Ruby on Rails"')
+
+        self.assertEqual(
+            terms,
+            [
+                QueryTerm(text="Ruby"),
+                QueryTerm(text="Rails", exclude=True),
+                QueryTerm(text="Martin Fowler", phrase=True),
+                QueryTerm(text="Ruby on Rails", phrase=True, exclude=True),
+            ],
+        )
+
+    def test_parse_query_skips_empty_parts(self) -> None:
+        self.assertEqual(parse_query('- "" -""'), [])
+        self.assertEqual(parse_query(""), [])
+
+
+class SearchSyntaxTest(unittest.TestCase):
+    def _make_connection(self, temp_dir: str):
+        db_path = Path(temp_dir) / "index.db"
+        connection = connect(db_path)
+        initialize(connection)
+        return connection
+
+    def _add_book(self, connection, *, path: str, title: str, pages: list[PageRecord]) -> int:
+        book_id = upsert_book(
+            connection,
+            path=Path(path),
+            title=title,
+            size_bytes=123,
+            modified_at=1.0,
+        )
+        replace_pages(connection, book_id=book_id, title=title, pages=pages)
+        return book_id
+
+    def test_phrase_search_requires_adjacent_words(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            connection = self._make_connection(temp_dir)
+            self._add_book(
+                connection,
+                path="books/tech/refactoring.pdf",
+                title="refactoring",
+                pages=[
+                    PageRecord(page_number=1, text="Martin Fowler wrote the refactoring book."),
+                    PageRecord(page_number=2, text="Martin admires the Fowler patterns catalog."),
+                ],
+            )
+
+            phrase_results = search(connection, '"martin fowler"', scope="body")
+            loose_results = search(connection, "martin fowler", scope="body")
+
+            self.assertEqual([result.page_number for result in phrase_results], [1])
+            self.assertEqual(sorted(result.page_number for result in loose_results), [1, 2])
+            connection.close()
+
+    def test_japanese_phrase_search_requires_adjacency(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            connection = self._make_connection(temp_dir)
+            self._add_book(
+                connection,
+                path="books/tech/dist.pdf",
+                title="dist guide",
+                pages=[
+                    PageRecord(page_number=1, text="分散システムの設計原則を学ぶ。"),
+                    PageRecord(page_number=2, text="分散処理とシステム運用を扱う。"),
+                ],
+            )
+
+            phrase_results = search(connection, '"分散システム"', scope="body")
+            loose_results = search(connection, "分散システム", scope="body")
+
+            self.assertEqual([result.page_number for result in phrase_results], [1])
+            self.assertEqual(sorted(result.page_number for result in loose_results), [1, 2])
+            connection.close()
+
+    def test_exclusion_removes_pages_with_term(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            connection = self._make_connection(temp_dir)
+            self._add_book(
+                connection,
+                path="books/tech/ruby.pdf",
+                title="ruby books",
+                pages=[
+                    PageRecord(page_number=1, text="ruby sinatra micro framework guide"),
+                    PageRecord(page_number=2, text="ruby on rails web framework guide"),
+                ],
+            )
+
+            excluded_results = search(connection, "ruby -rails", scope="body")
+            plain_results = search(connection, "ruby", scope="body")
+
+            self.assertEqual([result.page_number for result in excluded_results], [1])
+            self.assertEqual(sorted(result.page_number for result in plain_results), [1, 2])
+            connection.close()
+
+    def test_phrase_exclusion_differs_from_word_exclusion(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            connection = self._make_connection(temp_dir)
+            self._add_book(
+                connection,
+                path="books/tech/ruby2.pdf",
+                title="ruby tips",
+                pages=[
+                    PageRecord(page_number=1, text="ruby gems and rails tips collected"),
+                    PageRecord(page_number=2, text="ruby on rails tutorial for beginners"),
+                ],
+            )
+
+            phrase_excluded = search(connection, 'ruby -"ruby on rails"', scope="body")
+            word_excluded = search(connection, "ruby -rails", scope="body")
+
+            self.assertEqual([result.page_number for result in phrase_excluded], [1])
+            self.assertEqual(word_excluded, [])
+            connection.close()
+
+    def test_exclusion_only_query_returns_nothing(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            connection = self._make_connection(temp_dir)
+            self._add_book(
+                connection,
+                path="books/tech/any.pdf",
+                title="any book",
+                pages=[PageRecord(page_number=1, text="some page text here")],
+            )
+
+            self.assertEqual(search(connection, "-rails", scope="all"), [])
+            self.assertEqual(search(connection, '-"ruby on rails"', scope="all"), [])
+            connection.close()
+
+    def test_trigram_partial_match_respects_exclusion(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            connection = self._make_connection(temp_dir)
+            self._add_book(
+                connection,
+                path="books/tech/linux2.pdf",
+                title="linux notes",
+                pages=[
+                    PageRecord(page_number=1, text="the kernel lives inside the OS"),
+                    PageRecord(page_number=2, text="the kernel rails against limits"),
+                ],
+            )
+
+            results = search(connection, "ernel -rails", scope="body")
+
+            self.assertEqual([result.page_number for result in results], [1])
+            connection.close()
+
+    def test_title_scope_supports_exclusion(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            connection = self._make_connection(temp_dir)
+            self._add_book(
+                connection,
+                path="books/tech/py1.pdf",
+                title="python dataclasses",
+                pages=[PageRecord(page_number=1, text="dataclass page")],
+            )
+            self._add_book(
+                connection,
+                path="books/tech/py2.pdf",
+                title="python web guide",
+                pages=[PageRecord(page_number=1, text="web page")],
+            )
+
+            results = search(connection, "python -web", scope="title")
+
+            self.assertEqual([result.title for result in results], ["python dataclasses"])
             connection.close()
 
 

@@ -14,7 +14,7 @@
 {% endif %}
 <section class="card">
   <form class="search" action="/search" method="get">
-    <input type="search" name="q" value="{{ query }}" placeholder="キーワードを入力して検索">
+    <input type="search" name="q" value="{{ query }}" placeholder="キーワード（&quot;フレーズ&quot; や -除外語 も可）">
     <select name="scope" aria-label="検索範囲">
       {% for option in scope_options %}
         <option value="{{ option.value }}" {% if option.value == scope %}selected{% endif %}>{{ option.label }}</option>
