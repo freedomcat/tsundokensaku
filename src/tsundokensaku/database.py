@@ -58,6 +58,28 @@ class BookNoteRecord:
 
 
 @dataclass(frozen=True)
+class PackRecord:
+    id: int
+    name: str
+    note: str
+    created_at: str
+    updated_at: str
+    archived_at: str | None = None
+    book_count: int = 0
+
+
+@dataclass(frozen=True)
+class PackItemRecord:
+    pdf_path: str
+    title: str
+    pages: str
+    collapsed: bool
+    position: int
+    added_at: str
+    updated_at: str
+
+
+@dataclass(frozen=True)
 class SearchResult:
     title: str
     path: str | None
@@ -129,6 +151,7 @@ def initialize(connection: sqlite3.Connection) -> None:
     _ensure_memo_schema(connection)
     _ensure_book_notes_schema(connection)
     _ensure_search_schema(connection)
+    _ensure_pack_schema(connection)
     connection.execute("PRAGMA foreign_keys = ON")
     connection.commit()
 
@@ -924,6 +947,259 @@ def _like_terms_clause(query: str, *, columns: tuple[str, ...], match: str = "al
         clause += " AND NOT (" + " OR ".join(f"{column} LIKE ?" for column in columns) + ")"
         parameters.extend([f"%{term.text}%"] * len(columns))
     return clause, parameters
+
+
+DEFAULT_PACK_NAME = "デフォルト"
+
+
+def _pack_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def create_pack(connection: sqlite3.Connection, *, name: str, note: str = "") -> int:
+    now = _pack_now()
+    cursor = connection.execute(
+        "INSERT INTO packs(name, note, created_at, updated_at) VALUES (?, ?, ?, ?)",
+        (name.strip() or DEFAULT_PACK_NAME, note, now, now),
+    )
+    connection.commit()
+    return int(cursor.lastrowid)
+
+
+def get_pack(connection: sqlite3.Connection, pack_id: int) -> PackRecord | None:
+    row = connection.execute(
+        """
+        SELECT p.id, p.name, p.note, p.created_at, p.updated_at, p.archived_at,
+               (SELECT COUNT(*) FROM pack_items i WHERE i.pack_id = p.id) AS book_count
+        FROM packs p
+        WHERE p.id = ?
+        """,
+        (pack_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    return _pack_record_from_row(row)
+
+
+def list_packs(connection: sqlite3.Connection) -> list[PackRecord]:
+    rows = connection.execute(
+        """
+        SELECT p.id, p.name, p.note, p.created_at, p.updated_at, p.archived_at,
+               (SELECT COUNT(*) FROM pack_items i WHERE i.pack_id = p.id) AS book_count
+        FROM packs p
+        WHERE p.archived_at IS NULL
+        ORDER BY p.updated_at DESC, p.id DESC
+        """
+    ).fetchall()
+    return [_pack_record_from_row(row) for row in rows]
+
+
+def update_pack(connection: sqlite3.Connection, pack_id: int, *, name: str | None = None, note: str | None = None) -> bool:
+    if get_pack(connection, pack_id) is None:
+        return False
+    assignments: list[str] = []
+    parameters: list[object] = []
+    if name is not None and name.strip():
+        assignments.append("name = ?")
+        parameters.append(name.strip())
+    if note is not None:
+        assignments.append("note = ?")
+        parameters.append(note)
+    if not assignments:
+        return True
+    assignments.append("updated_at = ?")
+    parameters.extend([_pack_now(), pack_id])
+    connection.execute(f"UPDATE packs SET {', '.join(assignments)} WHERE id = ?", parameters)
+    connection.commit()
+    return True
+
+
+def delete_pack(connection: sqlite3.Connection, pack_id: int) -> bool:
+    if get_pack(connection, pack_id) is None:
+        return False
+    connection.execute("DELETE FROM pack_items WHERE pack_id = ?", (pack_id,))
+    connection.execute("DELETE FROM packs WHERE id = ?", (pack_id,))
+    if get_active_pack_id(connection) == pack_id:
+        connection.execute("DELETE FROM app_state WHERE key = 'active_pack_id'")
+    connection.commit()
+    return True
+
+
+def get_active_pack_id(connection: sqlite3.Connection) -> int | None:
+    row = connection.execute("SELECT value FROM app_state WHERE key = 'active_pack_id'").fetchone()
+    if row is None:
+        return None
+    try:
+        return int(row["value"])
+    except (TypeError, ValueError):
+        return None
+
+
+def set_active_pack(connection: sqlite3.Connection, pack_id: int) -> bool:
+    if get_pack(connection, pack_id) is None:
+        return False
+    connection.execute(
+        """
+        INSERT INTO app_state(key, value) VALUES ('active_pack_id', ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+        """,
+        (str(pack_id),),
+    )
+    connection.commit()
+    return True
+
+
+def ensure_active_pack(connection: sqlite3.Connection) -> int:
+    """アクティブパックIDを返す。無効・未設定なら既存の最新パックか新規デフォルトパックを充てる。"""
+    active_id = get_active_pack_id(connection)
+    if active_id is not None and get_pack(connection, active_id) is not None:
+        return active_id
+    packs = list_packs(connection)
+    pack_id = packs[0].id if packs else create_pack(connection, name=DEFAULT_PACK_NAME)
+    set_active_pack(connection, pack_id)
+    return pack_id
+
+
+def get_pack_items(connection: sqlite3.Connection, pack_id: int) -> list[PackItemRecord]:
+    rows = connection.execute(
+        """
+        SELECT pdf_path, title, pages, collapsed, position, added_at, updated_at
+        FROM pack_items
+        WHERE pack_id = ?
+        ORDER BY position, id
+        """,
+        (pack_id,),
+    ).fetchall()
+    return [
+        PackItemRecord(
+            pdf_path=str(row["pdf_path"]),
+            title=str(row["title"]),
+            pages=str(row["pages"]),
+            collapsed=bool(row["collapsed"]),
+            position=int(row["position"]),
+            added_at=str(row["added_at"]),
+            updated_at=str(row["updated_at"]),
+        )
+        for row in rows
+    ]
+
+
+def replace_pack_items(connection: sqlite3.Connection, pack_id: int, books: dict) -> bool:
+    """パックの内容をカート形式の books 辞書で丸ごと置き換える。
+
+    既存の pdf_path は added_at / position を保持し、消えたものは削除、
+    新規は末尾に追加する。クライアントの save(cart) に対応する一括書込み。
+    """
+    if get_pack(connection, pack_id) is None:
+        return False
+    if not isinstance(books, dict):
+        return False
+    now = _pack_now()
+    existing = {item.pdf_path: item for item in get_pack_items(connection, pack_id)}
+    next_position = max((item.position for item in existing.values()), default=-1) + 1
+
+    for pdf_path in set(existing) - set(books):
+        connection.execute("DELETE FROM pack_items WHERE pack_id = ? AND pdf_path = ?", (pack_id, pdf_path))
+
+    for pdf_path, entry in books.items():
+        if not isinstance(pdf_path, str) or not pdf_path or not isinstance(entry, dict):
+            continue
+        title = entry.get("title") if isinstance(entry.get("title"), str) and entry.get("title") else pdf_path
+        pages = entry.get("pages") if isinstance(entry.get("pages"), str) else ""
+        collapsed = 1 if entry.get("collapsed") else 0
+        current = existing.get(pdf_path)
+        if current is not None:
+            connection.execute(
+                """
+                UPDATE pack_items SET title = ?, pages = ?, collapsed = ?, updated_at = ?
+                WHERE pack_id = ? AND pdf_path = ?
+                """,
+                (title, pages, collapsed, now, pack_id, pdf_path),
+            )
+        else:
+            added_at = entry.get("addedAt") if isinstance(entry.get("addedAt"), str) and entry.get("addedAt") else now
+            connection.execute(
+                """
+                INSERT INTO pack_items(pack_id, pdf_path, title, pages, collapsed, position, added_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (pack_id, pdf_path, title, pages, collapsed, next_position, added_at, now),
+            )
+            next_position += 1
+
+    connection.execute("UPDATE packs SET updated_at = ? WHERE id = ?", (now, pack_id))
+    connection.commit()
+    return True
+
+
+def pack_items_as_cart(connection: sqlite3.Connection, pack_id: int) -> dict:
+    """パック内容をクライアントのカート形式（version 2）で返す。"""
+    books: dict[str, dict[str, object]] = {}
+    for item in get_pack_items(connection, pack_id):
+        books[item.pdf_path] = {
+            "title": item.title,
+            "pages": item.pages,
+            "collapsed": item.collapsed,
+            "addedAt": item.added_at,
+        }
+    return {"version": 2, "books": books}
+
+
+def import_cart_as_pack(connection: sqlite3.Connection, cart: dict, *, name: str) -> int | None:
+    """sessionStorage のカート（version 2）を新規パックとして取り込む。"""
+    if not isinstance(cart, dict) or cart.get("version") != 2:
+        return None
+    books = cart.get("books")
+    if not isinstance(books, dict) or not books:
+        return None
+    pack_id = create_pack(connection, name=name)
+    replace_pack_items(connection, pack_id, books)
+    return pack_id
+
+
+def _pack_record_from_row(row: sqlite3.Row) -> PackRecord:
+    return PackRecord(
+        id=int(row["id"]),
+        name=str(row["name"]),
+        note=str(row["note"]),
+        created_at=str(row["created_at"]),
+        updated_at=str(row["updated_at"]),
+        archived_at=str(row["archived_at"]) if row["archived_at"] is not None else None,
+        book_count=int(row["book_count"]),
+    )
+
+
+def _ensure_pack_schema(connection: sqlite3.Connection) -> None:
+    connection.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS packs (
+            id INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            note TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            archived_at TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS pack_items (
+            id INTEGER PRIMARY KEY,
+            pack_id INTEGER NOT NULL REFERENCES packs(id) ON DELETE CASCADE,
+            pdf_path TEXT NOT NULL,
+            title TEXT NOT NULL,
+            pages TEXT NOT NULL DEFAULT '',
+            collapsed INTEGER NOT NULL DEFAULT 0,
+            position INTEGER NOT NULL DEFAULT 0,
+            added_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(pack_id, pdf_path)
+        );
+
+        CREATE TABLE IF NOT EXISTS app_state (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+        """
+    )
 
 
 def _clean_snippet(snippet: str) -> str:

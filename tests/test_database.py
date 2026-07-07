@@ -4,10 +4,23 @@ import sqlite3
 from pathlib import Path
 
 from tsundokensaku.database import (
+    DEFAULT_PACK_NAME,
     PageRecord,
     BookNoteRecord,
     QueryTerm,
+    create_pack,
+    delete_pack,
+    ensure_active_pack,
+    get_active_pack_id,
+    get_pack,
+    get_pack_items,
+    import_cart_as_pack,
+    list_packs,
+    pack_items_as_cart,
     parse_query,
+    replace_pack_items,
+    set_active_pack,
+    update_pack,
     replace_memos,
     connect,
     initialize,
@@ -760,6 +773,149 @@ class SearchSyntaxTest(unittest.TestCase):
             results = search(connection, "python -web", scope="title")
 
             self.assertEqual([result.title for result in results], ["python dataclasses"])
+            connection.close()
+
+
+class PackTest(unittest.TestCase):
+    def _make_connection(self, temp_dir: str):
+        db_path = Path(temp_dir) / "index.db"
+        connection = connect(db_path)
+        initialize(connection)
+        return connection
+
+    def test_create_get_list_update_delete_pack(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            connection = self._make_connection(temp_dir)
+
+            pack_id = create_pack(connection, name="分散システム調査")
+            pack = get_pack(connection, pack_id)
+            self.assertIsNotNone(pack)
+            self.assertEqual(pack.name, "分散システム調査")
+            self.assertEqual(pack.book_count, 0)
+
+            self.assertTrue(update_pack(connection, pack_id, name="合意アルゴリズム調査"))
+            self.assertEqual(get_pack(connection, pack_id).name, "合意アルゴリズム調査")
+
+            other_id = create_pack(connection, name="別パック")
+            names = {pack.name for pack in list_packs(connection)}
+            self.assertEqual(names, {"合意アルゴリズム調査", "別パック"})
+
+            self.assertTrue(delete_pack(connection, other_id))
+            self.assertIsNone(get_pack(connection, other_id))
+            self.assertFalse(delete_pack(connection, other_id))
+            self.assertFalse(update_pack(connection, other_id, name="消えたはず"))
+            connection.close()
+
+    def test_blank_pack_name_falls_back_to_default(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            connection = self._make_connection(temp_dir)
+            pack_id = create_pack(connection, name="   ")
+            self.assertEqual(get_pack(connection, pack_id).name, DEFAULT_PACK_NAME)
+            connection.close()
+
+    def test_active_pack_lifecycle(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            connection = self._make_connection(temp_dir)
+
+            self.assertIsNone(get_active_pack_id(connection))
+
+            first_id = ensure_active_pack(connection)
+            self.assertEqual(get_pack(connection, first_id).name, DEFAULT_PACK_NAME)
+            self.assertEqual(get_active_pack_id(connection), first_id)
+            self.assertEqual(ensure_active_pack(connection), first_id)
+
+            second_id = create_pack(connection, name="二つ目")
+            self.assertTrue(set_active_pack(connection, second_id))
+            self.assertEqual(get_active_pack_id(connection), second_id)
+            self.assertFalse(set_active_pack(connection, 9999))
+
+            delete_pack(connection, second_id)
+            self.assertIsNone(get_active_pack_id(connection))
+            fallback_id = ensure_active_pack(connection)
+            self.assertEqual(fallback_id, first_id)
+            connection.close()
+
+    def test_replace_pack_items_preserves_added_at_and_position(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            connection = self._make_connection(temp_dir)
+            pack_id = create_pack(connection, name="p")
+
+            replace_pack_items(
+                connection,
+                pack_id,
+                {
+                    "books/a.pdf": {"title": "本A", "pages": "1-3", "collapsed": False, "addedAt": "2026-01-01T00:00:00Z"},
+                    "books/b.pdf": {"title": "本B", "pages": "10", "collapsed": True},
+                },
+            )
+            items = {item.pdf_path: item for item in get_pack_items(connection, pack_id)}
+            self.assertEqual(set(items), {"books/a.pdf", "books/b.pdf"})
+            self.assertEqual(items["books/a.pdf"].added_at, "2026-01-01T00:00:00Z")
+            first_added_at = items["books/a.pdf"].added_at
+            first_position = items["books/a.pdf"].position
+
+            replace_pack_items(
+                connection,
+                pack_id,
+                {
+                    "books/a.pdf": {"title": "本A", "pages": "1-5", "collapsed": True},
+                    "books/c.pdf": {"title": "本C", "pages": "7"},
+                },
+            )
+            items = {item.pdf_path: item for item in get_pack_items(connection, pack_id)}
+            self.assertEqual(set(items), {"books/a.pdf", "books/c.pdf"})
+            self.assertEqual(items["books/a.pdf"].pages, "1-5")
+            self.assertTrue(items["books/a.pdf"].collapsed)
+            self.assertEqual(items["books/a.pdf"].added_at, first_added_at)
+            self.assertEqual(items["books/a.pdf"].position, first_position)
+            self.assertGreater(items["books/c.pdf"].position, first_position)
+
+            self.assertEqual(get_pack(connection, pack_id).book_count, 2)
+            self.assertFalse(replace_pack_items(connection, 9999, {}))
+            connection.close()
+
+    def test_pack_items_as_cart_round_trip(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            connection = self._make_connection(temp_dir)
+            pack_id = create_pack(connection, name="p")
+            books = {
+                "books/a.pdf": {"title": "本A", "pages": "1-3,7", "collapsed": False, "addedAt": "2026-01-01T00:00:00Z"},
+            }
+            replace_pack_items(connection, pack_id, books)
+
+            cart = pack_items_as_cart(connection, pack_id)
+
+            self.assertEqual(cart["version"], 2)
+            self.assertEqual(cart["books"], books)
+            connection.close()
+
+    def test_import_cart_as_pack(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            connection = self._make_connection(temp_dir)
+            cart = {
+                "version": 2,
+                "books": {
+                    "books/a.pdf": {"title": "本A", "pages": "2-4", "collapsed": True, "addedAt": "2026-01-01T00:00:00Z"},
+                },
+            }
+
+            pack_id = import_cart_as_pack(connection, cart, name="移行されたワークスペース")
+
+            self.assertIsNotNone(pack_id)
+            self.assertEqual(get_pack(connection, pack_id).name, "移行されたワークスペース")
+            self.assertEqual(pack_items_as_cart(connection, pack_id)["books"], cart["books"])
+
+            self.assertIsNone(import_cart_as_pack(connection, {"version": 2, "books": {}}, name="空"))
+            self.assertIsNone(import_cart_as_pack(connection, {"version": 1}, name="旧"))
+            self.assertIsNone(import_cart_as_pack(connection, "not a dict", name="壊"))
+            connection.close()
+
+    def test_initialize_is_idempotent_for_pack_schema(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            connection = self._make_connection(temp_dir)
+            pack_id = create_pack(connection, name="残る")
+            initialize(connection)
+            self.assertEqual(get_pack(connection, pack_id).name, "残る")
             connection.close()
 
 
