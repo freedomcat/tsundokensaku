@@ -216,16 +216,26 @@
       }
     }
 
-    function handleToggle(checkbox) {
+    async function handleToggle(checkbox) {
       const path = checkbox.dataset.cartPath;
       const title = checkbox.dataset.cartTitle || path;
       const pages = parsePages(checkbox.dataset.cartPages);
       if (!path || pages.length === 0) {
         return;
       }
+      // 資料作成中の再描画イベントで checkbox.checked が書き換わるため先に確定させる
+      const wantsAdd = checkbox.checked;
+      if (wantsAdd && !TsundokuCart.getActivePack()) {
+        // 資料がまだない。作成してから追加する（取りやめたらチェックを戻す）
+        const created = await TsundokuCart.ensureActivePackInteractive();
+        if (!created) {
+          checkbox.checked = false;
+          return;
+        }
+      }
       const cart = TsundokuCart.load();
       const entry = cart.books[path];
-      if (checkbox.checked) {
+      if (wantsAdd) {
         const merged = TsundokuPages.mergeSpecs([entry ? entry.pages : '', TsundokuPages.pagesToSpec(pages)]);
         cart.books[path] = {
           title,
@@ -249,7 +259,7 @@
     document.addEventListener('change', (event) => {
       const checkbox = event.target.closest('.cart-checkbox');
       if (checkbox) {
-        handleToggle(checkbox);
+        void handleToggle(checkbox);
       }
     });
 

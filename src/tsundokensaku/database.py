@@ -928,7 +928,7 @@ def _like_terms_clause(query: str, *, columns: tuple[str, ...], match: str = "al
     return clause, parameters
 
 
-DEFAULT_PACK_NAME = "無題の資料"
+FALLBACK_PACK_NAME = "新しい資料"
 
 
 def _pack_now() -> str:
@@ -939,7 +939,7 @@ def create_pack(connection: sqlite3.Connection, *, name: str, note: str = "") ->
     now = _pack_now()
     cursor = connection.execute(
         "INSERT INTO packs(name, note, created_at, updated_at) VALUES (?, ?, ?, ?)",
-        (name.strip() or DEFAULT_PACK_NAME, note, now, now),
+        (name.strip() or FALLBACK_PACK_NAME, note, now, now),
     )
     connection.commit()
     return int(cursor.lastrowid)
@@ -1028,13 +1028,22 @@ def set_active_pack(connection: sqlite3.Connection, pack_id: int) -> bool:
     return True
 
 
-def ensure_active_pack(connection: sqlite3.Connection) -> int:
-    """アクティブパックIDを返す。無効・未設定なら既存の最新パックか新規デフォルトパックを充てる。"""
+def resolve_active_pack_id(connection: sqlite3.Connection) -> int | None:
+    """アクティブパックIDを返す。無効・未設定なら既存の最新パックへフォールバック。
+
+    パックが1件もなければ None。自動作成はしない（資料は利用者が
+    必要になったタイミングで作る）。
+    """
     active_id = get_active_pack_id(connection)
     if active_id is not None and get_pack(connection, active_id) is not None:
         return active_id
     packs = list_packs(connection)
-    pack_id = packs[0].id if packs else create_pack(connection, name=DEFAULT_PACK_NAME)
+    if not packs:
+        if active_id is not None:
+            connection.execute("DELETE FROM app_state WHERE key = 'active_pack_id'")
+            connection.commit()
+        return None
+    pack_id = packs[0].id
     set_active_pack(connection, pack_id)
     return pack_id
 

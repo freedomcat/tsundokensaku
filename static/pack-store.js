@@ -12,6 +12,7 @@ window.TsundokuCart = (() => {
   let activePack = null; // {id, name}
   let dirty = false;
   let saveTimer = null;
+  let saveTargetPackId = null; // save() 時点の書込み先。切替後の誤書込み防止
   let initialized = false;
 
   function emptyCart() {
@@ -93,15 +94,53 @@ window.TsundokuCart = (() => {
 
   async function fetchActivePack() {
     const listing = await fetchJson('/api/packs');
+    if (listing.active_pack_id === null || listing.active_pack_id === undefined) {
+      // 資料が1件もない状態。利用者が作るまで空のまま
+      activePack = null;
+      cache = emptyCart();
+      dirty = false;
+      notifyUpdated();
+      return;
+    }
     const pack = await fetchJson(`/api/packs/${listing.active_pack_id}`);
+    const previousId = activePack ? activePack.id : null;
     activePack = { id: pack.id, name: pack.name };
     const serverCart = pack.cart && typeof pack.cart === 'object' ? pack.cart : emptyCart();
-    if (dirty) {
-      // 取得完了前のローカル編集を失わないよう、サーバ内容の上にローカルを重ねる
+    if (dirty && (previousId === null || previousId === pack.id)) {
+      // 初回取得前・同一資料の再取得では、ローカル編集を失わないよう上に重ねる
       serverCart.books = { ...serverCart.books, ...cache.books };
+    } else if (dirty) {
+      // 資料が切り替わった。前の資料向けの未送信編集を新しい資料へ持ち込まない
+      dirty = false;
+      if (saveTimer !== null) {
+        clearTimeout(saveTimer);
+        saveTimer = null;
+      }
     }
     cache = serverCart;
     notifyUpdated();
+  }
+
+  // 資料が無ければ確認のうえ新規作成する。追加操作の前に呼ぶ。
+  // 作成した/既にあれば true、利用者が取りやめたら false。
+  async function ensureActivePackInteractive() {
+    if (activePack) {
+      return true;
+    }
+    if (!window.confirm('資料がありません。新しい資料を作成しますか？')) {
+      return false;
+    }
+    const name = window.prompt('新しい資料の名前', '新しい資料');
+    if (name === null) {
+      return false;
+    }
+    try {
+      await createPack(name.trim());
+      return activePack !== null;
+    } catch (error) {
+      console.warn('Failed to create pack', error);
+      return false;
+    }
   }
 
   function notifyUpdated() {
@@ -137,6 +176,11 @@ window.TsundokuCart = (() => {
     if (!dirty || !activePack) {
       return;
     }
+    if (saveTargetPackId !== null && saveTargetPackId !== activePack.id) {
+      // 書込み予約した資料からすでに切り替わっている。別の資料へ書かない
+      dirty = false;
+      return;
+    }
     dirty = false;
     try {
       await fetch(`/api/packs/${activePack.id}/books`, {
@@ -156,7 +200,7 @@ window.TsundokuCart = (() => {
       clearTimeout(saveTimer);
       saveTimer = null;
     }
-    void pushToServer(true);
+    return pushToServer(true);
   }
 
   async function refresh() {
@@ -181,6 +225,7 @@ window.TsundokuCart = (() => {
     }
     cache = clone(cart);
     dirty = true;
+    saveTargetPackId = activePack ? activePack.id : null;
     updateBadge();
     if (initialized && activePack) {
       scheduleSave();
@@ -228,7 +273,7 @@ window.TsundokuCart = (() => {
   }
 
   async function createPack(name) {
-    flushPendingSave();
+    await flushPendingSave();
     const pack = await fetchJson('/api/packs', {
       method: 'POST',
       body: JSON.stringify({ name }),
@@ -238,7 +283,7 @@ window.TsundokuCart = (() => {
   }
 
   async function activatePack(packId) {
-    flushPendingSave();
+    await flushPendingSave();
     await fetchJson(`/api/packs/${packId}/activate`, { method: 'POST' });
     await fetchActivePack();
   }
@@ -284,6 +329,7 @@ window.TsundokuCart = (() => {
     summaryLabel,
     updateBadge,
     getActivePack,
+    ensureActivePackInteractive,
     listPacks,
     createPack,
     activatePack,

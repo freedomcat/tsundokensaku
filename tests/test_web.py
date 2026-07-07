@@ -608,23 +608,24 @@ class PackApiTest(unittest.TestCase):
     def _payload(self, response) -> dict:
         return json.loads(response.body)
 
-    def test_pack_api_full_lifecycle(self) -> None:
+    def test_pack_api_new_db_starts_empty(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / "index.db"
             with patch("tsundokensaku.web.get_db_path", return_value=db_path):
-                # 初回一覧: デフォルトパックが自動作成されアクティブになる
+                # 新規DB: 資料0件・アクティブなし。自動作成しない
                 listing = self._payload(api_list_packs())
-                self.assertEqual(len(listing["packs"]), 1)
-                default_id = listing["active_pack_id"]
-                self.assertEqual(listing["packs"][0]["id"], default_id)
+                self.assertEqual(listing["packs"], [])
+                self.assertIsNone(listing["active_pack_id"])
 
-                # 作成 → アクティブが切り替わる
-                created = self._payload(api_create_pack({"name": "調査パック"}))
-                self.assertEqual(created["name"], "調査パック")
+    def test_pack_api_create_then_add_books_flow(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "index.db"
+            with patch("tsundokensaku.web.get_db_path", return_value=db_path):
+                # 資料0件からの作成フロー: 作成 → 自動アクティブ化 → 追加
+                created = self._payload(api_create_pack({"name": "新しい資料"}))
                 listing = self._payload(api_list_packs())
                 self.assertEqual(listing["active_pack_id"], created["id"])
 
-                # books 一括置換 → 取得
                 books = {
                     "books/a.pdf": {"title": "本A", "pages": "1-3", "collapsed": False, "addedAt": "2026-01-01T00:00:00Z"},
                 }
@@ -634,18 +635,35 @@ class PackApiTest(unittest.TestCase):
                 self.assertEqual(fetched["book_count"], 1)
                 self.assertEqual(fetched["cart"]["books"], books)
 
+    def test_pack_api_full_lifecycle(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "index.db"
+            with patch("tsundokensaku.web.get_db_path", return_value=db_path):
+                first = self._payload(api_create_pack({"name": "一つ目"}))
+                created = self._payload(api_create_pack({"name": "調査資料"}))
+                self.assertEqual(created["name"], "調査資料")
+                listing = self._payload(api_list_packs())
+                self.assertEqual(listing["active_pack_id"], created["id"])
+
                 # 改名
                 renamed = self._payload(api_update_pack(created["id"], {"name": "改名後"}))
                 self.assertEqual(renamed["name"], "改名後")
 
                 # activate で戻す
-                self._payload(api_activate_pack(default_id))
-                self.assertEqual(self._payload(api_list_packs())["active_pack_id"], default_id)
+                self._payload(api_activate_pack(first["id"]))
+                self.assertEqual(self._payload(api_list_packs())["active_pack_id"], first["id"])
 
-                # 削除 → アクティブ側フォールバック
+                # 削除 → 残った資料へフォールバック
                 deleted = self._payload(api_delete_pack(created["id"]))
                 self.assertEqual(deleted["deleted"], created["id"])
-                self.assertEqual(deleted["active_pack_id"], default_id)
+                self.assertEqual(deleted["active_pack_id"], first["id"])
+
+                # 最後の1つも削除できる → アクティブは None
+                deleted = self._payload(api_delete_pack(first["id"]))
+                self.assertIsNone(deleted["active_pack_id"])
+                listing = self._payload(api_list_packs())
+                self.assertEqual(listing["packs"], [])
+                self.assertIsNone(listing["active_pack_id"])
 
     def test_pack_api_not_found_and_bad_request(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

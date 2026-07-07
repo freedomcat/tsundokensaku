@@ -417,6 +417,14 @@
       .nav a .pill {
         margin-left: 6px;
         padding: 2px 8px;
+        background: var(--accent);
+        color: white;
+        font-weight: 600;
+      }
+
+      .nav a.active .pill {
+        background: white;
+        color: var(--accent-strong);
       }
 
       .ws-toolbar {
@@ -1375,7 +1383,7 @@
           );
         });
 
-        addWorkspaceButton?.addEventListener('click', () => {
+        addWorkspaceButton?.addEventListener('click', async () => {
           const pages = pagesInput.value.trim();
           if (!currentPdfPath || !pages) {
             return;
@@ -1384,6 +1392,13 @@
           if (error) {
             setExportStatus(error, true);
             return;
+          }
+          if (!TsundokuCart.getActivePack()) {
+            // 資料がまだない。作成してから追加する
+            const created = await TsundokuCart.ensureActivePackInteractive();
+            if (!created) {
+              return;
+            }
           }
           const cart = TsundokuCart.load();
           const entry = cart.books[currentPdfPath];

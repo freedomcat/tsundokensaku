@@ -4,13 +4,12 @@ import sqlite3
 from pathlib import Path
 
 from tsundokensaku.database import (
-    DEFAULT_PACK_NAME,
+    FALLBACK_PACK_NAME,
     PageRecord,
     BookNoteRecord,
     QueryTerm,
     create_pack,
     delete_pack,
-    ensure_active_pack,
     get_active_pack_id,
     get_pack,
     get_pack_items,
@@ -19,6 +18,7 @@ from tsundokensaku.database import (
     pack_items_as_cart,
     parse_query,
     replace_pack_items,
+    resolve_active_pack_id,
     set_active_pack,
     update_pack,
     replace_memos,
@@ -810,29 +810,55 @@ class PackTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             connection = self._make_connection(temp_dir)
             pack_id = create_pack(connection, name="   ")
-            self.assertEqual(get_pack(connection, pack_id).name, DEFAULT_PACK_NAME)
+            self.assertEqual(get_pack(connection, pack_id).name, FALLBACK_PACK_NAME)
+            connection.close()
+
+    def test_new_db_starts_with_no_packs(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            connection = self._make_connection(temp_dir)
+
+            # 新規DBでは資料0件・アクティブなし。自動作成しない
+            self.assertEqual(list_packs(connection), [])
+            self.assertIsNone(resolve_active_pack_id(connection))
+            self.assertEqual(list_packs(connection), [])
             connection.close()
 
     def test_active_pack_lifecycle(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             connection = self._make_connection(temp_dir)
 
-            self.assertIsNone(get_active_pack_id(connection))
-
-            first_id = ensure_active_pack(connection)
-            self.assertEqual(get_pack(connection, first_id).name, DEFAULT_PACK_NAME)
-            self.assertEqual(get_active_pack_id(connection), first_id)
-            self.assertEqual(ensure_active_pack(connection), first_id)
+            first_id = create_pack(connection, name="一つ目")
+            set_active_pack(connection, first_id)
+            self.assertEqual(resolve_active_pack_id(connection), first_id)
 
             second_id = create_pack(connection, name="二つ目")
             self.assertTrue(set_active_pack(connection, second_id))
             self.assertEqual(get_active_pack_id(connection), second_id)
             self.assertFalse(set_active_pack(connection, 9999))
 
+            # アクティブを削除 → 残っている資料へフォールバック
             delete_pack(connection, second_id)
             self.assertIsNone(get_active_pack_id(connection))
-            fallback_id = ensure_active_pack(connection)
-            self.assertEqual(fallback_id, first_id)
+            self.assertEqual(resolve_active_pack_id(connection), first_id)
+
+            # 全削除 → None に戻る
+            delete_pack(connection, first_id)
+            self.assertIsNone(resolve_active_pack_id(connection))
+            connection.close()
+
+    def test_existing_db_keeps_packs_after_reinitialize(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            connection = self._make_connection(temp_dir)
+            pack_id = create_pack(connection, name="既存の資料")
+            set_active_pack(connection, pack_id)
+            replace_pack_items(connection, pack_id, {"books/a.pdf": {"title": "本A", "pages": "1"}})
+
+            # 既存ユーザーのDB相当: initialize を再実行しても資料・アクティブが維持される
+            initialize(connection)
+
+            self.assertEqual(resolve_active_pack_id(connection), pack_id)
+            self.assertEqual(get_pack(connection, pack_id).name, "既存の資料")
+            self.assertEqual(get_pack(connection, pack_id).book_count, 1)
             connection.close()
 
     def test_replace_pack_items_preserves_added_at_and_follows_payload_order(self) -> None:

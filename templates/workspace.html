@@ -50,6 +50,10 @@
 <section class="card">
   <div id="ws-books"></div>
   <p class="muted" id="ws-empty" hidden>この資料は空です。検索結果の「資料に追加」からページを追加してください。</p>
+  <div id="ws-no-pack" hidden>
+    <p class="muted" style="margin: 0 0 10px;">資料はまだありません。</p>
+    <button type="button" class="primary" id="ws-no-pack-new">＋ 新しい資料</button>
+  </div>
 </section>
 
 <script>
@@ -78,12 +82,17 @@
 
     function refreshSummary() {
       const cart = TsundokuCart.load();
+      const hasPack = TsundokuCart.getActivePack() !== null;
       const count = TsundokuCart.bookCount(cart);
-      countBadge.textContent = TsundokuCart.summaryLabel(cart);
-      emptyMessage.hidden = count > 0;
+      countBadge.textContent = hasPack ? TsundokuCart.summaryLabel(cart) : '';
+      countBadge.hidden = !hasPack;
+      emptyMessage.hidden = !hasPack || count > 0;
+      noPackSection.hidden = hasPack;
       for (const button of [exportPdfButton, exportMdButton, clearButton, addOpenButton]) {
-        button.disabled = count === 0;
+        button.disabled = !hasPack || count === 0;
       }
+      packRenameButton.disabled = !hasPack;
+      packDeleteButton.disabled = !hasPack;
     }
 
     function updateBook(path, updater) {
@@ -289,9 +298,14 @@
       });
 
       card.addEventListener('toggle', () => {
-        updateBook(path, (book) => {
-          book.collapsed = !card.open;
-        });
+        // 再描画由来の toggle で collapsed が同値のときは保存しない
+        const currentCart = TsundokuCart.load();
+        const currentBook = currentCart.books[path];
+        if (currentBook && currentBook.collapsed !== !card.open) {
+          updateBook(path, (book) => {
+            book.collapsed = !card.open;
+          });
+        }
         if (card.open && !chaptersHolder.dataset.loaded) {
           chaptersHolder.dataset.loaded = '1';
           void fetchOutline(path).then((outline) => {
@@ -621,6 +635,8 @@
     const packNewButton = document.getElementById('ws-pack-new');
     const packRenameButton = document.getElementById('ws-pack-rename');
     const packDeleteButton = document.getElementById('ws-pack-delete');
+    const noPackSection = document.getElementById('ws-no-pack');
+    const noPackNewButton = document.getElementById('ws-no-pack-new');
 
     async function refreshPackBar() {
       try {
@@ -632,11 +648,27 @@
           option.textContent = pack.book_count > 0 ? `${pack.name}（${pack.book_count}冊）` : pack.name;
           packSelect.appendChild(option);
         }
-        packSelect.value = String(listing.active_pack_id);
-        packDeleteButton.disabled = listing.packs.length <= 1;
+        if (listing.active_pack_id !== null) {
+          packSelect.value = String(listing.active_pack_id);
+        }
+        packSelect.disabled = listing.packs.length === 0;
       } catch (error) {
         console.warn('Failed to list packs', error);
       }
+    }
+
+    async function createNewPackFlow() {
+      const name = window.prompt('新しい資料の名前', '新しい資料');
+      if (name === null) {
+        return;
+      }
+      try {
+        await TsundokuCart.createPack(name.trim());
+        setStatus('');
+      } catch (error) {
+        setStatus('資料の作成に失敗しました', true);
+      }
+      await refreshPackBar();
     }
 
     packSelect.addEventListener('change', async () => {
@@ -653,19 +685,8 @@
       await refreshPackBar();
     });
 
-    packNewButton.addEventListener('click', async () => {
-      const name = window.prompt('新しい資料の名前');
-      if (name === null) {
-        return;
-      }
-      try {
-        await TsundokuCart.createPack(name.trim());
-        setStatus('');
-      } catch (error) {
-        setStatus('資料の作成に失敗しました', true);
-      }
-      await refreshPackBar();
-    });
+    packNewButton.addEventListener('click', () => void createNewPackFlow());
+    noPackNewButton.addEventListener('click', () => void createNewPackFlow());
 
     packRenameButton.addEventListener('click', async () => {
       const pack = TsundokuCart.getActivePack();

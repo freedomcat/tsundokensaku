@@ -26,7 +26,6 @@ from tsundokensaku.database import (
     connect,
     create_pack,
     delete_pack,
-    ensure_active_pack,
     ensure_pack_schema,
     get_book,
     get_pack,
@@ -36,6 +35,7 @@ from tsundokensaku.database import (
     pack_items_as_cart,
     parse_query,
     replace_pack_items,
+    resolve_active_pack_id,
     search,
     set_active_pack,
     sync_kindle_books,
@@ -1047,7 +1047,7 @@ def _pack_to_json(pack) -> dict:
 def api_list_packs() -> JSONResponse:
     connection = _pack_connection()
     try:
-        active_pack_id = ensure_active_pack(connection)
+        active_pack_id = resolve_active_pack_id(connection)
         packs = [_pack_to_json(pack) for pack in list_packs(connection)]
     finally:
         connection.close()
@@ -1100,7 +1100,7 @@ def api_delete_pack(pack_id: int) -> JSONResponse:
     try:
         if not delete_pack(connection, pack_id):
             raise HTTPException(status_code=404, detail="資料が見つかりません")
-        active_pack_id = ensure_active_pack(connection)
+        active_pack_id = resolve_active_pack_id(connection)
     finally:
         connection.close()
     return JSONResponse({"deleted": pack_id, "active_pack_id": active_pack_id})
