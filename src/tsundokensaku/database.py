@@ -15,7 +15,14 @@ from tsundokensaku.metadata import (
     load_scrapbox_memos,
     resolve_pdf_display_title,
 )
-from tsundokensaku.tokenizer import build_excerpt, normalize_trigram_text, prepare_index_text, tokenize_text
+from tsundokensaku.tokenizer import (
+    QueryTerm,
+    build_excerpt,
+    normalize_trigram_text,
+    parse_query,
+    prepare_index_text,
+    tokenize_text,
+)
 
 
 @dataclass(frozen=True)
@@ -93,34 +100,6 @@ class SearchResult:
 
 SEARCH_SCOPES = {"all", "title", "body", "memo"}
 SEARCH_MATCH_MODES = {"all", "any"}
-
-
-@dataclass(frozen=True)
-class QueryTerm:
-    text: str
-    phrase: bool = False
-    exclude: bool = False
-
-
-def parse_query(query: str) -> list[QueryTerm]:
-    """検索クエリを語単位に分解する。
-
-    - 空白区切りの各チャンクが1語
-    - "..." で囲むとフレーズ（語順・隣接を保った一致）
-    - 先頭 - で除外（-語 / -"フレーズ"）
-    """
-    parts = re.findall(r'-?"[^"]*"|\S+', query)
-    terms: list[QueryTerm] = []
-    for part in parts:
-        exclude = part.startswith("-")
-        if exclude:
-            part = part[1:]
-        phrase = len(part) >= 2 and part.startswith('"') and part.endswith('"')
-        text = part.strip('"').strip()
-        if not text:
-            continue
-        terms.append(QueryTerm(text=text, phrase=phrase, exclude=exclude))
-    return terms
 
 
 def connect(db_path: Path) -> sqlite3.Connection:

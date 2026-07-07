@@ -2,11 +2,61 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from dataclasses import dataclass
 from functools import lru_cache
 
 _WHITESPACE_RE = re.compile(r"\s+")
 _TOKEN_RE = re.compile(r"[A-Za-z0-9_]+|[ぁ-んァ-ヴー一-龥々]+")
 _PROLONGED_SOUND_MARK = "ー"
+
+
+@dataclass(frozen=True)
+class QueryTerm:
+    text: str
+    phrase: bool = False
+    exclude: bool = False
+
+
+def parse_query(query: str) -> list[QueryTerm]:
+    """検索クエリを語単位に分解する。
+
+    - 空白区切りの各チャンクが1語
+    - "..." で囲むとフレーズ（語順・隣接を保った一致）
+    - 先頭 - で除外（-語 / -"フレーズ"）
+
+    検索本体（database.py）とハイライト・抜粋（web.py / build_excerpt）が
+    同じ解析結果を共有する。演算子（- と "）は text に含まれない。
+    """
+    parts = re.findall(r'-?"[^"]*"|\S+', query)
+    terms: list[QueryTerm] = []
+    for part in parts:
+        exclude = part.startswith("-")
+        if exclude:
+            part = part[1:]
+        phrase = len(part) >= 2 and part.startswith('"') and part.endswith('"')
+        text = part.strip('"').strip()
+        if not text:
+            continue
+        terms.append(QueryTerm(text=text, phrase=phrase, exclude=exclude))
+    return terms
+
+
+def query_highlight_terms(query: str) -> list[str]:
+    """ハイライト・抜粋用の検索語候補。除外語と演算子を含まない。
+
+    長い候補（フレーズ原文）から順に並べ、続けてトークンを返す。
+    """
+    include_terms = [term for term in parse_query(query) if not term.exclude]
+    candidates: list[str] = []
+    for term in include_terms:
+        for candidate in (term.text, term.text.replace(" ", "")):
+            if candidate and candidate not in candidates:
+                candidates.append(candidate)
+    for term in include_terms:
+        for token in tokenize_text(term.text):
+            if token and token not in candidates:
+                candidates.append(token)
+    return candidates
 
 
 def normalize_text(text: str) -> str:
@@ -74,12 +124,7 @@ def build_excerpt(text: str, query: str, *, width: int = 120) -> str:
         return ""
 
     compact_text = display_text.replace(" ", "")
-    candidates = tokenize_query(query)
-    raw_query = normalize_text(query)
-    if raw_query and raw_query not in candidates:
-        candidates.append(raw_query)
-    if compact_text and raw_query.replace(" ", "") not in candidates:
-        candidates.append(raw_query.replace(" ", ""))
+    candidates = query_highlight_terms(query)
 
     for candidate in candidates:
         for haystack in (display_text, compact_text):

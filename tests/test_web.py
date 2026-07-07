@@ -47,6 +47,21 @@ class HighlightQueryTest(unittest.TestCase):
         self.assertIn("&lt;script&gt;alert(1)&lt;/script&gt;", rendered)
         self.assertIn("<mark>レビュー</mark>", rendered)
 
+    def test_highlight_query_skips_excluded_terms(self) -> None:
+        rendered = str(highlight_query("RubyとRailsの本", "Ruby -Rails"))
+        self.assertIn("<mark>Ruby</mark>", rendered)
+        self.assertNotIn("<mark>Rails</mark>", rendered)
+
+    def test_highlight_query_exclusion_only_marks_nothing(self) -> None:
+        rendered = str(highlight_query("-Linux と Linux の話", "-Linux"))
+        self.assertNotIn("<mark>", rendered)
+
+    def test_highlight_query_phrase_marks_without_quotes(self) -> None:
+        rendered = str(highlight_query('彼は"The Cathedral and the Bazaar"を読んだ', '"The Cathedral and the Bazaar"'))
+        self.assertIn("<mark>The Cathedral and the Bazaar</mark>", rendered)
+        self.assertNotIn('<mark>"', rendered)
+        self.assertNotIn('"</mark>', rendered)
+
     def test_group_pdf_results_combines_pages_by_title(self) -> None:
         grouped = group_pdf_results(
             [
@@ -256,7 +271,7 @@ class HighlightQueryTest(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         body = response.body.decode("utf-8")
-        self.assertIn("ワークスペース", body)
+        self.assertIn("資料棚", body)
         self.assertIn("ws-export-pdf", body)
         self.assertIn("ws-export-md", body)
 

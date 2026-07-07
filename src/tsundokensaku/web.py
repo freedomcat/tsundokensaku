@@ -55,7 +55,7 @@ from tsundokensaku.metadata import (
 from tsundokensaku.markdown_export import default_markdown_output_name, render_markdown_pages
 from tsundokensaku.pdf_export import default_output_path, parse_page_selection, render_selected_pages
 from tsundokensaku.pdf_outline import get_page_count, list_chapters
-from tsundokensaku.tokenizer import tokenize_query
+from tsundokensaku.tokenizer import query_highlight_terms
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -132,11 +132,8 @@ def highlight_query(text: str, query: str) -> Markup:
     if not text:
         return Markup("")
 
-    normalized_query = query.strip()
-    compact_query = normalized_query.replace(" ", "")
-    terms = [normalized_query, compact_query]
-    terms.extend(term for term in tokenize_query(query) if term)
-    terms = sorted({term for term in terms if term}, key=len, reverse=True)
+    # 検索パーサーと同じ解析結果を使う。除外語と演算子（- や "）は候補に入らない
+    terms = sorted(set(query_highlight_terms(query)), key=len, reverse=True)
     if not terms:
         return escape(text)
 
