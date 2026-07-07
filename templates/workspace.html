@@ -3,13 +3,22 @@
 {% block content %}
 <section class="card">
   <h2 style="margin: 0 0 6px;">ワークスペース</h2>
-  <p class="muted" style="margin: 0 0 14px;">必要なページを集めて、AIへ渡す資料を組み立てます。</p>
+  <p class="muted" style="margin: 0 0 14px;">必要なページを集めて、AIへ渡す資料を組み立てます。パックごとに保存されます。</p>
+  <div class="ws-toolbar" style="margin-bottom: 10px;">
+    <label style="display:inline-flex; align-items:center; gap:6px;">
+      パック
+      <select id="ws-pack-select" aria-label="パックの切替"></select>
+    </label>
+    <button type="button" id="ws-pack-new">新しいパック</button>
+    <button type="button" id="ws-pack-rename">名前を変更</button>
+    <button type="button" id="ws-pack-delete">パックを削除</button>
+  </div>
   <div class="ws-toolbar">
     <span class="pill" id="ws-count"></span>
     <button type="button" id="ws-add-open">ページを追加</button>
     <button type="button" class="primary" id="ws-export-pdf">PDFエクスポート</button>
     <button type="button" id="ws-export-md">MDエクスポート</button>
-    <button type="button" id="ws-clear">すべてクリア</button>
+    <button type="button" id="ws-clear">このパックを空にする</button>
     <span class="ws-status" id="ws-status"></span>
   </div>
 </section>
@@ -554,17 +563,109 @@
     });
 
     clearButton.addEventListener('click', () => {
+      const pack = TsundokuCart.getActivePack();
+      const label = pack ? `パック「${pack.name}」` : 'このパック';
+      if (!window.confirm(`${label}の内容をすべて削除します。よろしいですか？`)) {
+        return;
+      }
       TsundokuCart.save({ version: 2, books: {} });
       renderAll();
       setStatus('');
     });
 
-    // PDFプレビューモーダルの「ワークスペースに追加」から発火
+    const packSelect = document.getElementById('ws-pack-select');
+    const packNewButton = document.getElementById('ws-pack-new');
+    const packRenameButton = document.getElementById('ws-pack-rename');
+    const packDeleteButton = document.getElementById('ws-pack-delete');
+
+    async function refreshPackBar() {
+      try {
+        const listing = await TsundokuCart.listPacks();
+        packSelect.innerHTML = '';
+        for (const pack of listing.packs) {
+          const option = document.createElement('option');
+          option.value = String(pack.id);
+          option.textContent = pack.book_count > 0 ? `${pack.name}（${pack.book_count}冊）` : pack.name;
+          packSelect.appendChild(option);
+        }
+        packSelect.value = String(listing.active_pack_id);
+        packDeleteButton.disabled = listing.packs.length <= 1;
+      } catch (error) {
+        console.warn('Failed to list packs', error);
+      }
+    }
+
+    packSelect.addEventListener('change', async () => {
+      const packId = parseInt(packSelect.value, 10);
+      if (!Number.isInteger(packId)) {
+        return;
+      }
+      try {
+        await TsundokuCart.activatePack(packId);
+        setStatus('');
+      } catch (error) {
+        setStatus('パックの切替に失敗しました', true);
+      }
+      await refreshPackBar();
+    });
+
+    packNewButton.addEventListener('click', async () => {
+      const name = window.prompt('新しいパックの名前');
+      if (name === null) {
+        return;
+      }
+      try {
+        await TsundokuCart.createPack(name.trim());
+        setStatus('');
+      } catch (error) {
+        setStatus('パックの作成に失敗しました', true);
+      }
+      await refreshPackBar();
+    });
+
+    packRenameButton.addEventListener('click', async () => {
+      const pack = TsundokuCart.getActivePack();
+      if (!pack) {
+        return;
+      }
+      const name = window.prompt('パックの名前', pack.name);
+      if (name === null || !name.trim() || name.trim() === pack.name) {
+        return;
+      }
+      try {
+        await TsundokuCart.renamePack(pack.id, name.trim());
+        setStatus('');
+      } catch (error) {
+        setStatus('名前の変更に失敗しました', true);
+      }
+      await refreshPackBar();
+    });
+
+    packDeleteButton.addEventListener('click', async () => {
+      const pack = TsundokuCart.getActivePack();
+      if (!pack) {
+        return;
+      }
+      if (!window.confirm(`パック「${pack.name}」を削除します。中のページ構成も消えます。よろしいですか？`)) {
+        return;
+      }
+      try {
+        await TsundokuCart.deletePack(pack.id);
+        setStatus('');
+      } catch (error) {
+        setStatus('パックの削除に失敗しました', true);
+      }
+      await refreshPackBar();
+    });
+
+    // PDFプレビューモーダルの「ワークスペースに追加」、およびサーバからの
+    // パック取得完了・切替時に発火
     document.addEventListener('tsundoku-cart-updated', () => {
       renderAll();
     });
 
     renderAll();
+    void refreshPackBar();
   })();
 </script>
 {% endblock %}
