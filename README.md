@@ -191,6 +191,8 @@ python -m unittest discover -s tests
 
 詳細な設計メモは [ARCHITECTURE.md](ARCHITECTURE.md) に分けています。
 
+今後の機能計画は [ROADMAP.md](ROADMAP.md) にまとめています。
+
 ## あえて入れていないもの
 
 - AI要約
