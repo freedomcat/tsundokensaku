@@ -253,6 +253,24 @@ def finalize_search_result_rows(rendered_results: list[dict[str, object]], *, bo
     return sorted_results
 
 
+def normalize_search_group(values: list[str] | str | None) -> str:
+    """group パラメータを正規化する。
+
+    フォームは hidden の group=none とチェックボックスの group=book を併送する。
+    "book" があればまとめ表示、"none" のみなら個別表示、未指定（旧URL・ホームからの
+    検索）はまとめ表示をデフォルトとする。
+    """
+    if values is None:
+        values = []
+    elif isinstance(values, str):
+        values = [values]
+    if "book" in values:
+        return "book"
+    if "none" in values:
+        return "none"
+    return "book"
+
+
 def normalize_search_match(values: list[str] | str | None) -> str:
     """match パラメータを正規化する。
 
@@ -937,18 +955,19 @@ def search_page(
     q: str = "",
     sort: str = "rank",
     scope: str = "all",
-    group: str = "none",
+    group: list[str] = Query(default=[]),
     match: list[str] = Query(default=[]),
 ) -> HTMLResponse:
     books_dir = get_books_dir()
     db_path = get_db_path()
     normalized_scope = scope if scope in SEARCH_SCOPES else "all"
     normalized_match = normalize_search_match(match)
+    normalized_group = normalize_search_group(group)
     rendered_results, normalized_scope = build_search_result_rows_context(
         q,
         sort=sort,
         scope=normalized_scope,
-        group=group,
+        group=normalized_group,
         match=normalized_match,
         books_dir=books_dir,
         db_path=db_path,
@@ -962,7 +981,7 @@ def search_page(
     scrapbox_export_url = None
     if q.strip() and get_scrapbox_project_url():
         scrapbox_export_url = (
-            f"/search/scrapbox?{urlencode({'q': q, 'sort': sort, 'scope': normalized_scope, 'group': group, 'match': normalized_match})}"
+            f"/search/scrapbox?{urlencode({'q': q, 'sort': sort, 'scope': normalized_scope, 'group': normalized_group, 'match': normalized_match})}"
         )
     return templates.TemplateResponse(
         request,
@@ -971,7 +990,7 @@ def search_page(
             "request": request,
             "query": q,
             "sort": sort,
-            "group": group,
+            "group": normalized_group,
             "sort_options": sort_options,
             "scope": normalized_scope,
             "scope_options": SEARCH_SCOPE_OPTIONS,
@@ -992,7 +1011,7 @@ def search_scrapbox_export(
     q: str = "",
     sort: str = "rank",
     scope: str = "all",
-    group: str = "none",
+    group: str = "book",
     match: list[str] = Query(default=[]),
 ) -> RedirectResponse:
     books_dir = get_books_dir()

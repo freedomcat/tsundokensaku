@@ -27,6 +27,7 @@ from tsundokensaku.web import (
     pdf_outline,
     import_scrapbox_export_bytes,
     format_indexed_at,
+    normalize_search_group,
     normalize_search_match,
     resolve_pdf_scrapbox_url,
     save_pdf_export_to_configured_dir,
@@ -532,6 +533,20 @@ class HighlightQueryTest(unittest.TestCase):
     def test_normalize_search_match_checkbox_off_sends_any_only(self) -> None:
         self.assertEqual(normalize_search_match(["any"]), "any")
         self.assertEqual(normalize_search_match("any"), "any")
+
+    def test_normalize_search_group_defaults_to_book(self) -> None:
+        # 未指定（旧URL・ホームからの検索）は「同じ書籍をまとめる」がデフォルト
+        self.assertEqual(normalize_search_group(None), "book")
+        self.assertEqual(normalize_search_group([]), "book")
+        self.assertEqual(normalize_search_group(["bogus"]), "book")
+
+    def test_normalize_search_group_checkbox_states(self) -> None:
+        # hidden group=none + checked group=book の併送 → book
+        self.assertEqual(normalize_search_group(["none", "book"]), "book")
+        self.assertEqual(normalize_search_group(["book", "none"]), "book")
+        # unchecked は none のみ → 個別表示
+        self.assertEqual(normalize_search_group(["none"]), "none")
+        self.assertEqual(normalize_search_group("none"), "none")
 
     def test_build_search_scrapbox_body_includes_match_mode(self) -> None:
         _, body_all = build_search_scrapbox_body(

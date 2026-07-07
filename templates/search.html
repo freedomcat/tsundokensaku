@@ -61,6 +61,7 @@
         <option value="{{ option.value }}" {% if option.value == sort %}selected{% endif %}>{{ option.label }}</option>
       {% endfor %}
     </select>
+    <input type="hidden" name="group" value="none">
     <label class="pill" style="display:inline-flex; align-items:center; gap:8px;">
       <input type="checkbox" name="group" value="book" {% if group == 'book' %}checked{% endif %} data-auto-submit>
       同じ書籍をまとめる
