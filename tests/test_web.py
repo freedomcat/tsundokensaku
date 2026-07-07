@@ -6,7 +6,17 @@ import json
 
 from pypdf import PdfReader, PdfWriter
 
+from fastapi import HTTPException
+
 from tsundokensaku.web import (
+    api_activate_pack,
+    api_create_pack,
+    api_delete_pack,
+    api_get_pack,
+    api_import_pack,
+    api_list_packs,
+    api_replace_pack_books,
+    api_update_pack,
     build_scrapbox_page_url,
     build_search_scrapbox_body,
     export_markdown,
@@ -577,6 +587,91 @@ class HighlightQueryTest(unittest.TestCase):
 
         self.assertIn("21. 本21", body)
         self.assertNotIn("他 ", body)
+
+
+class PackApiTest(unittest.TestCase):
+    def _payload(self, response) -> dict:
+        return json.loads(response.body)
+
+    def test_pack_api_full_lifecycle(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "index.db"
+            with patch("tsundokensaku.web.get_db_path", return_value=db_path):
+                # 初回一覧: デフォルトパックが自動作成されアクティブになる
+                listing = self._payload(api_list_packs())
+                self.assertEqual(len(listing["packs"]), 1)
+                default_id = listing["active_pack_id"]
+                self.assertEqual(listing["packs"][0]["id"], default_id)
+
+                # 作成 → アクティブが切り替わる
+                created = self._payload(api_create_pack({"name": "調査パック"}))
+                self.assertEqual(created["name"], "調査パック")
+                listing = self._payload(api_list_packs())
+                self.assertEqual(listing["active_pack_id"], created["id"])
+
+                # books 一括置換 → 取得
+                books = {
+                    "books/a.pdf": {"title": "本A", "pages": "1-3", "collapsed": False, "addedAt": "2026-01-01T00:00:00Z"},
+                }
+                replaced = self._payload(api_replace_pack_books(created["id"], {"books": books}))
+                self.assertEqual(replaced["cart"]["books"], books)
+                fetched = self._payload(api_get_pack(created["id"]))
+                self.assertEqual(fetched["book_count"], 1)
+                self.assertEqual(fetched["cart"]["books"], books)
+
+                # 改名
+                renamed = self._payload(api_update_pack(created["id"], {"name": "改名後"}))
+                self.assertEqual(renamed["name"], "改名後")
+
+                # activate で戻す
+                self._payload(api_activate_pack(default_id))
+                self.assertEqual(self._payload(api_list_packs())["active_pack_id"], default_id)
+
+                # 削除 → アクティブ側フォールバック
+                deleted = self._payload(api_delete_pack(created["id"]))
+                self.assertEqual(deleted["deleted"], created["id"])
+                self.assertEqual(deleted["active_pack_id"], default_id)
+
+    def test_pack_api_not_found_and_bad_request(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "index.db"
+            with patch("tsundokensaku.web.get_db_path", return_value=db_path):
+                with self.assertRaises(HTTPException) as ctx:
+                    api_get_pack(9999)
+                self.assertEqual(ctx.exception.status_code, 404)
+                with self.assertRaises(HTTPException):
+                    api_update_pack(9999, {"name": "x"})
+                with self.assertRaises(HTTPException):
+                    api_delete_pack(9999)
+                with self.assertRaises(HTTPException):
+                    api_activate_pack(9999)
+                with self.assertRaises(HTTPException):
+                    api_replace_pack_books(9999, {"books": {}})
+                created = self._payload(api_create_pack({"name": "p"}))
+                with self.assertRaises(HTTPException) as ctx:
+                    api_replace_pack_books(created["id"], {"books": "not a dict"})
+                self.assertEqual(ctx.exception.status_code, 400)
+
+    def test_pack_api_import_cart(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "index.db"
+            with patch("tsundokensaku.web.get_db_path", return_value=db_path):
+                cart = {
+                    "version": 2,
+                    "books": {
+                        "books/a.pdf": {"title": "本A", "pages": "2-4", "collapsed": True, "addedAt": "2026-01-01T00:00:00Z"},
+                    },
+                }
+
+                imported = self._payload(api_import_pack({"cart": cart}))
+
+                self.assertEqual(imported["name"], "移行されたワークスペース")
+                self.assertEqual(imported["cart"]["books"], cart["books"])
+                self.assertEqual(self._payload(api_list_packs())["active_pack_id"], imported["id"])
+
+                with self.assertRaises(HTTPException) as ctx:
+                    api_import_pack({"cart": {"version": 2, "books": {}}})
+                self.assertEqual(ctx.exception.status_code, 400)
 
 
 if __name__ == "__main__":

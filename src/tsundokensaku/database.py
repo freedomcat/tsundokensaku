@@ -1169,6 +1169,12 @@ def _pack_record_from_row(row: sqlite3.Row) -> PackRecord:
     )
 
 
+def ensure_pack_schema(connection: sqlite3.Connection) -> None:
+    """パック関連テーブルだけを保証する軽量版。APIリクエスト経路で使う。"""
+    _ensure_pack_schema(connection)
+    connection.commit()
+
+
 def _ensure_pack_schema(connection: sqlite3.Connection) -> None:
     connection.executescript(
         """

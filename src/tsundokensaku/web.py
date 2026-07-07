@@ -14,7 +14,7 @@ from urllib.parse import unquote, urlparse
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from fastapi import FastAPI, Form, HTTPException, Query, Request
+from fastapi import Body, FastAPI, Form, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -24,12 +24,23 @@ from tsundokensaku.database import (
     SEARCH_MATCH_MODES,
     SEARCH_SCOPES,
     connect,
+    create_pack,
+    delete_pack,
+    ensure_active_pack,
+    ensure_pack_schema,
     get_book,
+    get_pack,
+    import_cart_as_pack,
     list_books,
+    list_packs,
+    pack_items_as_cart,
     parse_query,
+    replace_pack_items,
     search,
+    set_active_pack,
     sync_kindle_books,
     sync_memos,
+    update_pack,
 )
 from tsundokensaku.database import initialize
 from tsundokensaku.indexer import find_pdfs, index_books
@@ -1016,6 +1027,129 @@ def search_scrapbox_export(
 @app.get("/workspace", response_class=HTMLResponse)
 def workspace_page(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(request, "workspace.html", {"request": request})
+
+
+def _pack_connection():
+    connection = connect(get_db_path())
+    ensure_pack_schema(connection)
+    return connection
+
+
+def _pack_to_json(pack) -> dict:
+    return {
+        "id": pack.id,
+        "name": pack.name,
+        "note": pack.note,
+        "book_count": pack.book_count,
+        "created_at": pack.created_at,
+        "updated_at": pack.updated_at,
+    }
+
+
+@app.get("/api/packs")
+def api_list_packs() -> JSONResponse:
+    connection = _pack_connection()
+    try:
+        active_pack_id = ensure_active_pack(connection)
+        packs = [_pack_to_json(pack) for pack in list_packs(connection)]
+    finally:
+        connection.close()
+    return JSONResponse({"packs": packs, "active_pack_id": active_pack_id})
+
+
+@app.post("/api/packs")
+def api_create_pack(payload: dict = Body(default={})) -> JSONResponse:
+    name = payload.get("name") if isinstance(payload.get("name"), str) else ""
+    connection = _pack_connection()
+    try:
+        pack_id = create_pack(connection, name=name)
+        set_active_pack(connection, pack_id)
+        pack = get_pack(connection, pack_id)
+    finally:
+        connection.close()
+    return JSONResponse(_pack_to_json(pack), status_code=201)
+
+
+@app.get("/api/packs/{pack_id}")
+def api_get_pack(pack_id: int) -> JSONResponse:
+    connection = _pack_connection()
+    try:
+        pack = get_pack(connection, pack_id)
+        if pack is None:
+            raise HTTPException(status_code=404, detail="パックが見つかりません")
+        cart = pack_items_as_cart(connection, pack_id)
+    finally:
+        connection.close()
+    return JSONResponse({**_pack_to_json(pack), "cart": cart})
+
+
+@app.patch("/api/packs/{pack_id}")
+def api_update_pack(pack_id: int, payload: dict = Body(default={})) -> JSONResponse:
+    name = payload.get("name") if isinstance(payload.get("name"), str) else None
+    note = payload.get("note") if isinstance(payload.get("note"), str) else None
+    connection = _pack_connection()
+    try:
+        if not update_pack(connection, pack_id, name=name, note=note):
+            raise HTTPException(status_code=404, detail="パックが見つかりません")
+        pack = get_pack(connection, pack_id)
+    finally:
+        connection.close()
+    return JSONResponse(_pack_to_json(pack))
+
+
+@app.delete("/api/packs/{pack_id}")
+def api_delete_pack(pack_id: int) -> JSONResponse:
+    connection = _pack_connection()
+    try:
+        if not delete_pack(connection, pack_id):
+            raise HTTPException(status_code=404, detail="パックが見つかりません")
+        active_pack_id = ensure_active_pack(connection)
+    finally:
+        connection.close()
+    return JSONResponse({"deleted": pack_id, "active_pack_id": active_pack_id})
+
+
+@app.post("/api/packs/{pack_id}/activate")
+def api_activate_pack(pack_id: int) -> JSONResponse:
+    connection = _pack_connection()
+    try:
+        if not set_active_pack(connection, pack_id):
+            raise HTTPException(status_code=404, detail="パックが見つかりません")
+    finally:
+        connection.close()
+    return JSONResponse({"active_pack_id": pack_id})
+
+
+@app.put("/api/packs/{pack_id}/books")
+def api_replace_pack_books(pack_id: int, payload: dict = Body(default={})) -> JSONResponse:
+    books = payload.get("books")
+    if not isinstance(books, dict):
+        raise HTTPException(status_code=400, detail="books オブジェクトが必要です")
+    connection = _pack_connection()
+    try:
+        if not replace_pack_items(connection, pack_id, books):
+            raise HTTPException(status_code=404, detail="パックが見つかりません")
+        cart = pack_items_as_cart(connection, pack_id)
+    finally:
+        connection.close()
+    return JSONResponse({"pack_id": pack_id, "cart": cart})
+
+
+@app.post("/api/packs/import")
+def api_import_pack(payload: dict = Body(default={})) -> JSONResponse:
+    cart = payload.get("cart")
+    name = payload.get("name") if isinstance(payload.get("name"), str) and payload.get("name") else "移行されたワークスペース"
+    connection = _pack_connection()
+    try:
+        pack_id = import_cart_as_pack(connection, cart, name=name) if isinstance(cart, dict) else None
+        if pack_id is None:
+            raise HTTPException(status_code=400, detail="取り込めるカートデータがありません")
+        set_active_pack(connection, pack_id)
+        pack = get_pack(connection, pack_id)
+        imported_cart = pack_items_as_cart(connection, pack_id)
+    finally:
+        connection.close()
+    return JSONResponse({**_pack_to_json(pack), "cart": imported_cart}, status_code=201)
 
 
 @app.get("/settings", response_class=HTMLResponse)
