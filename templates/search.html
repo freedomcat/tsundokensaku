@@ -260,6 +260,13 @@
       syncCheckboxes(cart);
     });
 
+    // サーバからのパック取得完了・他画面での更新に追随して再描画する
+    document.addEventListener('tsundoku-cart-updated', () => {
+      const cart = TsundokuCart.load();
+      renderBar(cart);
+      syncCheckboxes(cart);
+    });
+
     const initialCart = TsundokuCart.load();
     renderBar(initialCart);
     syncCheckboxes(initialCart);
