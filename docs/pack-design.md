@@ -1,7 +1,7 @@
 # パック永続化 設計メモ（Phase 1: 名前付きパック）
 
 作成: 2026-07-07
-状態: 設計のみ（実装未着手）
+状態: **MVP実装済み**（2026-07-07。実装状況と残TODOは末尾の「10. 実装状況」参照）
 前提: [ROADMAP.md](../ROADMAP.md) Phase 1
 
 ## 1. 現状調査まとめ
@@ -191,3 +191,26 @@ CREATE TABLE IF NOT EXISTS app_state (
 - **DB マイグレーション**: 新テーブルのみで既存テーブルに触れないため後方互換リスクは低い。`initialize()` は毎起動走る前提なので `IF NOT EXISTS` 徹底
 - **「すべてクリア」の意味変化**: 従来は揮発カートのクリア、今後は永続データの削除。誤操作の影響が大きくなるため確認ダイアログを付ける
 - **アクティブパック未存在**: 初回起動・全削除後は「デフォルト」パックを自動作成して常に1つはある状態を保つ（UI の null 分岐を減らす）
+
+## 10. 実装状況（2026-07-07 時点）
+
+### 実装済み
+
+- DB層（database.py）: packs / pack_items / app_state スキーマ、CRUD、アクティブパック管理、`replace_pack_items`（added_at / position 保持の一括置換）、`pack_items_as_cart` / `import_cart_as_pack`
+- API層（web.py）: `/api/packs` 一覧・作成・取得・改名・削除・activate・books一括置換・import。リクエスト経路は `ensure_pack_schema` の軽量スキーマ保証のみ
+- クライアント（static/pack-store.js）: TsundokuCart 互換のサーバ同期ストア。楽観更新 + 400msデバウンス PUT、focus/pageshow 再取得、離脱時 keepalive 書込み、初回取得前ローカル編集のマージ保護、sessionStorage 旧カートの自動移行（export-cart.js は削除）
+- UI（workspace.html）: パックのセレクト切替・新規作成・改名・削除、「このパックを空にする」確認ダイアログ
+- テスト: DB 7件 + API 3件（全113件パス）、Playwright E2E 9項目（別セッション残存・移行・切替を実証）
+
+### 設計からの変更点
+
+- 項目単位の `PUT/DELETE /api/packs/{id}/items` は実装せず、`PUT /api/packs/{id}/books`（カート形式の一括置換）に統一。クライアントは常に全体キャッシュを持つため書込み経路が1本で済む
+
+### 残TODO（MVP外、必要になったら）
+
+- [ ] `/workspace/packs` 一覧管理画面（現状はワークスペースのセレクトで代替。パックが増えて一覧性が要るようになったら）
+- [ ] note 欄の UI（DB 列は用意済み）
+- [ ] アーカイブ（`archived_at` 列は用意済み）・複製・並び替え（D&D）
+- [ ] Kindle 本・メモのパック追加（現状 PDF のみ、従来どおり）
+- [ ] パス変更で本が見つからない項目の「本が見つかりません」表示
+- [ ] ナビバッジへのパック名表示の検討
