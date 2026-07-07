@@ -15,7 +15,7 @@ from tsundokensaku.metadata import (
     load_scrapbox_memos,
     resolve_pdf_display_title,
 )
-from tsundokensaku.tokenizer import build_excerpt, normalize_trigram_text, prepare_index_text, tokenize_query
+from tsundokensaku.tokenizer import build_excerpt, normalize_trigram_text, prepare_index_text, tokenize_text
 
 
 @dataclass(frozen=True)
@@ -70,6 +70,7 @@ class SearchResult:
 
 
 SEARCH_SCOPES = {"all", "title", "body", "memo"}
+SEARCH_MATCH_MODES = {"all", "any"}
 
 
 def connect(db_path: Path) -> sqlite3.Connection:
@@ -498,42 +499,44 @@ def search(
     *,
     limit: int = 20,
     scope: str = "all",
+    match: str = "all",
 ) -> list[SearchResult]:
     normalized_query = query.strip()
     if not normalized_query:
         return []
 
     normalized_scope = scope if scope in SEARCH_SCOPES else "all"
+    normalized_match = match if match in SEARCH_MATCH_MODES else "all"
     if normalized_scope == "title":
         try:
-            rows = _search_title(connection, normalized_query, limit=limit)
+            rows = _search_title(connection, normalized_query, limit=limit, match=normalized_match)
         except sqlite3.OperationalError:
             rows = []
     elif normalized_scope == "body":
         try:
-            rows = _search_body(connection, normalized_query, limit=limit)
+            rows = _search_body(connection, normalized_query, limit=limit, match=normalized_match)
         except sqlite3.OperationalError:
             rows = []
     elif normalized_scope == "memo":
         try:
-            rows = _search_memo(connection, normalized_query, limit=limit)
+            rows = _search_memo(connection, normalized_query, limit=limit, match=normalized_match)
         except sqlite3.OperationalError:
             rows = []
     else:
         try:
-            title_rows = _search_title(connection, normalized_query, limit=limit)
+            title_rows = _search_title(connection, normalized_query, limit=limit, match=normalized_match)
         except sqlite3.OperationalError:
             title_rows = []
         try:
-            body_rows = _search_body(connection, normalized_query, limit=limit)
+            body_rows = _search_body(connection, normalized_query, limit=limit, match=normalized_match)
         except sqlite3.OperationalError:
             body_rows = []
         try:
-            note_rows = _search_book_notes(connection, normalized_query, limit=limit)
+            note_rows = _search_book_notes(connection, normalized_query, limit=limit, match=normalized_match)
         except sqlite3.OperationalError:
             note_rows = []
         try:
-            memo_rows = _search_memo(connection, normalized_query, limit=limit)
+            memo_rows = _search_memo(connection, normalized_query, limit=limit, match=normalized_match)
         except sqlite3.OperationalError:
             memo_rows = []
         rows = title_rows + body_rows + note_rows + memo_rows
@@ -553,21 +556,21 @@ def search(
     ]
 
 
-def _search_title(connection: sqlite3.Connection, query: str, *, limit: int) -> list[sqlite3.Row]:
+def _search_title(connection: sqlite3.Connection, query: str, *, limit: int, match: str = "all") -> list[sqlite3.Row]:
     rows: list[sqlite3.Row] = []
     try:
-        rows.extend(_search_title_fts(connection, query, limit=limit))
+        rows.extend(_search_title_fts(connection, query, limit=limit, match=match))
     except sqlite3.OperationalError:
         pass
     try:
-        rows.extend(_search_title_like(connection, query, limit=limit))
+        rows.extend(_search_title_like(connection, query, limit=limit, match=match))
     except sqlite3.OperationalError:
         pass
     return _dedupe_rows(rows, limit=limit)
 
 
-def _search_title_fts(connection: sqlite3.Connection, query: str, *, limit: int) -> list[sqlite3.Row]:
-    fts_query = _to_fts_query(query)
+def _search_title_fts(connection: sqlite3.Connection, query: str, *, limit: int, match: str = "all") -> list[sqlite3.Row]:
+    fts_query = _to_fts_query(query, match=match)
     if not fts_query:
         return []
     return list(
@@ -593,12 +596,13 @@ def _search_title_fts(connection: sqlite3.Connection, query: str, *, limit: int)
     )
 
 
-def _search_title_like(connection: sqlite3.Connection, query: str, *, limit: int) -> list[sqlite3.Row]:
+def _search_title_like(connection: sqlite3.Connection, query: str, *, limit: int, match: str = "all") -> list[sqlite3.Row]:
     terms = _query_terms(query)
     if not terms:
         return []
 
-    where_clause = " AND ".join(["title LIKE ?" for _ in terms])
+    connector = " OR " if match == "any" else " AND "
+    where_clause = connector.join(["title LIKE ?" for _ in terms])
     return list(
         connection.execute(
             f"""
@@ -621,21 +625,21 @@ def _search_title_like(connection: sqlite3.Connection, query: str, *, limit: int
     )
 
 
-def _search_body(connection: sqlite3.Connection, query: str, *, limit: int) -> list[sqlite3.Row]:
+def _search_body(connection: sqlite3.Connection, query: str, *, limit: int, match: str = "all") -> list[sqlite3.Row]:
     rows: list[sqlite3.Row] = []
     try:
-        rows.extend(_search_body_fts(connection, query, limit=limit))
+        rows.extend(_search_body_fts(connection, query, limit=limit, match=match))
     except sqlite3.OperationalError:
         pass
     try:
-        rows.extend(_search_body_trigram(connection, query, limit=limit))
+        rows.extend(_search_body_trigram(connection, query, limit=limit, match=match))
     except sqlite3.OperationalError:
         pass
     return _dedupe_rows(rows, limit=limit)
 
 
-def _search_body_fts(connection: sqlite3.Connection, query: str, *, limit: int) -> list[sqlite3.Row]:
-    fts_query = _to_scoped_fts_query(query, column="text")
+def _search_body_fts(connection: sqlite3.Connection, query: str, *, limit: int, match: str = "all") -> list[sqlite3.Row]:
+    fts_query = _to_scoped_fts_query(query, column="text", match=match)
     return list(
         connection.execute(
             """
@@ -657,8 +661,8 @@ def _search_body_fts(connection: sqlite3.Connection, query: str, *, limit: int) 
     )
 
 
-def _search_body_trigram(connection: sqlite3.Connection, query: str, *, limit: int) -> list[sqlite3.Row]:
-    trigram_query = _to_trigram_query(query)
+def _search_body_trigram(connection: sqlite3.Connection, query: str, *, limit: int, match: str = "all") -> list[sqlite3.Row]:
+    trigram_query = _to_trigram_query(query, match=match)
     if not trigram_query:
         return []
     return list(
@@ -682,15 +686,15 @@ def _search_body_trigram(connection: sqlite3.Connection, query: str, *, limit: i
     )
 
 
-def _search_memo(connection: sqlite3.Connection, query: str, *, limit: int) -> list[sqlite3.Row]:
+def _search_memo(connection: sqlite3.Connection, query: str, *, limit: int, match: str = "all") -> list[sqlite3.Row]:
     try:
-        return _search_memo_fts(connection, query, limit=limit)
+        return _search_memo_fts(connection, query, limit=limit, match=match)
     except sqlite3.OperationalError:
-        return _search_memo_like(connection, query, limit=limit)
+        return _search_memo_like(connection, query, limit=limit, match=match)
 
 
-def _search_memo_fts(connection: sqlite3.Connection, query: str, *, limit: int) -> list[sqlite3.Row]:
-    fts_query = _to_fts_query(query)
+def _search_memo_fts(connection: sqlite3.Connection, query: str, *, limit: int, match: str = "all") -> list[sqlite3.Row]:
+    fts_query = _to_fts_query(query, match=match)
     return list(
         connection.execute(
             """
@@ -714,11 +718,13 @@ def _search_memo_fts(connection: sqlite3.Connection, query: str, *, limit: int) 
     )
 
 
-def _search_memo_like(connection: sqlite3.Connection, query: str, *, limit: int) -> list[sqlite3.Row]:
-    like_query = f"%{query}%"
+def _search_memo_like(connection: sqlite3.Connection, query: str, *, limit: int, match: str = "all") -> list[sqlite3.Row]:
+    where_clause, parameters = _like_terms_clause(query, columns=("title", "body"), match=match)
+    if not where_clause:
+        return []
     return list(
         connection.execute(
-            """
+            f"""
             SELECT
                 title,
                 title AS path,
@@ -729,24 +735,24 @@ def _search_memo_like(connection: sqlite3.Connection, query: str, *, limit: int)
                 scrapbox_url,
                 cover_url
             FROM memos
-            WHERE title LIKE ? OR body LIKE ?
+            WHERE {where_clause}
             ORDER BY title
             LIMIT ?
             """,
-            (like_query, like_query, limit),
+            tuple(parameters + [limit]),
         )
     )
 
 
-def _search_book_notes(connection: sqlite3.Connection, query: str, *, limit: int) -> list[sqlite3.Row]:
+def _search_book_notes(connection: sqlite3.Connection, query: str, *, limit: int, match: str = "all") -> list[sqlite3.Row]:
     try:
-        return _search_book_notes_fts(connection, query, limit=limit)
+        return _search_book_notes_fts(connection, query, limit=limit, match=match)
     except sqlite3.OperationalError:
-        return _search_book_notes_like(connection, query, limit=limit)
+        return _search_book_notes_like(connection, query, limit=limit, match=match)
 
 
-def _search_book_notes_fts(connection: sqlite3.Connection, query: str, *, limit: int) -> list[sqlite3.Row]:
-    fts_query = _to_fts_query(query)
+def _search_book_notes_fts(connection: sqlite3.Connection, query: str, *, limit: int, match: str = "all") -> list[sqlite3.Row]:
+    fts_query = _to_fts_query(query, match=match)
     return list(
         connection.execute(
             """
@@ -771,11 +777,13 @@ def _search_book_notes_fts(connection: sqlite3.Connection, query: str, *, limit:
     )
 
 
-def _search_book_notes_like(connection: sqlite3.Connection, query: str, *, limit: int) -> list[sqlite3.Row]:
-    like_query = f"%{query}%"
+def _search_book_notes_like(connection: sqlite3.Connection, query: str, *, limit: int, match: str = "all") -> list[sqlite3.Row]:
+    where_clause, parameters = _like_terms_clause(query, columns=("n.title", "n.body"), match=match)
+    if not where_clause:
+        return []
     return list(
         connection.execute(
-            """
+            f"""
             SELECT
                 b.title,
                 n.title AS path,
@@ -787,11 +795,11 @@ def _search_book_notes_like(connection: sqlite3.Connection, query: str, *, limit
                 n.cover_url AS cover_url
             FROM book_notes AS n
             JOIN books AS b ON b.id = n.book_id
-            WHERE n.title LIKE ? OR n.body LIKE ?
+            WHERE {where_clause}
             ORDER BY b.title, n.title
             LIMIT ?
             """,
-            (like_query, like_query, limit),
+            tuple(parameters + [limit]),
         )
     )
 
@@ -801,22 +809,66 @@ def _query_terms(query: str) -> list[str]:
     return [term.strip(chr(34)) for term in terms if term.strip(chr(34))]
 
 
-def _to_fts_query(query: str) -> str:
-    quoted_terms = [f'"{term}"' for term in tokenize_query(query)]
-    return " ".join(quoted_terms)
+def _query_token_groups(query: str) -> list[list[str]]:
+    # OR の単位はユーザーが空白区切りした語。Sudachi が1語を複数トークンに
+    # 分割しても、そのトークン群は同一グループとして常に AND で結合する。
+    groups: list[list[str]] = []
+    for term in _query_terms(query):
+        tokens = [token for token in tokenize_text(term) if token]
+        if tokens:
+            groups.append(tokens)
+    return groups
 
 
-def _to_scoped_fts_query(query: str, *, column: str) -> str:
-    prefixed_terms = [f'{column}:"{term}"' for term in tokenize_query(query) if term]
-    return " ".join(prefixed_terms)
+def _fts_group_expression(tokens: list[str], *, prefix: str = "") -> str:
+    quoted = " ".join('"{}"'.format(token.replace('"', '""')) for token in tokens)
+    if prefix:
+        return f"{prefix}:({quoted})"
+    if len(tokens) > 1:
+        return f"({quoted})"
+    return quoted
 
 
-def _to_trigram_query(query: str) -> str:
-    normalized = normalize_trigram_text(query)
-    if len(normalized) < 3:
+def _to_fts_query(query: str, *, match: str = "all") -> str:
+    expressions = [_fts_group_expression(tokens) for tokens in _query_token_groups(query)]
+    separator = " OR " if match == "any" else " "
+    return separator.join(expressions)
+
+
+def _to_scoped_fts_query(query: str, *, column: str, match: str = "all") -> str:
+    expressions = [_fts_group_expression(tokens, prefix=column) for tokens in _query_token_groups(query)]
+    separator = " OR " if match == "any" else " "
+    return separator.join(expressions)
+
+
+def _to_trigram_query(query: str, *, match: str = "all") -> str:
+    phrases: list[str] = []
+    for term in _query_terms(query):
+        normalized = normalize_trigram_text(term)
+        if len(normalized) < 3:
+            # trigram で表現できない短い語。AND では全語一致を保証できないため
+            # trigram 検索自体を諦める（FTS 側が短い語を拾う）。OR では単に読み飛ばす。
+            if match != "any":
+                return ""
+            continue
+        phrases.append('"{}"'.format(normalized.replace('"', '""')))
+    if not phrases:
         return ""
-    escaped = normalized.replace('"', '""')
-    return f'"{escaped}"'
+    separator = " OR " if match == "any" else " "
+    return separator.join(phrases)
+
+
+def _like_terms_clause(query: str, *, columns: tuple[str, ...], match: str = "all") -> tuple[str, list[str]]:
+    terms = _query_terms(query)
+    if not terms:
+        return "", []
+    clauses: list[str] = []
+    parameters: list[str] = []
+    for term in terms:
+        clauses.append("(" + " OR ".join(f"{column} LIKE ?" for column in columns) + ")")
+        parameters.extend([f"%{term}%"] * len(columns))
+    connector = " OR " if match == "any" else " AND "
+    return connector.join(clauses), parameters
 
 
 def _clean_snippet(snippet: str) -> str:

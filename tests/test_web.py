@@ -17,6 +17,7 @@ from tsundokensaku.web import (
     pdf_outline,
     import_scrapbox_export_bytes,
     format_indexed_at,
+    normalize_search_match,
     resolve_pdf_scrapbox_url,
     save_pdf_export_to_configured_dir,
     save_uploaded_pdf,
@@ -491,6 +492,42 @@ class HighlightQueryTest(unittest.TestCase):
         self.assertIsNotNone(url)
         self.assertIn("https://scrapbox.io/custom-project/", url)
         self.assertIn("body=", url)
+
+    def test_normalize_search_match_defaults_to_all(self) -> None:
+        # match 未指定（旧URL・ブックマーク）は AND 扱い
+        self.assertEqual(normalize_search_match(None), "all")
+        self.assertEqual(normalize_search_match([]), "all")
+        self.assertEqual(normalize_search_match(["bogus"]), "all")
+
+    def test_normalize_search_match_checkbox_on_sends_both_values(self) -> None:
+        # hidden match=any + checked match=all の併送 → AND
+        self.assertEqual(normalize_search_match(["any", "all"]), "all")
+        self.assertEqual(normalize_search_match(["all", "any"]), "all")
+
+    def test_normalize_search_match_checkbox_off_sends_any_only(self) -> None:
+        self.assertEqual(normalize_search_match(["any"]), "any")
+        self.assertEqual(normalize_search_match("any"), "any")
+
+    def test_build_search_scrapbox_body_includes_match_mode(self) -> None:
+        _, body_all = build_search_scrapbox_body(
+            query="SQLite FTS5",
+            scope="all",
+            sort="rank",
+            group="none",
+            match="all",
+            results=[],
+        )
+        _, body_any = build_search_scrapbox_body(
+            query="SQLite FTS5",
+            scope="all",
+            sort="rank",
+            group="none",
+            match="any",
+            results=[],
+        )
+
+        self.assertIn("語の一致: すべての語を含む", body_all)
+        self.assertIn("語の一致: いずれかの語を含む", body_any)
 
     def test_build_search_scrapbox_body_includes_results(self) -> None:
         page_title, body = build_search_scrapbox_body(

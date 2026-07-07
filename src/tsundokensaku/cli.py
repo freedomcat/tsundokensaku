@@ -93,6 +93,12 @@ def main(argv: list[str] | None = None) -> int:
         default="all",
         help="Search scope: all, title, body, or memo.",
     )
+    search_parser.add_argument(
+        "--match",
+        choices=("all", "any"),
+        default="all",
+        help="Match mode: all (every term must appear) or any (any term may appear).",
+    )
 
     refresh_titles_parser = subparsers.add_parser(
         "refresh-titles",
@@ -113,7 +119,7 @@ def main(argv: list[str] | None = None) -> int:
         connection = connect(args.db)
         export_json = find_export_json(PROJECT_ROOT)
         metadata_by_stem = load_metadata_by_pdf_stem(export_json)
-        results = search(connection, args.query, limit=args.limit, scope=args.scope)
+        results = search(connection, args.query, limit=args.limit, scope=args.scope, match=args.match)
         connection.close()
         rendered_results = _render_results(results, metadata_by_stem)
 

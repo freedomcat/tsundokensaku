@@ -14,13 +14,23 @@ from urllib.parse import unquote, urlparse
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from fastapi import FastAPI, Form, HTTPException, Request
+from fastapi import FastAPI, Form, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from markupsafe import Markup, escape
 
-from tsundokensaku.database import SEARCH_SCOPES, connect, get_book, list_books, search, sync_kindle_books, sync_memos
+from tsundokensaku.database import (
+    SEARCH_MATCH_MODES,
+    SEARCH_SCOPES,
+    _query_terms,
+    connect,
+    get_book,
+    list_books,
+    search,
+    sync_kindle_books,
+    sync_memos,
+)
 from tsundokensaku.database import initialize
 from tsundokensaku.indexer import find_pdfs, index_books
 from tsundokensaku.metadata import (
@@ -235,12 +245,30 @@ def finalize_search_result_rows(rendered_results: list[dict[str, object]], *, bo
     return sorted_results
 
 
+def normalize_search_match(values: list[str] | str | None) -> str:
+    """match パラメータを正規化する。
+
+    フォームは hidden の match=any とチェックボックスの match=all を併送するため
+    値がリストで届く。"all" があれば AND、"any" のみなら OR、未指定（旧URL）は AND。
+    """
+    if values is None:
+        values = []
+    elif isinstance(values, str):
+        values = [values]
+    if "all" in values:
+        return "all"
+    if "any" in values:
+        return "any"
+    return "all"
+
+
 def build_search_result_rows_context(
     query: str,
     *,
     sort: str,
     scope: str,
     group: str,
+    match: str = "all",
     books_dir: Path,
     db_path: Path,
 ) -> tuple[list[dict[str, object]], str]:
@@ -250,11 +278,16 @@ def build_search_result_rows_context(
     metadata_by_stem = load_metadata_by_pdf_stem(export_json)
     metadata_elapsed = time.perf_counter() - metadata_started_at
     normalized_scope = scope if scope in SEARCH_SCOPES else "all"
+    normalized_match = match if match in SEARCH_MATCH_MODES else "all"
     connection = connect(db_path)
     search_elapsed = 0.0
     try:
         search_started_at = time.perf_counter()
-        results = search(connection, query, limit=50, scope=normalized_scope) if query.strip() else []
+        results = (
+            search(connection, query, limit=50, scope=normalized_scope, match=normalized_match)
+            if query.strip()
+            else []
+        )
         search_elapsed = time.perf_counter() - search_started_at
     finally:
         connection.close()
@@ -267,9 +300,10 @@ def build_search_result_rows_context(
     finalize_elapsed = time.perf_counter() - finalize_started_at
     total_elapsed = time.perf_counter() - started_at
     LOGGER.info(
-        "search timing query=%r scope=%s sort=%s group=%s metadata=%.4fs db=%.4fs render=%.4fs finalize=%.4fs total=%.4fs results=%d",
+        "search timing query=%r scope=%s match=%s sort=%s group=%s metadata=%.4fs db=%.4fs render=%.4fs finalize=%.4fs total=%.4fs results=%d",
         query,
         normalized_scope,
+        normalized_match,
         sort,
         group,
         metadata_elapsed,
@@ -288,6 +322,7 @@ def build_search_scrapbox_body(
     scope: str,
     sort: str,
     group: str,
+    match: str = "all",
     results: list[dict[str, object]],
 ) -> tuple[str, str]:
     now = _now_jst()
@@ -298,6 +333,7 @@ def build_search_scrapbox_body(
         "",
         f"検索語: {query or '(未入力)'}",
         f"検索範囲: {scope}",
+        f"語の一致: {'すべての語を含む' if match == 'all' else 'いずれかの語を含む'}",
         f"並び順: {sort}",
         f"まとめ方: {group}",
         f"作成日時: {now.strftime('%Y/%m/%d %H:%M')} JST",
@@ -881,6 +917,7 @@ def home(request: Request) -> HTMLResponse:
             "page_count": db_stats["page_count"],
             "scope": "all",
             "scope_options": SEARCH_SCOPE_OPTIONS,
+            "match": "all",
             "index_progress": _get_index_progress(),
         },
     )
@@ -893,15 +930,18 @@ def search_page(
     sort: str = "rank",
     scope: str = "all",
     group: str = "none",
+    match: list[str] = Query(default=[]),
 ) -> HTMLResponse:
     books_dir = get_books_dir()
     db_path = get_db_path()
     normalized_scope = scope if scope in SEARCH_SCOPES else "all"
+    normalized_match = normalize_search_match(match)
     rendered_results, normalized_scope = build_search_result_rows_context(
         q,
         sort=sort,
         scope=normalized_scope,
         group=group,
+        match=normalized_match,
         books_dir=books_dir,
         db_path=db_path,
     )
@@ -913,7 +953,9 @@ def search_page(
     ]
     scrapbox_export_url = None
     if q.strip() and get_scrapbox_project_url():
-        scrapbox_export_url = f"/search/scrapbox?{urlencode({'q': q, 'sort': sort, 'scope': normalized_scope, 'group': group})}"
+        scrapbox_export_url = (
+            f"/search/scrapbox?{urlencode({'q': q, 'sort': sort, 'scope': normalized_scope, 'group': group, 'match': normalized_match})}"
+        )
     return templates.TemplateResponse(
         request,
         "search.html",
@@ -925,6 +967,8 @@ def search_page(
             "sort_options": sort_options,
             "scope": normalized_scope,
             "scope_options": SEARCH_SCOPE_OPTIONS,
+            "match": normalized_match,
+            "query_terms": _query_terms(q),
             "books_dir": books_dir,
             "db_path": db_path,
             "results": rendered_results,
@@ -941,14 +985,17 @@ def search_scrapbox_export(
     sort: str = "rank",
     scope: str = "all",
     group: str = "none",
+    match: list[str] = Query(default=[]),
 ) -> RedirectResponse:
     books_dir = get_books_dir()
     db_path = get_db_path()
+    normalized_match = normalize_search_match(match)
     rendered_results, normalized_scope = build_search_result_rows_context(
         q,
         sort=sort,
         scope=scope,
         group=group,
+        match=normalized_match,
         books_dir=books_dir,
         db_path=db_path,
     )
@@ -957,6 +1004,7 @@ def search_scrapbox_export(
         scope=normalized_scope,
         sort=sort,
         group=group,
+        match=normalized_match,
         results=rendered_results,
     )
     url = build_scrapbox_page_url(page_title, body)

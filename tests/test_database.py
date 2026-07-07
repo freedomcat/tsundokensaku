@@ -470,5 +470,125 @@ class DatabaseSearchTest(unittest.TestCase):
             connection.close()
 
 
+class SearchMatchModeTest(unittest.TestCase):
+    def _make_connection(self, temp_dir: str):
+        db_path = Path(temp_dir) / "index.db"
+        connection = connect(db_path)
+        initialize(connection)
+        return connection
+
+    def _add_book(self, connection, *, path: str, title: str, pages: list[PageRecord]) -> int:
+        book_id = upsert_book(
+            connection,
+            path=Path(path),
+            title=title,
+            size_bytes=123,
+            modified_at=1.0,
+        )
+        replace_pages(connection, book_id=book_id, title=title, pages=pages)
+        return book_id
+
+    def _add_mixed_pages(self, connection) -> None:
+        self._add_book(
+            connection,
+            path="books/tech/sqlite-guide.pdf",
+            title="database guide",
+            pages=[
+                PageRecord(page_number=1, text="SQLite stores data in local files."),
+                PageRecord(page_number=2, text="FTS5 provides full text search."),
+                PageRecord(page_number=3, text="SQLite works well with FTS5 indexes."),
+            ],
+        )
+
+    def test_multi_term_default_requires_every_term(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            connection = self._make_connection(temp_dir)
+            self._add_mixed_pages(connection)
+
+            results = search(connection, "sqlite fts5", scope="body")
+
+            self.assertEqual([result.page_number for result in results], [3])
+            connection.close()
+
+    def test_multi_term_any_returns_pages_with_either_term(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            connection = self._make_connection(temp_dir)
+            self._add_mixed_pages(connection)
+
+            results = search(connection, "sqlite fts5", scope="body", match="any")
+
+            self.assertEqual(sorted(result.page_number for result in results), [1, 2, 3])
+            self.assertEqual(results[0].page_number, 3)
+            connection.close()
+
+    def test_single_japanese_word_stays_and_even_in_any_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            connection = self._make_connection(temp_dir)
+            self._add_book(
+                connection,
+                path="books/tech/ml.pdf",
+                title="ml guide",
+                pages=[
+                    PageRecord(page_number=1, text="機械学習の基礎を学ぶ。"),
+                    PageRecord(page_number=2, text="機械の設計について述べる。"),
+                ],
+            )
+
+            results = search(connection, "機械学習", scope="body", match="any")
+
+            self.assertEqual([result.page_number for result in results], [1])
+            connection.close()
+
+    def test_trigram_any_matches_partial_terms(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            connection = self._make_connection(temp_dir)
+            self._add_book(
+                connection,
+                path="books/tech/linux.pdf",
+                title="linux guide",
+                pages=[PageRecord(page_number=1, text="The Linux kernel lives inside the OS.")],
+            )
+
+            any_results = search(connection, "ernel qqzzxx", scope="body", match="any")
+            all_results = search(connection, "ernel qqzzxx", scope="body", match="all")
+
+            self.assertEqual([result.page_number for result in any_results], [1])
+            self.assertEqual(all_results, [])
+            connection.close()
+
+    def test_title_scope_any_returns_books_with_either_term(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            connection = self._make_connection(temp_dir)
+            self._add_book(
+                connection,
+                path="books/tech/python.pdf",
+                title="python dataclasses",
+                pages=[PageRecord(page_number=1, text="python page")],
+            )
+            self._add_book(
+                connection,
+                path="books/tech/rust.pdf",
+                title="rust guide",
+                pages=[PageRecord(page_number=1, text="rust page")],
+            )
+
+            any_results = search(connection, "python rust", scope="title", match="any")
+            all_results = search(connection, "python rust", scope="title", match="all")
+
+            self.assertEqual(sorted(result.title for result in any_results), ["python dataclasses", "rust guide"])
+            self.assertEqual(all_results, [])
+            connection.close()
+
+    def test_invalid_match_falls_back_to_all(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            connection = self._make_connection(temp_dir)
+            self._add_mixed_pages(connection)
+
+            results = search(connection, "sqlite fts5", scope="body", match="bogus")
+
+            self.assertEqual([result.page_number for result in results], [3])
+            connection.close()
+
+
 if __name__ == "__main__":
     unittest.main()

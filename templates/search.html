@@ -20,6 +20,11 @@
         <option value="{{ option.value }}" {% if option.value == scope %}selected{% endif %}>{{ option.label }}</option>
       {% endfor %}
     </select>
+    <input type="hidden" name="match" value="any">
+    <label class="pill" style="display:inline-flex; align-items:center; gap:8px;">
+      <input type="checkbox" name="match" value="all" {% if match == 'all' %}checked{% endif %}>
+      すべての語を含む
+    </label>
     <input type="hidden" name="sort" value="{{ sort }}">
     <input type="hidden" name="group" value="{{ group }}">
     <button class="primary" type="submit">検索</button>
@@ -30,8 +35,18 @@
   <form class="search" action="/search" method="get" id="search-display-form">
     <input type="hidden" name="q" value="{{ query }}">
     <input type="hidden" name="scope" value="{{ scope }}">
+    <input type="hidden" name="match" value="{{ match }}">
     <div class="muted">
-      検索語: <span class="pill">{{ query or "未入力" }}</span> / 結果: {{ result_count }}
+      検索語:
+      {% if query_terms %}
+        {%- for term in query_terms -%}
+          <span class="pill">{{ term }}</span>
+          {%- if not loop.last %} <strong>{{ 'AND' if match == 'all' else 'OR' }}</strong> {% endif -%}
+        {%- endfor -%}
+      {% else %}
+        <span class="pill">未入力</span>
+      {% endif %}
+      / 結果: {{ result_count }}
     </div>
     <select name="sort" aria-label="並び順" data-auto-submit>
       {% for option in sort_options %}

@@ -20,6 +20,11 @@
         <option value="{{ option.value }}" {% if option.value == scope %}selected{% endif %}>{{ option.label }}</option>
       {% endfor %}
     </select>
+    <input type="hidden" name="match" value="any">
+    <label class="pill" style="display:inline-flex; align-items:center; gap:8px;">
+      <input type="checkbox" name="match" value="all" {% if match == 'all' %}checked{% endif %}>
+      すべての語を含む
+    </label>
     <button class="primary" type="submit">検索</button>
   </form>
 </section>
