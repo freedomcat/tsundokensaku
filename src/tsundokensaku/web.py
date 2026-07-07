@@ -1076,7 +1076,7 @@ def api_get_pack(pack_id: int) -> JSONResponse:
     try:
         pack = get_pack(connection, pack_id)
         if pack is None:
-            raise HTTPException(status_code=404, detail="パックが見つかりません")
+            raise HTTPException(status_code=404, detail="資料が見つかりません")
         cart = pack_items_as_cart(connection, pack_id)
     finally:
         connection.close()
@@ -1090,7 +1090,7 @@ def api_update_pack(pack_id: int, payload: dict = Body(default={})) -> JSONRespo
     connection = _pack_connection()
     try:
         if not update_pack(connection, pack_id, name=name, note=note):
-            raise HTTPException(status_code=404, detail="パックが見つかりません")
+            raise HTTPException(status_code=404, detail="資料が見つかりません")
         pack = get_pack(connection, pack_id)
     finally:
         connection.close()
@@ -1102,7 +1102,7 @@ def api_delete_pack(pack_id: int) -> JSONResponse:
     connection = _pack_connection()
     try:
         if not delete_pack(connection, pack_id):
-            raise HTTPException(status_code=404, detail="パックが見つかりません")
+            raise HTTPException(status_code=404, detail="資料が見つかりません")
         active_pack_id = ensure_active_pack(connection)
     finally:
         connection.close()
@@ -1114,7 +1114,7 @@ def api_activate_pack(pack_id: int) -> JSONResponse:
     connection = _pack_connection()
     try:
         if not set_active_pack(connection, pack_id):
-            raise HTTPException(status_code=404, detail="パックが見つかりません")
+            raise HTTPException(status_code=404, detail="資料が見つかりません")
     finally:
         connection.close()
     return JSONResponse({"active_pack_id": pack_id})
@@ -1128,7 +1128,7 @@ def api_replace_pack_books(pack_id: int, payload: dict = Body(default={})) -> JS
     connection = _pack_connection()
     try:
         if not replace_pack_items(connection, pack_id, books):
-            raise HTTPException(status_code=404, detail="パックが見つかりません")
+            raise HTTPException(status_code=404, detail="資料が見つかりません")
         cart = pack_items_as_cart(connection, pack_id)
     finally:
         connection.close()
@@ -1138,7 +1138,7 @@ def api_replace_pack_books(pack_id: int, payload: dict = Body(default={})) -> JS
 @app.post("/api/packs/import")
 def api_import_pack(payload: dict = Body(default={})) -> JSONResponse:
     cart = payload.get("cart")
-    name = payload.get("name") if isinstance(payload.get("name"), str) and payload.get("name") else "移行されたワークスペース"
+    name = payload.get("name") if isinstance(payload.get("name"), str) and payload.get("name") else "移行された資料"
     connection = _pack_connection()
     try:
         pack_id = import_cart_as_pack(connection, cart, name=name) if isinstance(cart, dict) else None

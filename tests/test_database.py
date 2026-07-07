@@ -899,10 +899,10 @@ class PackTest(unittest.TestCase):
                 },
             }
 
-            pack_id = import_cart_as_pack(connection, cart, name="移行されたワークスペース")
+            pack_id = import_cart_as_pack(connection, cart, name="移行された資料")
 
             self.assertIsNotNone(pack_id)
-            self.assertEqual(get_pack(connection, pack_id).name, "移行されたワークスペース")
+            self.assertEqual(get_pack(connection, pack_id).name, "移行された資料")
             self.assertEqual(pack_items_as_cart(connection, pack_id)["books"], cart["books"])
 
             self.assertIsNone(import_cart_as_pack(connection, {"version": 2, "books": {}}, name="空"))

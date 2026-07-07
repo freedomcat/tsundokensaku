@@ -967,7 +967,7 @@
           </a>
         </div>
         <nav class="nav">
-          <a href="/workspace" class="{% if request.url.path == '/workspace' %}active{% endif %}" style="min-width: 88px;">ワークスペース<span class="pill" id="nav-workspace-count" hidden></span></a>
+          <a href="/workspace" class="{% if request.url.path == '/workspace' %}active{% endif %}" style="min-width: 88px;">資料棚<span class="pill" id="nav-workspace-count" hidden></span></a>
           <a href="/settings" class="{% if request.url.path.startswith('/settings') %}active{% endif %}" style="min-width: 88px;">設定</a>
         </nav>
       </div>
@@ -986,7 +986,7 @@
                 <span>ページ</span>
                 <input id="pdf-modal-pages" type="text" inputmode="numeric" placeholder="例: 11-15,18">
               </label>
-              <button type="button" id="pdf-modal-add-workspace" hidden>ワークスペースに追加</button>
+              <button type="button" id="pdf-modal-add-workspace" hidden>資料に追加</button>
               <a class="button" id="pdf-modal-export" href="#" target="_blank" rel="noreferrer">指定ページ切出</a>
               <a class="button" id="pdf-modal-export-md" href="#" target="_blank" rel="noreferrer">MD切出</a>
               <details class="modal-share">
@@ -1398,7 +1398,7 @@
             };
           }
           TsundokuCart.save(cart);
-          setExportStatus('ワークスペースに追加しました');
+          setExportStatus('資料に追加しました');
           document.dispatchEvent(new CustomEvent('tsundoku-cart-updated'));
         });
 

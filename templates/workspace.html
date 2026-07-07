@@ -1,24 +1,24 @@
 {% extends "base.html" %}
-{% block title %}つんどけんさく | ワークスペース{% endblock %}
+{% block title %}つんどけんさく | 資料棚{% endblock %}
 {% block content %}
 <section class="card">
-  <h2 style="margin: 0 0 6px;">ワークスペース</h2>
-  <p class="muted" style="margin: 0 0 14px;">必要なページを集めて、AIへ渡す資料を組み立てます。パックごとに保存されます。</p>
+  <h2 style="margin: 0 0 6px;">資料棚</h2>
+  <p class="muted" style="margin: 0 0 14px;">必要なページを集めて、AIへ渡す資料を組み立てます。資料ごとに保存されます。</p>
   <div class="ws-toolbar" style="margin-bottom: 10px;">
     <label style="display:inline-flex; align-items:center; gap:6px;">
-      パック
-      <select id="ws-pack-select" aria-label="パックの切替"></select>
+      現在の資料：
+      <select id="ws-pack-select" aria-label="資料を選択"></select>
     </label>
-    <button type="button" id="ws-pack-new">新しいパック</button>
+    <button type="button" id="ws-pack-new">新しい資料</button>
     <button type="button" id="ws-pack-rename">名前を変更</button>
-    <button type="button" id="ws-pack-delete">パックを削除</button>
+    <button type="button" id="ws-pack-delete">資料を削除</button>
   </div>
   <div class="ws-toolbar">
     <span class="pill" id="ws-count"></span>
     <button type="button" id="ws-add-open">ページを追加</button>
     <button type="button" class="primary" id="ws-export-pdf">PDFエクスポート</button>
     <button type="button" id="ws-export-md">MDエクスポート</button>
-    <button type="button" id="ws-clear">このパックを空にする</button>
+    <button type="button" id="ws-clear">この資料を空にする</button>
     <span class="ws-status" id="ws-status"></span>
   </div>
 </section>
@@ -37,7 +37,7 @@
       <button type="submit" class="primary">検索</button>
     </form>
     <div class="ws-add-results" id="ws-add-results">
-      <p class="muted" style="margin: 0;">ワークスペース内のPDF本文からページを検索します。</p>
+      <p class="muted" style="margin: 0;">この資料に入っているPDFの本文からページを検索します。</p>
     </div>
     <div class="ws-add-footer">
       <button type="button" class="primary" id="ws-add-submit" disabled>選択したページを追加</button>
@@ -49,7 +49,7 @@
 
 <section class="card">
   <div id="ws-books"></div>
-  <p class="muted" id="ws-empty" hidden>ワークスペースは空です。検索結果の「ワークスペースに追加」からページを追加してください。</p>
+  <p class="muted" id="ws-empty" hidden>この資料は空です。検索結果の「資料に追加」からページを追加してください。</p>
 </section>
 
 <script>
@@ -564,7 +564,7 @@
 
     clearButton.addEventListener('click', () => {
       const pack = TsundokuCart.getActivePack();
-      const label = pack ? `パック「${pack.name}」` : 'このパック';
+      const label = pack ? `資料「${pack.name}」` : 'この資料';
       if (!window.confirm(`${label}の内容をすべて削除します。よろしいですか？`)) {
         return;
       }
@@ -604,13 +604,13 @@
         await TsundokuCart.activatePack(packId);
         setStatus('');
       } catch (error) {
-        setStatus('パックの切替に失敗しました', true);
+        setStatus('資料の切替に失敗しました', true);
       }
       await refreshPackBar();
     });
 
     packNewButton.addEventListener('click', async () => {
-      const name = window.prompt('新しいパックの名前');
+      const name = window.prompt('新しい資料の名前');
       if (name === null) {
         return;
       }
@@ -618,7 +618,7 @@
         await TsundokuCart.createPack(name.trim());
         setStatus('');
       } catch (error) {
-        setStatus('パックの作成に失敗しました', true);
+        setStatus('資料の作成に失敗しました', true);
       }
       await refreshPackBar();
     });
@@ -628,7 +628,7 @@
       if (!pack) {
         return;
       }
-      const name = window.prompt('パックの名前', pack.name);
+      const name = window.prompt('資料の名前', pack.name);
       if (name === null || !name.trim() || name.trim() === pack.name) {
         return;
       }
@@ -646,19 +646,19 @@
       if (!pack) {
         return;
       }
-      if (!window.confirm(`パック「${pack.name}」を削除します。中のページ構成も消えます。よろしいですか？`)) {
+      if (!window.confirm(`資料「${pack.name}」を削除します。集めたページの構成も削除されます。よろしいですか？`)) {
         return;
       }
       try {
         await TsundokuCart.deletePack(pack.id);
         setStatus('');
       } catch (error) {
-        setStatus('パックの削除に失敗しました', true);
+        setStatus('資料の削除に失敗しました', true);
       }
       await refreshPackBar();
     });
 
-    // PDFプレビューモーダルの「ワークスペースに追加」、およびサーバからの
+    // PDFプレビューモーダルの「資料に追加」、およびサーバからの
     // パック取得完了・切替時に発火
     document.addEventListener('tsundoku-cart-updated', () => {
       renderAll();

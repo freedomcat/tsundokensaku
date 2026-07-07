@@ -665,7 +665,7 @@ class PackApiTest(unittest.TestCase):
 
                 imported = self._payload(api_import_pack({"cart": cart}))
 
-                self.assertEqual(imported["name"], "移行されたワークスペース")
+                self.assertEqual(imported["name"], "移行された資料")
                 self.assertEqual(imported["cart"]["books"], cart["books"])
                 self.assertEqual(self._payload(api_list_packs())["active_pack_id"], imported["id"])
 

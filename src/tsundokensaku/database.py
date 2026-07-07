@@ -949,7 +949,7 @@ def _like_terms_clause(query: str, *, columns: tuple[str, ...], match: str = "al
     return clause, parameters
 
 
-DEFAULT_PACK_NAME = "デフォルト"
+DEFAULT_PACK_NAME = "無題の資料"
 
 
 def _pack_now() -> str:

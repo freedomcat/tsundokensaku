@@ -82,7 +82,7 @@ window.TsundokuCart = (() => {
     try {
       await fetchJson('/api/packs/import', {
         method: 'POST',
-        body: JSON.stringify({ cart: legacy, name: '移行されたワークスペース' }),
+        body: JSON.stringify({ cart: legacy, name: '移行された資料' }),
       });
       sessionStorage.removeItem(LEGACY_STORAGE_KEY);
     } catch (error) {
