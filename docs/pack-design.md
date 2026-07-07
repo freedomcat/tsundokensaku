@@ -1,25 +1,14 @@
-# パック永続化 設計メモ（Phase 1: 名前付きパック）
+# 資料棚・資料の永続化 設計メモ
 
-作成: 2026-07-07
-状態: **MVP実装済み**（2026-07-07。実装状況と残TODOは末尾の「10. 実装状況」参照）
-前提: [ROADMAP.md](../ROADMAP.md) Phase 1
+作成: 2026-07-07 / 最終更新: 2026-07-08
+状態: **実装済み**（Phase 1 完了 + Phase 2 の組み立て体験まで反映）
+前提: [ROADMAP.md](../ROADMAP.md) Phase 1〜2
 
-注: UI 上の名称は「資料」（AIへ渡すために組み立てた資料そのもの、という位置づけ）。
-「パック」はコード・API・DB テーブルの内部名としてのみ使う。
+用語: 利用者向けの概念は「**資料棚**」（画面、URL は `/workspace`）と「**資料**」（AIへ渡すために組み立てる成果物）。**Pack / packs / pack_items は内部実装名**（コード・API・DBテーブル）としてのみ使う。「ワークスペース」は旧名称。
 
-## 1. 現状調査まとめ
+## 1. 経緯（旧実装）
 
-### ワークスペースの実装
-
-- ストア: `static/export-cart.js` の `window.TsundokuCart`。**sessionStorage** キー `tsundokensaku-export-cart` に保存（タブを閉じると消える）
-- ページ指定ユーティリティ: `static/pages-spec.js` の `window.TsundokuPages`（spec 文字列 `"3-7,20-35"` の検証・結合・差分・ページ数計算）
-- 編集画面: `templates/workspace.html`（約570行、インライン JS）
-- ストアの利用箇所は3つ:
-  - `templates/workspace.html` — 一覧表示・ページ範囲編集・章選択・本文検索モーダル・エクスポート
-  - `templates/search.html` — 検索結果のチェックボックスで本+ページを追加/削除、件数表示
-  - `templates/base.html` — PDF プレビューモーダルの「ワークスペースに追加」、ナビの冊数バッジ。更新時に `tsundoku-cart-updated` カスタムイベントを発火
-
-### sessionStorage のデータ構造（version 2）
+かつてのワークスペースは `static/export-cart.js` が sessionStorage（キー `tsundokensaku-export-cart`）に保存する揮発性の無名カート1つだった。タブを閉じると組み立てた構成が消えるため、これを名前付き資料としてサーバ側（SQLite）に永続化した。旧カートのデータ形式（version 2）:
 
 ```json
 {
@@ -35,185 +24,117 @@
 }
 ```
 
-- キーは PDF パス（`books.path` と同じ文字列）。PDF のみ対象（Kindle・メモは追加不可）
-- version なしの旧形式（pages が番号配列）からの移行コードが `migrateLegacy()` に残っている
-- サーバ側は完全にステートレス。エクスポートは `GET /export-pdf` / `GET /export-md` に `pdf_path` と `pages` を都度渡すだけ
+この形式はクライアントのメモリキャッシュ・API の cart 表現として現在も使っている。旧 sessionStorage カートが残っているブラウザでは、初回アクセス時に「移行された資料」という資料として自動取り込みし、キーを削除する（失敗時は残して次回リトライ）。
 
-### 関係するサーバエンドポイント（既存・変更不要）
+## 2. DB 設計（実装済み）
 
-- `GET /pdf-outline?pdf_path=` — 章一覧とページ数
-- `GET /search-pages?pdf_path=&q=` — 本文ページ検索
-- `GET /export-pdf` / `GET /export-md` — ページ切り出し
-- `POST /export-pdf/save` — 設定ディレクトリへの保存
-
-## 2. DB 設計案
-
-`database.py` の `initialize()` に冪等な `CREATE TABLE IF NOT EXISTS` として追加（既存スキーマ管理の流儀に合わせる）。
+`database.py` の `initialize()` と、API リクエスト経路の軽量版 `ensure_pack_schema()` が冪等に作成する。
 
 ```sql
-CREATE TABLE IF NOT EXISTS packs (
+CREATE TABLE packs (
     id INTEGER PRIMARY KEY,
     name TEXT NOT NULL,
-    note TEXT NOT NULL DEFAULT '',
-    created_at TEXT NOT NULL,          -- UTC ISO8601（既存の indexed_at と同様）
+    note TEXT NOT NULL DEFAULT '',      -- UI 未提供（列のみ）
+    created_at TEXT NOT NULL,           -- UTC ISO8601
     updated_at TEXT NOT NULL,
-    archived_at TEXT                   -- NULL = アクティブ。MVPでは未使用でも列だけ用意
+    archived_at TEXT                    -- 未使用（列のみ）
 );
 
-CREATE TABLE IF NOT EXISTS pack_items (
+CREATE TABLE pack_items (
     id INTEGER PRIMARY KEY,
     pack_id INTEGER NOT NULL REFERENCES packs(id) ON DELETE CASCADE,
-    pdf_path TEXT NOT NULL,            -- books.path と同じ文字列（現カートのキーを踏襲）
-    title TEXT NOT NULL,               -- 追加時点のタイトルのスナップショット（出典情報）
-    pages TEXT NOT NULL DEFAULT '',    -- spec 文字列。解釈は TsundokuPages / parse_page_selection と共通
+    pdf_path TEXT NOT NULL,             -- books.path と同じ文字列
+    title TEXT NOT NULL,                -- 追加時点のスナップショット（出典情報）
+    pages TEXT NOT NULL DEFAULT '',     -- spec 文字列（TsundokuPages / parse_page_selection と共通文法）
     collapsed INTEGER NOT NULL DEFAULT 0,
-    position INTEGER NOT NULL DEFAULT 0,  -- 表示順。MVPは追加順の連番でよい
+    position INTEGER NOT NULL DEFAULT 0, -- 並び順。books 辞書の送信順で振り直す
     added_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     UNIQUE(pack_id, pdf_path)
 );
 
-CREATE TABLE IF NOT EXISTS app_state (
-    key TEXT PRIMARY KEY,
+CREATE TABLE app_state (
+    key TEXT PRIMARY KEY,               -- 'active_pack_id' = 現在の資料
     value TEXT NOT NULL
 );
--- app_state('active_pack_id') = 現在編集中のパックID
 ```
 
 ### 設計判断
 
-- **本の参照は `pdf_path` 文字列**（`books.id` ではない）。理由: 現カートのキー・エクスポート API の引数・PDF 再インデックス時の同一性、すべてパスが軸。books 行が消えてもパック項目は出典情報として残せる。表示時に `books` と LEFT JOIN して最新タイトル・存在チェックを解決する
-- **title はスナップショット**。タイトル推定が改善されて `books.title` が変わっても「追加時点で何と認識していたか」を保持（出典の再現性）。表示は「最新タイトル優先、なければスナップショット」
-- **ページ範囲は spec 文字列のまま**保存。正規化（区間展開）はしない。クライアントの `TsundokuPages` とサーバの `parse_page_selection`（`pdf_export.py`）が既に同じ文法を解釈しており、真実は1つの文字列で十分
-- **アクティブパックはサーバ側で単一**（`app_state`）。個人用シングルユーザー前提なので、タブごとの独立編集はやらない。全タブが同じパックを見る
-- 利用履歴（Phase 3/4 の土台）は `added_at` / `updated_at` で最低限が始まる。イベントログテーブルは MVP では作らない
+- **本の参照は `pdf_path` 文字列**（`books.id` ではない）。旧カートのキー・エクスポート API の引数・再インデックス時の同一性、すべてパスが軸。books 行が消えても資料項目は出典情報として残る
+- **title はスナップショット**。タイトル推定が改善されても「追加時点で何と認識していたか」を保持（出典の再現性）
+- **ページ範囲は spec 文字列のまま**保存。クライアントとサーバが同じ文法を解釈するので真実は1つの文字列で足りる
+- **現在の資料はサーバ側で単一**（`app_state`）。シングルユーザー前提で全タブが同じ資料を見る
+- **資料の自動作成はしない**。新規 DB は資料0件から始まり、利用者が必要になったタイミングで作る（`resolve_active_pack_id()` は 0件なら None を返す。旧 `ensure_active_pack`＝デフォルト資料の自動作成は廃止）
+- **position は一括置換時に books 辞書の列挙順で振り直す**。資料棚の「上へ」「下へ」並び替えがそのまま永続化され、エクスポート順にも反映される（`added_at` は保持）
 
-## 3. API 設計案（JSON、`/api/packs` 配下）
+## 3. API（実装済み、`/api/packs` 配下）
 
-- `GET    /api/packs` — 一覧（各パックの冊数・ページ数集計・updated_at 含む）+ `active_pack_id`
-- `POST   /api/packs` — `{name}` で作成。作成したパックをアクティブに切替
-- `GET    /api/packs/{id}` — パック本体と items（現カート JSON とほぼ同形で返す）
+- `GET    /api/packs` — 一覧 + `active_pack_id`（資料0件なら null。自動作成しない）
+- `POST   /api/packs` — `{name}` で作成し、その資料へ切替
+- `GET    /api/packs/{id}` — メタ情報 + `cart`（カート形式）
 - `PATCH  /api/packs/{id}` — `{name?, note?}` 改名等
-- `DELETE /api/packs/{id}` — 削除（アクティブだった場合は別パックへ自動切替、なければ新規デフォルト作成）
-- `POST   /api/packs/{id}/activate` — アクティブ切替
-- `PUT    /api/packs/{id}/items` — `{pdf_path, title, pages, collapsed}` を upsert
-- `DELETE /api/packs/{id}/items?pdf_path=` — 項目削除
-- `POST   /api/packs/import` — sessionStorage カート JSON（version 2）を丸ごと受けて1パックに変換（移行用）
+- `DELETE /api/packs/{id}` — 削除。現在の資料だった場合は残る資料へフォールバック、0件なら null
+- `POST   /api/packs/{id}/activate` — 現在の資料の切替
+- `PUT    /api/packs/{id}/books` — カート形式 `{books}` での一括置換（クライアントの save に対応する唯一の書込み経路。設計当初の項目単位 PUT/DELETE は採用せず）
+- `POST   /api/packs/import` — 旧 sessionStorage カートの取り込み（移行用）
 
-競合解決は **last-write-wins**。シングルユーザー・ローカル前提のため楽観ロックは入れない。複数タブはフォーカス時の再フェッチで追随（後述）。
+競合解決は last-write-wins。シングルユーザー・ローカル前提のため楽観ロックなし。複数タブはフォーカス時の再取得で追随する。
 
-## 4. Web UI 画面遷移案
+## 4. クライアント（static/pack-store.js）
+
+旧 `TsundokuCart` の公開 API（`load/save/bookCount/totalPages/summaryLabel/updateBadge`）を互換のまま、サーバ同期ストアに置き換えた。
+
+- `load()` はメモリキャッシュの複製を返す同期 API のまま。初回にサーバから現在の資料を取得し、完了時に `tsundoku-cart-updated` イベントで各画面を再描画させる
+- `save()` は楽観更新 + 400ms デバウンスで `PUT /api/packs/{id}/books`。タブ離脱時は keepalive で書き込む
+- 資料管理 API を追加提供: `getActivePack / ensureActivePackInteractive / listPacks / createPack / activatePack / renamePack / deletePack / refresh`
+- `ensureActivePackInteractive()`: 資料がなければ「資料がありません。新しい資料を作成しますか？」→ 名前入力 → 作成・切替まで対話的に行う。検索結果・PDFプレビューの追加操作から共通で使う
+
+### 誤書込み防止（切替とデバウンスのレース対策）
+
+- 書込み予約時に**宛先の資料 ID を固定**し、実行時に現在の資料が変わっていたら破棄（編集直後の新規作成で旧資料の内容が新資料へコピーされる事故の防止）
+- 資料が切り替わった取得では未送信編集をマージせず破棄（初回ロード・同一資料の再取得のみ保護マージ）
+- 資料の作成・切替の前に未送信分の書込み完了を await
+
+## 5. UI（実装済み）
 
 ```
-ナビ「ワークスペース」
-  └─ /workspace                        … 現在のアクティブパックの編集画面（今の画面とほぼ同じ）
-       ├─ ヘッダに [パック名 ▼] ドロップダウン
-       │    ├─ 他のパックへ切替（activate）
-       │    ├─ 「新しいパック...」（名前入力 → 作成 → 切替）
-       │    └─ 「パックの管理...」 → /workspace/packs
-       ├─ パック名クリックで改名（インライン編集）
-       └─ 既存機能そのまま: ページ追加モーダル / PDFで選ぶ / 章選択 /
-          PDF・MDエクスポート / クリア（=アクティブパックの全項目削除）
+ナビ「資料棚」（冊数バッジ付き）
+  └─ /workspace … 現在の資料の編集画面
+       ├─ 「現在の資料：」セレクト / 新しい資料 / 名前を変更 / 資料を削除
+       ├─ 資料0件時: 「資料はまだありません。」+「＋ 新しい資料」（操作ボタンは無効化）
+       ├─ 書籍カード: 上へ / 下へ / PDFで選ぶ / ページを追加 / 削除
+       └─ PDF・MDエクスポート / この資料を空にする（確認ダイアログ付き）
 
-/workspace/packs                       … パック一覧（新規画面）
-  ├─ 名前・冊数/ページ数・更新日時の一覧
-  ├─ 開く（activate して /workspace へ）
-  ├─ 改名 / 削除
-  └─ 新規作成
+検索結果 (/search)
+  ├─ 各PDFヒットに「資料に追加」チェックボックス
+  └─ 下部バー: 追加先: [資料名（n冊）▼] [資料棚で編集]
+       ├─ セレクトで現在の資料を切替（チェック状態も切替先で再計算）
+       └─ 末尾「＋ 新しい資料…」で名前入力 → 作成 → 切替
 
-検索結果 (/search)・PDFプレビュー（全画面共通モーダル）
-  └─ 「ワークスペースに追加」= アクティブパックへの追加（挙動は今と同じ、行き先が永続化されただけ）
-      ナビバッジはアクティブパックの冊数を表示
+PDFプレビューモーダル（検索起点・資料棚起点の両方）
+  └─ 「「資料名」に追加」ボタン（現在の資料名を表示、成功メッセージにも表示）
 ```
 
-原則: **既存の操作体験は変えない**。増えるのは「パックの切替・作成・一覧」だけ。検索ボックスを増やさない方針（ROADMAP）と同様、ワークスペースも画面を増やしすぎない。
+一覧管理の専用画面（設計当初の `/workspace/packs`）は作らず、資料棚と検索バーのセレクトで代替している。
 
-## 5. 既存ワークスペースとの互換方針
+## 6. テスト
 
-- **クライアントストアの置き換え**: `TsundokuCart` の公開 API（`load/save/bookCount/totalPages/summaryLabel/updateBadge`）を、サーバ同期版 `pack-store.js` に差し替える。呼び出し側3ファイルのインターフェースを保つため:
-  - ページ読み込み時に `GET /api/packs/{active}` で取得しメモリキャッシュ
-  - `load()` は同期のままキャッシュを返す（既存呼び出しコードを壊さない）
-  - `save()` は楽観更新（キャッシュ即時反映）+ デバウンス付き `PUT` でサーバへ
-  - `window` の `focus` / `pageshow` で再フェッチし、他タブの変更に追随
-- **自動移行**: 初回ロード時に sessionStorage に version 2 カートが残っていて中身が空でなければ、`POST /api/packs/import` で「移行された資料」という名前のパックを作成してアクティブ化し、sessionStorage を削除。移行は一度きり（成功時にキー削除で担保）
-- **旧version（配列形式）→ v2 の migrateLegacy はそのまま生かす**（import 前に既存コードで v2 化されるため追加対応不要）
-- エクスポート系エンドポイントの引数（`pdf_path` + `pages`）は変更しない。パックはあくまで「何を渡すかの記憶」であり、エクスポートの経路は既存のまま
+- `tests/test_database.py`: 資料 CRUD、現在の資料のライフサイクル（0件開始・フォールバック・全削除で None）、一括置換の並び順・added_at 保持、カート相互変換、initialize 冪等性
+- `tests/test_web.py`: `/api/packs` 系の関数直呼びテスト（新規DBは0件開始、作成→追加フロー、404/400、import）
+- クライアントは Playwright による手動 E2E（永続化・移行・切替・並び替え・0件フロー・検索起点モーダルからの追加・コピー事故再現シナリオ）で確認。自動化はしていない
 
-## 6. 最小実装スコープ（MVP）
+## 7. 既知の注意点
 
-やる:
+- **pdf_path の正規化**: `books.path` には `/data/books/...` と旧 `/books/tech/...` が混在し得る。資料のキーは追加時点の books.path をそのまま使う。再インデックスでパスが変わった項目の「本が見つかりません」表示は未実装（残TODO）
+- **複数タブ**: last-write-wins + フォーカス時再取得。デバウンス中のタブ切替で数秒の巻き戻りがあり得るが許容
+- **エクスポート経路は資料と独立**: `/export-pdf` / `/export-md` は従来どおり `pdf_path` + `pages` を都度受ける。資料は「何をどの順で渡すかの記憶」に徹する
 
-- packs / pack_items / app_state テーブルと CRUD（database.py）
-- `/api/packs` 系 API（web.py）
-- pack-store.js（サーバ同期版 TsundokuCart）+ sessionStorage 自動移行
-- /workspace のパック切替ドロップダウン・新規作成・改名
-- /workspace/packs 一覧（開く・改名・削除・新規のみ）
+## 8. 残TODO（必要になったら）
 
-やらない（後続 Phase / 余力があれば）:
-
-- アーカイブ・複製・並び替え（D&D）
-- 行レベルの出典管理・エクスポート履歴・イベントログ
-- Kindle本・メモのパック追加（PDF のみ、現状踏襲）
-- note 欄の UI（列だけ用意）
-- エクスポートプロファイル・トークン概算（Phase 2）
-
-## 7. 実装ステップ
-
-1. **database.py**: スキーマ追加 + パック CRUD 関数（`create_pack` / `list_packs` / `get_pack` / `rename_pack` / `delete_pack` / `set_active_pack` / `get_active_pack_id` / `upsert_pack_item` / `delete_pack_item` / `import_cart_as_pack`）+ テスト
-2. **web.py**: `/api/packs` 系ルート（薄く、ロジックは database.py へ）+ テスト
-3. **static/pack-store.js**: サーバ同期ストア。`TsundokuCart` と同名 API を提供し、base.html の読み込みを export-cart.js から差し替え。sessionStorage 移行処理を含む
-4. **templates/workspace.html**: パック名表示・切替ドロップダウン・改名。クリアの対象文言を「このパックを空にする」に変更
-5. **templates/workspace_packs.html**（新規）: 一覧画面 + `/workspace/packs` ルート
-6. **search.html / base.html**: 動作確認中心（ストア API 互換なら変更最小のはず）。バッジ文言を「パック名 n冊」にするか検討
-7. **ドキュメント**: ARCHITECTURE.md（データモデル・ワークスペース節）、README（Web UIでできること）、ROADMAP.md（Phase 1 を実装済みに）
-8. **後片付け**: export-cart.js を削除（pack-store.js に吸収）
-
-ステップ1-2（サーバ側）とステップ3-6（クライアント側）は独立性が高い。1日目にサーバ側+テスト、2日目にクライアント側+手動確認、が目安。
-
-## 8. テスト方針
-
-- **database テスト**（unittest、既存の tempfile + connect パターン）:
-  - パック作成・一覧・改名・削除、削除時の items カスケード
-  - item upsert（同一 pdf_path の UNIQUE 上書き）・削除
-  - アクティブパックの切替、アクティブ削除時の自動切替
-  - import_cart_as_pack: v2 カート JSON → パック変換、title/pages/collapsed/addedAt の引き継ぎ
-  - initialize() の冪等性（既存DBに2回実行して壊れない）
-- **web テスト**: 既存流儀に合わせ関数直呼び（TestClient/httpx 不使用）。API 関数にリクエストボディ相当の dict を渡して JSON レスポンス形を検証
-- **クライアント**: 自動テストなし（既存も同様）。手動確認チェックリストを PR に書く。`/do-playwright` スキルで以下を確認:
-  - 検索→追加→ブラウザ再起動→残っている（永続化の本丸）
-  - sessionStorage カートがある状態で初回ロード→移行される
-  - パック切替でバッジ・一覧が変わる
-  - エクスポートが従来どおり動く
-
-## 9. リスクと注意点
-
-- **同期→非同期の境界**: `TsundokuCart.load()` は同期 API で、search.html・base.html がページ描画中に呼ぶ。キャッシュ未取得のタイミング（初回描画直後）にチェックボックス状態が空になる可能性 → 取得完了時に `tsundoku-cart-updated` を発火して再描画させる（イベントは既存）
-- **複数タブの同時編集**: LWW + フォーカス時再フェッチで妥協。デバウンス中のタブ切替で数秒の巻き戻りがあり得るが、シングルユーザーでは許容
-- **pdf_path の正規化**: books.path には `/data/books/...` と旧 `/books/tech/...` が混在し得る（ARCHITECTURE.md 参照）。パックのキーは「その時点の books.path」をそのまま使い、正規化は既存のパス解決に任せる。再インデックスでパスが変わった項目は「本が見つかりません」表示 + 手動削除できれば MVP は十分
-- **移行の一回性**: import 成功のレスポンスを確認してから sessionStorage を削除。失敗時は残す（次回リトライ）
-- **DB マイグレーション**: 新テーブルのみで既存テーブルに触れないため後方互換リスクは低い。`initialize()` は毎起動走る前提なので `IF NOT EXISTS` 徹底
-- **「すべてクリア」の意味変化**: 従来は揮発カートのクリア、今後は永続データの削除。誤操作の影響が大きくなるため確認ダイアログを付ける
-- **アクティブパック未存在**: 初回起動・全削除後は「デフォルト」パックを自動作成して常に1つはある状態を保つ（UI の null 分岐を減らす）
-
-## 10. 実装状況（2026-07-07 時点）
-
-### 実装済み
-
-- DB層（database.py）: packs / pack_items / app_state スキーマ、CRUD、アクティブパック管理、`replace_pack_items`（added_at / position 保持の一括置換）、`pack_items_as_cart` / `import_cart_as_pack`
-- API層（web.py）: `/api/packs` 一覧・作成・取得・改名・削除・activate・books一括置換・import。リクエスト経路は `ensure_pack_schema` の軽量スキーマ保証のみ
-- クライアント（static/pack-store.js）: TsundokuCart 互換のサーバ同期ストア。楽観更新 + 400msデバウンス PUT、focus/pageshow 再取得、離脱時 keepalive 書込み、初回取得前ローカル編集のマージ保護、sessionStorage 旧カートの自動移行（export-cart.js は削除）
-- UI（workspace.html）: パックのセレクト切替・新規作成・改名・削除、「このパックを空にする」確認ダイアログ
-- テスト: DB 7件 + API 3件（全113件パス）、Playwright E2E 9項目（別セッション残存・移行・切替を実証）
-
-### 設計からの変更点
-
-- 項目単位の `PUT/DELETE /api/packs/{id}/items` は実装せず、`PUT /api/packs/{id}/books`（カート形式の一括置換）に統一。クライアントは常に全体キャッシュを持つため書込み経路が1本で済む
-
-### 残TODO（MVP外、必要になったら）
-
-- [ ] `/workspace/packs` 一覧管理画面（現状はワークスペースのセレクトで代替。パックが増えて一覧性が要るようになったら）
 - [ ] note 欄の UI（DB 列は用意済み）
-- [ ] アーカイブ（`archived_at` 列は用意済み）・複製・並び替え（D&D）
-- [ ] Kindle 本・メモのパック追加（現状 PDF のみ、従来どおり）
+- [ ] アーカイブ（`archived_at` 列は用意済み）・複製
+- [ ] ドラッグ＆ドロップでの並び替え（現状は上下ボタン）
+- [ ] Kindle 本・メモの資料への追加（現状 PDF のみ）
 - [ ] パス変更で本が見つからない項目の「本が見つかりません」表示
-- [ ] ナビバッジへのパック名表示の検討
+- [ ] 資料一覧の専用管理画面（資料が増えて一覧性が必要になったら）
