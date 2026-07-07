@@ -19,3 +19,6 @@ books/tech/**/*.pdf
 *.db
 shino-books_*.json
 shino-books_imported.json
+
+# Claude Code ローカル設定
+.claude/
