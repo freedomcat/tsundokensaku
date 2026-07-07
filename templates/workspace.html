@@ -111,6 +111,7 @@
       delete cart.books[path];
       TsundokuCart.save(cart);
       refreshSummary();
+      void refreshPackBar();
     }
 
     // books オブジェクトのキー順が資料内の並び順。入れ替えて保存すると
@@ -635,6 +636,7 @@
       }
       TsundokuCart.save({ version: 2, books: {} });
       renderAll();
+      void refreshPackBar();
       setStatus('');
     });
 
@@ -648,11 +650,15 @@
     async function refreshPackBar() {
       try {
         const listing = await TsundokuCart.listPacks();
+        // アクティブ資料の冊数はデバウンス書込み前でも正しいようローカルの cart から出す
+        const activePack = TsundokuCart.getActivePack();
+        const localCount = TsundokuCart.bookCount(TsundokuCart.load());
         packSelect.innerHTML = '';
         for (const pack of listing.packs) {
           const option = document.createElement('option');
           option.value = String(pack.id);
-          option.textContent = pack.book_count > 0 ? `${pack.name}（${pack.book_count}冊）` : pack.name;
+          const count = activePack && pack.id === activePack.id ? localCount : pack.book_count;
+          option.textContent = `${pack.name}（${count}冊）`;
           packSelect.appendChild(option);
         }
         if (listing.active_pack_id !== null) {
@@ -731,9 +737,10 @@
     });
 
     // PDFプレビューモーダルの「資料に追加」、およびサーバからの
-    // パック取得完了・切替時に発火
+    // パック取得完了・切替時に発火。セレクトの冊数表示も追随させる
     document.addEventListener('tsundoku-cart-updated', () => {
       renderAll();
+      void refreshPackBar();
     });
 
     renderAll();
