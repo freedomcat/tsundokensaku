@@ -165,8 +165,8 @@
 
 <section class="card cart-bar" id="export-cart" hidden>
   <div class="cart-summary">
-    <strong>資料棚</strong>
-    <span class="pill" id="cart-count"></span>
+    <span class="muted">追加先:</span>
+    <select id="cart-pack-select" aria-label="追加先の資料を選択"></select>
     <a class="button primary" href="/workspace">資料棚で編集</a>
     <button type="button" id="cart-clear">全てクリア</button>
   </div>
@@ -186,11 +186,12 @@
 
   (() => {
     const cartBar = document.getElementById('export-cart');
-    const cartCount = document.getElementById('cart-count');
+    const packSelect = document.getElementById('cart-pack-select');
     const clearButton = document.getElementById('cart-clear');
     if (!cartBar) {
       return;
     }
+    const NEW_PACK_VALUE = '__new__';
 
     function parsePages(csv) {
       return String(csv || '')
@@ -199,11 +200,31 @@
         .filter((value) => Number.isInteger(value) && value >= 1);
     }
 
-    function renderBar(cart) {
-      const count = TsundokuCart.bookCount(cart);
-      cartBar.hidden = count === 0;
-      if (cartCount) {
-        cartCount.textContent = TsundokuCart.summaryLabel(cart);
+    async function renderBar(cart) {
+      // 追加先の資料をセレクトで常時表示する（初回のサーバ取得完了までは hidden のまま）。
+      // アクティブ資料の冊数はデバウンス書込み前でも正しいようローカルの cart から出す
+      const activePack = TsundokuCart.getActivePack();
+      try {
+        const listing = await TsundokuCart.listPacks();
+        packSelect.innerHTML = '';
+        if (listing.packs.length === 0) {
+          const placeholder = new Option('資料がありません', '');
+          placeholder.disabled = true;
+          placeholder.selected = true;
+          packSelect.appendChild(placeholder);
+        }
+        for (const pack of listing.packs) {
+          const count = activePack && pack.id === activePack.id ? TsundokuCart.bookCount(cart) : pack.book_count;
+          packSelect.appendChild(new Option(`${pack.name}（${count}冊）`, String(pack.id)));
+        }
+        packSelect.appendChild(new Option('＋ 新しい資料…', NEW_PACK_VALUE));
+        if (activePack) {
+          packSelect.value = String(activePack.id);
+        }
+        clearButton.hidden = !activePack;
+        cartBar.hidden = false;
+      } catch (error) {
+        console.warn('Failed to render pack bar', error);
       }
     }
 
@@ -252,7 +273,7 @@
         }
       }
       TsundokuCart.save(cart);
-      renderBar(cart);
+      void renderBar(cart);
       syncCheckboxes(cart);
     }
 
@@ -263,23 +284,55 @@
       }
     });
 
+    packSelect.addEventListener('change', async () => {
+      const value = packSelect.value;
+      const previous = TsundokuCart.getActivePack();
+      const restoreSelection = () => {
+        packSelect.value = previous ? String(previous.id) : '';
+      };
+      if (value === NEW_PACK_VALUE) {
+        const name = window.prompt('新しい資料の名前', '新しい資料');
+        if (name === null) {
+          restoreSelection();
+          return;
+        }
+        try {
+          await TsundokuCart.createPack(name.trim());
+        } catch (error) {
+          console.warn('Failed to create pack', error);
+          restoreSelection();
+        }
+        return; // 作成後の再描画は tsundoku-cart-updated 経由
+      }
+      const packId = parseInt(value, 10);
+      if (!Number.isInteger(packId) || (previous && previous.id === packId)) {
+        return;
+      }
+      try {
+        await TsundokuCart.activatePack(packId);
+      } catch (error) {
+        console.warn('Failed to activate pack', error);
+        restoreSelection();
+      }
+    });
+
     clearButton?.addEventListener('click', () => {
       const cart = { version: 2, books: {} };
       TsundokuCart.save(cart);
-      renderBar(cart);
+      void renderBar(cart);
       syncCheckboxes(cart);
     });
 
-    // サーバからのパック取得完了・他画面での更新に追随して再描画する
+    // サーバからのパック取得完了・他画面での更新に追随して再描画する。
+    // バーの初回表示も取得完了イベントに任せる（取得前に
+    // 「資料はまだありません」を誤表示しないため）
     document.addEventListener('tsundoku-cart-updated', () => {
       const cart = TsundokuCart.load();
-      renderBar(cart);
+      void renderBar(cart);
       syncCheckboxes(cart);
     });
 
-    const initialCart = TsundokuCart.load();
-    renderBar(initialCart);
-    syncCheckboxes(initialCart);
+    syncCheckboxes(TsundokuCart.load());
   })();
 </script>
 

@@ -1383,6 +1383,21 @@
           );
         });
 
+        function shortPackName(name) {
+          return name.length > 10 ? `${name.slice(0, 10)}…` : name;
+        }
+
+        function updateAddWorkspaceButtonLabel() {
+          if (!addWorkspaceButton) {
+            return;
+          }
+          const pack = TsundokuCart.getActivePack();
+          addWorkspaceButton.textContent = pack ? `「${shortPackName(pack.name)}」に追加` : '資料に追加';
+        }
+
+        document.addEventListener('tsundoku-cart-updated', updateAddWorkspaceButtonLabel);
+        updateAddWorkspaceButtonLabel();
+
         addWorkspaceButton?.addEventListener('click', async () => {
           const pages = pagesInput.value.trim();
           if (!currentPdfPath || !pages) {
@@ -1413,7 +1428,8 @@
             };
           }
           TsundokuCart.save(cart);
-          setExportStatus('資料に追加しました');
+          const pack = TsundokuCart.getActivePack();
+          setExportStatus(pack ? `「${shortPackName(pack.name)}」に追加しました` : '資料に追加しました');
           document.dispatchEvent(new CustomEvent('tsundoku-cart-updated'));
         });
 

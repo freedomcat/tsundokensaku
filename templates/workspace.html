@@ -451,7 +451,15 @@
         addScope.appendChild(option);
       }
       addScope.value = scopePath && cart.books[scopePath] ? scopePath : '';
-      addResults.innerHTML = '<p class="muted" style="margin: 0;">対象の本の本文からページを検索します。</p>';
+      const activePack = TsundokuCart.getActivePack();
+      const guide = document.createElement('p');
+      guide.className = 'muted';
+      guide.style.margin = '0';
+      guide.textContent = activePack
+        ? `資料「${activePack.name}」に入っている本の本文からページを検索します。`
+        : '対象の本の本文からページを検索します。';
+      addResults.innerHTML = '';
+      addResults.appendChild(guide);
       setAddStatus('');
       updateAddSubmitState();
       addModal.classList.add('open');
