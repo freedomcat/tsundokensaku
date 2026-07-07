@@ -835,7 +835,7 @@ class PackTest(unittest.TestCase):
             self.assertEqual(fallback_id, first_id)
             connection.close()
 
-    def test_replace_pack_items_preserves_added_at_and_position(self) -> None:
+    def test_replace_pack_items_preserves_added_at_and_follows_payload_order(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             connection = self._make_connection(temp_dir)
             pack_id = create_pack(connection, name="p")
@@ -852,7 +852,6 @@ class PackTest(unittest.TestCase):
             self.assertEqual(set(items), {"books/a.pdf", "books/b.pdf"})
             self.assertEqual(items["books/a.pdf"].added_at, "2026-01-01T00:00:00Z")
             first_added_at = items["books/a.pdf"].added_at
-            first_position = items["books/a.pdf"].position
 
             replace_pack_items(
                 connection,
@@ -867,11 +866,51 @@ class PackTest(unittest.TestCase):
             self.assertEqual(items["books/a.pdf"].pages, "1-5")
             self.assertTrue(items["books/a.pdf"].collapsed)
             self.assertEqual(items["books/a.pdf"].added_at, first_added_at)
-            self.assertEqual(items["books/a.pdf"].position, first_position)
-            self.assertGreater(items["books/c.pdf"].position, first_position)
 
             self.assertEqual(get_pack(connection, pack_id).book_count, 2)
             self.assertFalse(replace_pack_items(connection, 9999, {}))
+            connection.close()
+
+    def test_replace_pack_items_saves_reordered_books(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            connection = self._make_connection(temp_dir)
+            pack_id = create_pack(connection, name="p")
+            replace_pack_items(
+                connection,
+                pack_id,
+                {
+                    "books/a.pdf": {"title": "本A", "pages": "1", "addedAt": "2026-01-01T00:00:00Z"},
+                    "books/b.pdf": {"title": "本B", "pages": "2"},
+                    "books/c.pdf": {"title": "本C", "pages": "3"},
+                },
+            )
+            self.assertEqual(
+                [item.pdf_path for item in get_pack_items(connection, pack_id)],
+                ["books/a.pdf", "books/b.pdf", "books/c.pdf"],
+            )
+
+            # 並び替え後の順序で送信 → position が振り直されて順序が保存される
+            replace_pack_items(
+                connection,
+                pack_id,
+                {
+                    "books/c.pdf": {"title": "本C", "pages": "3"},
+                    "books/a.pdf": {"title": "本A", "pages": "1"},
+                    "books/b.pdf": {"title": "本B", "pages": "2"},
+                },
+            )
+            items = get_pack_items(connection, pack_id)
+            self.assertEqual(
+                [item.pdf_path for item in items],
+                ["books/c.pdf", "books/a.pdf", "books/b.pdf"],
+            )
+            # 並び替えでも added_at は保持される
+            by_path = {item.pdf_path: item for item in items}
+            self.assertEqual(by_path["books/a.pdf"].added_at, "2026-01-01T00:00:00Z")
+
+            # cart 形式でも同じ順序で返る
+            cart = pack_items_as_cart(connection, pack_id)
+            self.assertEqual(list(cart["books"]), ["books/c.pdf", "books/a.pdf", "books/b.pdf"])
             connection.close()
 
     def test_pack_items_as_cart_round_trip(self) -> None:

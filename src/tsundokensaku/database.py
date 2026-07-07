@@ -1066,8 +1066,9 @@ def get_pack_items(connection: sqlite3.Connection, pack_id: int) -> list[PackIte
 def replace_pack_items(connection: sqlite3.Connection, pack_id: int, books: dict) -> bool:
     """パックの内容をカート形式の books 辞書で丸ごと置き換える。
 
-    既存の pdf_path は added_at / position を保持し、消えたものは削除、
-    新規は末尾に追加する。クライアントの save(cart) に対応する一括書込み。
+    既存の pdf_path は added_at を保持し、消えたものは削除、新規は追加する。
+    position は books 辞書の列挙順で振り直す（クライアントの並び替えを保存する）。
+    クライアントの save(cart) に対応する一括書込み。
     """
     if get_pack(connection, pack_id) is None:
         return False
@@ -1075,11 +1076,11 @@ def replace_pack_items(connection: sqlite3.Connection, pack_id: int, books: dict
         return False
     now = _pack_now()
     existing = {item.pdf_path: item for item in get_pack_items(connection, pack_id)}
-    next_position = max((item.position for item in existing.values()), default=-1) + 1
 
     for pdf_path in set(existing) - set(books):
         connection.execute("DELETE FROM pack_items WHERE pack_id = ? AND pdf_path = ?", (pack_id, pdf_path))
 
+    position = 0
     for pdf_path, entry in books.items():
         if not isinstance(pdf_path, str) or not pdf_path or not isinstance(entry, dict):
             continue
@@ -1090,10 +1091,10 @@ def replace_pack_items(connection: sqlite3.Connection, pack_id: int, books: dict
         if current is not None:
             connection.execute(
                 """
-                UPDATE pack_items SET title = ?, pages = ?, collapsed = ?, updated_at = ?
+                UPDATE pack_items SET title = ?, pages = ?, collapsed = ?, position = ?, updated_at = ?
                 WHERE pack_id = ? AND pdf_path = ?
                 """,
-                (title, pages, collapsed, now, pack_id, pdf_path),
+                (title, pages, collapsed, position, now, pack_id, pdf_path),
             )
         else:
             added_at = entry.get("addedAt") if isinstance(entry.get("addedAt"), str) and entry.get("addedAt") else now
@@ -1102,9 +1103,9 @@ def replace_pack_items(connection: sqlite3.Connection, pack_id: int, books: dict
                 INSERT INTO pack_items(pack_id, pdf_path, title, pages, collapsed, position, added_at, updated_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (pack_id, pdf_path, title, pages, collapsed, next_position, added_at, now),
+                (pack_id, pdf_path, title, pages, collapsed, position, added_at, now),
             )
-            next_position += 1
+        position += 1
 
     connection.execute("UPDATE packs SET updated_at = ? WHERE id = ?", (now, pack_id))
     connection.commit()

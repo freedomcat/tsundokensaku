@@ -104,6 +104,27 @@
       refreshSummary();
     }
 
+    // books オブジェクトのキー順が資料内の並び順。入れ替えて保存すると
+    // サーバ側で position が振り直され、エクスポート順にも反映される
+    function moveBook(path, delta) {
+      const cart = TsundokuCart.load();
+      const keys = Object.keys(cart.books);
+      const index = keys.indexOf(path);
+      const target = index + delta;
+      if (index === -1 || target < 0 || target >= keys.length) {
+        return;
+      }
+      [keys[index], keys[target]] = [keys[target], keys[index]];
+      const reordered = {};
+      for (const key of keys) {
+        reordered[key] = cart.books[key];
+      }
+      cart.books = reordered;
+      TsundokuCart.save(cart);
+      renderAll();
+      setStatus('');
+    }
+
     async function fetchOutline(path) {
       if (outlineCache.has(path)) {
         return outlineCache.get(path);
@@ -163,7 +184,7 @@
       holder.appendChild(list);
     }
 
-    function buildCard(path, entry) {
+    function buildCard(path, entry, index, total) {
       const card = document.createElement('details');
       card.className = 'ws-book';
       card.open = !entry.collapsed;
@@ -175,6 +196,26 @@
       const rangePill = document.createElement('span');
       rangePill.className = 'pill ws-book-range';
       rangePill.textContent = entry.pages ? `p.${entry.pages}` : '未指定';
+      const moveUpButton = document.createElement('button');
+      moveUpButton.type = 'button';
+      moveUpButton.className = 'ws-remove';
+      moveUpButton.textContent = '上へ';
+      moveUpButton.disabled = index === 0;
+      moveUpButton.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        moveBook(path, -1);
+      });
+      const moveDownButton = document.createElement('button');
+      moveDownButton.type = 'button';
+      moveDownButton.className = 'ws-remove';
+      moveDownButton.textContent = '下へ';
+      moveDownButton.disabled = index === total - 1;
+      moveDownButton.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        moveBook(path, 1);
+      });
       const openPdfButton = document.createElement('button');
       openPdfButton.type = 'button';
       openPdfButton.className = 'ws-remove';
@@ -206,6 +247,8 @@
       });
       summary.appendChild(title);
       summary.appendChild(rangePill);
+      summary.appendChild(moveUpButton);
+      summary.appendChild(moveDownButton);
       summary.appendChild(openPdfButton);
       summary.appendChild(addPagesButton);
       summary.appendChild(removeButton);
@@ -280,9 +323,10 @@
     function renderAll() {
       const cart = TsundokuCart.load();
       booksContainer.innerHTML = '';
-      for (const [path, entry] of Object.entries(cart.books)) {
-        booksContainer.appendChild(buildCard(path, entry));
-      }
+      const entries = Object.entries(cart.books);
+      entries.forEach(([path, entry], index) => {
+        booksContainer.appendChild(buildCard(path, entry, index, entries.length));
+      });
       refreshSummary();
     }
 
