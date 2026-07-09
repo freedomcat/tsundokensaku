@@ -344,6 +344,7 @@ window.TsundokuCart = (() => {
     renamePack,
     deletePack,
     refresh,
+    flushPendingSave,
     ready,
   };
 })();

@@ -16,8 +16,8 @@
   <div class="ws-toolbar">
     <span class="pill" id="ws-count"></span>
     <button type="button" id="ws-add-open">ページを追加</button>
-    <button type="button" class="primary" id="ws-export-pdf">PDFエクスポート</button>
-    <button type="button" id="ws-export-md">MDエクスポート</button>
+    <button type="button" class="primary" id="ws-export-pdf">PDF一式を書き出す</button>
+    <button type="button" id="ws-export-md">MD一式を書き出す</button>
     <button type="button" id="ws-clear">この資料を空にする</button>
     <span class="ws-status" id="ws-status"></span>
   </div>
@@ -384,7 +384,11 @@
       return text || 'エクスポートに失敗しました';
     }
 
-    async function exportAll(endpoint, fallbackExtension) {
+    async function exportPackZip(format) {
+      const pack = TsundokuCart.getActivePack();
+      if (!pack) {
+        return;
+      }
       const cart = TsundokuCart.load();
       const entries = Object.entries(cart.books);
       if (entries.length === 0) {
@@ -405,21 +409,17 @@
         button.disabled = true;
       }
       try {
-        let done = 0;
-        for (const [path, entry] of entries) {
-          setStatus(`エクスポート中... ${done + 1}/${entries.length}冊`);
-          const params = new URLSearchParams({ pdf_path: path, pages: entry.pages.trim() });
-          const response = await fetch(`${endpoint}?${params.toString()}`);
-          if (!response.ok) {
-            throw new Error(`${entry.title}: ${await errorMessageFromResponse(response)}`);
-          }
-          const blob = await response.blob();
-          const filename = filenameFromContentDisposition(response.headers.get('Content-Disposition'))
-            || `export${fallbackExtension}`;
-          downloadBlob(blob, filename);
-          done += 1;
+        setStatus('資料一式を書き出し中...');
+        // サーバの最新内容でZIPを作るため、デバウンス中の未送信編集を先に反映させる
+        await TsundokuCart.flushPendingSave();
+        const response = await fetch(`/api/packs/${pack.id}/export?${new URLSearchParams({ format })}`);
+        if (!response.ok) {
+          throw new Error(await errorMessageFromResponse(response));
         }
-        setStatus(`${done}冊をダウンロードしました`);
+        const blob = await response.blob();
+        const filename = filenameFromContentDisposition(response.headers.get('Content-Disposition')) || 'export.zip';
+        downloadBlob(blob, filename);
+        setStatus('資料一式（ZIP）をダウンロードしました');
       } catch (error) {
         setStatus(error instanceof Error ? error.message : 'エクスポートに失敗しました', true);
       } finally {
@@ -624,11 +624,11 @@
     addSubmitButton.addEventListener('click', addSelectedPages);
 
     exportPdfButton.addEventListener('click', () => {
-      void exportAll('/export-pdf', '.pdf');
+      void exportPackZip('pdf');
     });
 
     exportMdButton.addEventListener('click', () => {
-      void exportAll('/export-md', '.md');
+      void exportPackZip('md');
     });
 
     clearButton.addEventListener('click', () => {

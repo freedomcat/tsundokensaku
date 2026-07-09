@@ -30,6 +30,7 @@ from tsundokensaku.database import (
     ensure_pack_schema,
     get_book,
     get_pack,
+    get_pack_items,
     import_cart_as_pack,
     list_books,
     list_packs,
@@ -57,6 +58,12 @@ from tsundokensaku.markdown_export import default_markdown_output_name, render_m
 from tsundokensaku.pdf_export import default_output_path, parse_page_selection, render_selected_pages
 from tsundokensaku.pdf_outline import get_page_count, list_chapters
 from tsundokensaku.tokenizer import query_highlight_terms
+from tsundokensaku.zip_export import (
+    PackExportEntry,
+    build_entry_filename,
+    build_pack_zip,
+    build_pack_zip_filename,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -1160,6 +1167,56 @@ def api_replace_pack_books(pack_id: int, payload: dict = Body(default={})) -> JS
     finally:
         connection.close()
     return JSONResponse({"pack_id": pack_id, "cart": cart})
+
+
+@app.get("/api/packs/{pack_id}/export")
+def api_export_pack(pack_id: int, format: str = Query("pdf")) -> Response:
+    if format not in ("pdf", "md"):
+        raise HTTPException(status_code=400, detail="format は pdf か md を指定してください")
+
+    connection = _pack_connection()
+    try:
+        pack = get_pack(connection, pack_id)
+        if pack is None:
+            raise HTTPException(status_code=404, detail="資料が見つかりません")
+        items = get_pack_items(connection, pack_id)
+    finally:
+        connection.close()
+
+    if not items:
+        raise HTTPException(status_code=400, detail="資料が空です")
+
+    books_dir = get_books_dir()
+    db_path = get_db_path()
+    exported_at = _now_jst()
+    entries: list[PackExportEntry] = []
+    for index, item in enumerate(items, start=1):
+        if not item.pages.strip():
+            raise HTTPException(status_code=400, detail=f"{item.title}: ページを指定してください")
+        candidate = _resolve_pdf_file_or_404(item.pdf_path, books_dir)
+        if format == "pdf":
+            content, _base_filename = render_pdf_export(candidate, item.pages)
+        else:
+            content, _base_filename = render_markdown_export(
+                candidate, item.pages, books_dir=books_dir, db_path=db_path
+            )
+        entries.append(
+            PackExportEntry(
+                index=index,
+                title=item.title,
+                page_label=item.pages,
+                filename=build_entry_filename(index, item.title, item.pages, format),
+                content=content,
+            )
+        )
+
+    zip_bytes = build_pack_zip(pack_name=pack.name, entries=entries, exported_at=exported_at)
+    zip_filename = build_pack_zip_filename(pack.name, exported_at)
+    return Response(
+        content=zip_bytes,
+        media_type="application/zip",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(zip_filename)}"},
+    )
 
 
 @app.post("/api/packs/import")

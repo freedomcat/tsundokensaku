@@ -1,5 +1,7 @@
 import tempfile
 import unittest
+import zipfile
+from io import BytesIO
 from unittest.mock import patch
 from pathlib import Path
 import json
@@ -12,6 +14,7 @@ from tsundokensaku.web import (
     api_activate_pack,
     api_create_pack,
     api_delete_pack,
+    api_export_pack,
     api_get_pack,
     api_import_pack,
     api_list_packs,
@@ -719,6 +722,128 @@ class PackApiTest(unittest.TestCase):
 
                 with self.assertRaises(HTTPException) as ctx:
                     api_import_pack({"cart": {"version": 2, "books": {}}})
+                self.assertEqual(ctx.exception.status_code, 400)
+
+    def test_pack_api_export_zip_contains_manifest_and_ordered_entries(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            db_path = root / "index.db"
+            books_dir = root / "books"
+            books_dir.mkdir(parents=True)
+
+            def make_pdf(name: str, pages: int) -> None:
+                writer = PdfWriter()
+                for _ in range(pages):
+                    writer.add_blank_page(width=72, height=72)
+                with (books_dir / name).open("wb") as handle:
+                    writer.write(handle)
+
+            make_pdf("a.pdf", 5)
+            make_pdf("b.pdf", 5)
+
+            with patch("tsundokensaku.web.get_db_path", return_value=db_path), \
+                    patch("tsundokensaku.web.get_books_dir", return_value=books_dir):
+                created = self._payload(api_create_pack({"name": "調査資料"}))
+                books = {
+                    "a.pdf": {"title": "本A", "pages": "1-2", "collapsed": False, "addedAt": "2026-01-01T00:00:00Z"},
+                    "b.pdf": {"title": "本B", "pages": "3", "collapsed": False, "addedAt": "2026-01-01T00:00:01Z"},
+                }
+                self._payload(api_replace_pack_books(created["id"], {"books": books}))
+
+                response = api_export_pack(created["id"], format="pdf")
+
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.media_type, "application/zip")
+                self.assertIn("attachment", response.headers["content-disposition"])
+
+                with zipfile.ZipFile(BytesIO(response.body)) as archive:
+                    names = archive.namelist()
+                    self.assertEqual(names[0], "manifest.md")
+                    # books 辞書の列挙順（＝資料内の並び順）が連番ファイル名に反映される
+                    self.assertEqual(names[1], "01_本A_p1-2.pdf")
+                    self.assertEqual(names[2], "02_本B_p3.pdf")
+
+                    manifest = archive.read("manifest.md").decode("utf-8")
+                    self.assertIn("調査資料", manifest)
+                    self.assertIn("本A", manifest)
+                    self.assertIn("本B", manifest)
+
+                    reader = PdfReader(BytesIO(archive.read(names[1])))
+                    self.assertEqual(len(reader.pages), 2)
+
+    def test_pack_api_export_zip_supports_markdown_format(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            db_path = root / "index.db"
+            books_dir = root / "books"
+            books_dir.mkdir(parents=True)
+
+            writer = PdfWriter()
+            for _ in range(3):
+                writer.add_blank_page(width=72, height=72)
+            with (books_dir / "a.pdf").open("wb") as handle:
+                writer.write(handle)
+
+            with patch("tsundokensaku.web.get_db_path", return_value=db_path), \
+                    patch("tsundokensaku.web.get_books_dir", return_value=books_dir):
+                created = self._payload(api_create_pack({"name": "資料"}))
+                books = {
+                    "a.pdf": {"title": "本A", "pages": "1", "collapsed": False, "addedAt": "2026-01-01T00:00:00Z"},
+                }
+                self._payload(api_replace_pack_books(created["id"], {"books": books}))
+
+                response = api_export_pack(created["id"], format="md")
+
+                self.assertEqual(response.media_type, "application/zip")
+                with zipfile.ZipFile(BytesIO(response.body)) as archive:
+                    names = archive.namelist()
+                    # ファイル名は pack_items.title（追加時点のスナップショット）ベース
+                    self.assertEqual(names, ["manifest.md", "01_本A_p1.md"])
+                    # 本文の見出しは render_markdown_export 既存仕様どおり
+                    # books テーブル未登録なら元PDFファイル名にフォールバックする
+                    content = archive.read("01_本A_p1.md").decode("utf-8")
+                    self.assertIn("## p.1", content)
+                    self.assertIn("本A", archive.read("manifest.md").decode("utf-8"))
+
+    def test_pack_api_export_zip_rejects_empty_pack_and_bad_format(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "index.db"
+            with patch("tsundokensaku.web.get_db_path", return_value=db_path):
+                created = self._payload(api_create_pack({"name": "空の資料"}))
+
+                with self.assertRaises(HTTPException) as ctx:
+                    api_export_pack(created["id"], format="pdf")
+                self.assertEqual(ctx.exception.status_code, 400)
+
+                with self.assertRaises(HTTPException) as ctx:
+                    api_export_pack(created["id"], format="epub")
+                self.assertEqual(ctx.exception.status_code, 400)
+
+                with self.assertRaises(HTTPException) as ctx:
+                    api_export_pack(9999, format="pdf")
+                self.assertEqual(ctx.exception.status_code, 404)
+
+    def test_pack_api_export_zip_requires_pages_on_every_item(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            db_path = root / "index.db"
+            books_dir = root / "books"
+            books_dir.mkdir(parents=True)
+            writer = PdfWriter()
+            writer.add_blank_page(width=72, height=72)
+            with (books_dir / "a.pdf").open("wb") as handle:
+                writer.write(handle)
+
+            with patch("tsundokensaku.web.get_db_path", return_value=db_path), \
+                    patch("tsundokensaku.web.get_books_dir", return_value=books_dir):
+                created = self._payload(api_create_pack({"name": "資料"}))
+                books = {
+                    "a.pdf": {"title": "本A", "pages": "", "collapsed": False, "addedAt": "2026-01-01T00:00:00Z"},
+                }
+                self._payload(api_replace_pack_books(created["id"], {"books": books}))
+
+                with self.assertRaises(HTTPException) as ctx:
+                    api_export_pack(created["id"], format="pdf")
                 self.assertEqual(ctx.exception.status_code, 400)
 
 
