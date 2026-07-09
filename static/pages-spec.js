@@ -151,6 +151,22 @@ window.TsundokuPages = (() => {
     return pieces.join(',');
   }
 
+  // spec文字列を表示用の区間リストに変換する。チップ表示用。
+  // 例: "3-7,20,39-" -> [{start:3,end:7,open:false,text:"3-7"}, ...]
+  // text は元のチャンク文字列（開区間を丸ごと除去したいときに使う）。
+  // 解釈できないチャンクは無視する。
+  function specToIntervals(spec) {
+    const intervals = [];
+    for (const raw of chunksOf(spec)) {
+      const parsed = parseChunk(raw);
+      if (!parsed) {
+        continue;
+      }
+      intervals.push({ start: parsed.start, end: parsed.end, open: parsed.open, text: parsed.text });
+    }
+    return intervals;
+  }
+
   // 閉区間のみのspecの総ページ数。開区間を含む場合は null。
   function countPages(spec) {
     const intervals = [];
@@ -174,5 +190,6 @@ window.TsundokuPages = (() => {
     specContainsPages,
     subtractPages,
     countPages,
+    specToIntervals,
   };
 })();

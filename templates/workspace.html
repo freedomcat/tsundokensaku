@@ -208,7 +208,18 @@
       title.textContent = entry.title;
       const rangePill = document.createElement('span');
       rangePill.className = 'pill ws-book-range';
-      rangePill.textContent = entry.pages ? `p.${entry.pages}` : '未指定';
+
+      // 件数のみ表示（詳細なページ範囲は編集用チップ側と重複するため出さない）。
+      // 開区間（例: "39-"）は countPages が null を返すため spec 文字列にフォールバックする
+      function pageCountLabel(value) {
+        if (!value) {
+          return '未指定';
+        }
+        const count = TsundokuPages.countPages(value);
+        return count !== null ? `${count}ページ` : `p.${value}`;
+      }
+
+      rangePill.textContent = pageCountLabel(entry.pages);
       const moveUpButton = document.createElement('button');
       moveUpButton.type = 'button';
       moveUpButton.className = 'ws-remove';
@@ -280,6 +291,93 @@
       pagesRow.appendChild(pagesLabel);
       pagesRow.appendChild(pagesInput);
 
+      const chipsContainer = document.createElement('div');
+      chipsContainer.className = 'ws-page-chips';
+      let chipsExpanded = false;
+      const CHIPS_COLLAPSE_THRESHOLD = 8;
+
+      function chipLabel(interval) {
+        if (interval.start !== null && interval.end !== null) {
+          return interval.start === interval.end ? `p.${interval.start}` : `p.${interval.start}-${interval.end}`;
+        }
+        return interval.start === null ? `p.-${interval.end}` : `p.${interval.start}-`;
+      }
+
+      // 区間のページ番号一覧を返す。開区間で終端が特定できなければ null（丸ごと削除にフォールバック）
+      function pageNumbersForInterval(interval, pageCount) {
+        const start = interval.start === null ? 1 : interval.start;
+        const end = interval.end === null ? pageCount : interval.end;
+        if (end === null || end === undefined) {
+          return null;
+        }
+        const pages = [];
+        for (let page = start; page <= end; page += 1) {
+          pages.push(page);
+        }
+        return pages;
+      }
+
+      function removeRawChunk(spec, rawText) {
+        return spec
+          .split(',')
+          .map((chunk) => chunk.trim())
+          .filter((chunk) => chunk !== '' && chunk !== rawText)
+          .join(',');
+      }
+
+      function renderChips() {
+        chipsContainer.innerHTML = '';
+        const intervals = TsundokuPages.specToIntervals(pagesInput.value);
+        if (intervals.length === 0) {
+          const empty = document.createElement('span');
+          empty.className = 'ws-page-chips-empty';
+          empty.textContent = 'ページ未指定';
+          chipsContainer.appendChild(empty);
+          return;
+        }
+        const visible = chipsExpanded ? intervals : intervals.slice(0, CHIPS_COLLAPSE_THRESHOLD);
+        for (const interval of visible) {
+          const label = chipLabel(interval);
+          const chip = document.createElement('span');
+          chip.className = 'ws-page-chip';
+          const chipText = document.createElement('span');
+          chipText.textContent = label;
+          const removeBtn = document.createElement('button');
+          removeBtn.type = 'button';
+          removeBtn.className = 'ws-page-chip-remove';
+          removeBtn.setAttribute('aria-label', `${label} を削除`);
+          removeBtn.textContent = '×';
+          removeBtn.addEventListener('click', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            const outline = outlineCache.get(path);
+            const pageCount = outline ? outline.pageCount : null;
+            const pages = pageNumbersForInterval(interval, pageCount);
+            const nextSpec = pages
+              ? TsundokuPages.subtractPages(pagesInput.value, pages)
+              : removeRawChunk(pagesInput.value, interval.text);
+            pagesInput.value = nextSpec;
+            pagesInput.dispatchEvent(new Event('input'));
+          });
+          chip.appendChild(chipText);
+          chip.appendChild(removeBtn);
+          chipsContainer.appendChild(chip);
+        }
+        if (intervals.length > CHIPS_COLLAPSE_THRESHOLD) {
+          const toggle = document.createElement('button');
+          toggle.type = 'button';
+          toggle.className = 'ws-page-chips-toggle';
+          toggle.textContent = chipsExpanded ? '折りたたむ' : `他${intervals.length - CHIPS_COLLAPSE_THRESHOLD}件を表示`;
+          toggle.addEventListener('click', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            chipsExpanded = !chipsExpanded;
+            renderChips();
+          });
+          chipsContainer.appendChild(toggle);
+        }
+      }
+
       const errorLine = document.createElement('div');
       errorLine.className = 'ws-error';
       errorLine.hidden = true;
@@ -293,12 +391,15 @@
         const error = value ? TsundokuPages.validatePageSpec(value, outline ? outline.pageCount : null) : 'ページを指定してください';
         errorLine.textContent = error;
         errorLine.hidden = !error;
-        rangePill.textContent = value ? `p.${value}` : '未指定';
+        rangePill.textContent = pageCountLabel(value);
         updateBook(path, (book) => {
           book.pages = value;
         });
         setStatus('');
+        renderChips();
       });
+
+      renderChips();
 
       card.addEventListener('toggle', () => {
         // 再描画由来の toggle で collapsed が同値のときは保存しない
@@ -319,6 +420,7 @@
       });
 
       body.appendChild(pagesRow);
+      body.appendChild(chipsContainer);
       body.appendChild(errorLine);
       body.appendChild(chaptersHolder);
       card.appendChild(summary);

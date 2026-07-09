@@ -534,6 +534,56 @@
         font-size: 0.88rem;
       }
 
+      .ws-page-chips {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        align-items: center;
+      }
+
+      .ws-page-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        padding: 3px 4px 3px 10px;
+        border-radius: 999px;
+        background: rgba(15, 118, 110, 0.1);
+        color: var(--accent-strong);
+        font-size: 0.85rem;
+      }
+
+      .ws-page-chip-remove {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 18px;
+        height: 18px;
+        padding: 0;
+        border: 0;
+        border-radius: 50%;
+        background: transparent;
+        box-shadow: none;
+        color: inherit;
+        font-size: 0.9rem;
+        line-height: 1;
+        cursor: pointer;
+      }
+
+      .ws-page-chip-remove:hover {
+        background: rgba(15, 118, 110, 0.22);
+      }
+
+      .ws-page-chips-toggle {
+        padding: 3px 10px;
+        font-size: 0.85rem;
+        border-radius: 999px;
+      }
+
+      .ws-page-chips-empty {
+        color: var(--muted);
+        font-size: 0.85rem;
+      }
+
       .ws-remove {
         padding: 6px 12px;
         font-size: 0.88rem;
