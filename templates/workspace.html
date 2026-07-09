@@ -54,6 +54,9 @@
     <p class="muted" style="margin: 0 0 10px;">資料はまだありません。</p>
     <button type="button" class="primary" id="ws-no-pack-new">＋ 新しい資料</button>
   </div>
+  <div id="ws-no-active-pack" hidden>
+    <p class="muted" style="margin: 0;">資料が選択されていません。上のセレクトから資料を選ぶか、新しい資料を作成してください。</p>
+  </div>
 </section>
 
 <script>
@@ -87,7 +90,7 @@
       countBadge.textContent = hasPack ? TsundokuCart.summaryLabel(cart) : '';
       countBadge.hidden = !hasPack;
       emptyMessage.hidden = !hasPack || count > 0;
-      noPackSection.hidden = hasPack;
+      // noPackSection / noActivePackSection の表示は資料一覧の有無が絡むため refreshPackBar 側で判定する
       for (const button of [exportPdfButton, exportMdButton, clearButton, addOpenButton]) {
         button.disabled = !hasPack || count === 0;
       }
@@ -646,6 +649,7 @@
     const packDeleteButton = document.getElementById('ws-pack-delete');
     const noPackSection = document.getElementById('ws-no-pack');
     const noPackNewButton = document.getElementById('ws-no-pack-new');
+    const noActivePackSection = document.getElementById('ws-no-active-pack');
 
     async function refreshPackBar() {
       try {
@@ -653,7 +657,14 @@
         // アクティブ資料の冊数はデバウンス書込み前でも正しいようローカルの cart から出す
         const activePack = TsundokuCart.getActivePack();
         const localCount = TsundokuCart.bookCount(TsundokuCart.load());
+        const packsExist = listing.packs.length > 0;
         packSelect.innerHTML = '';
+        if (packsExist && !activePack) {
+          const placeholder = new Option('資料を選択してください', '');
+          placeholder.disabled = true;
+          placeholder.selected = true;
+          packSelect.appendChild(placeholder);
+        }
         for (const pack of listing.packs) {
           const option = document.createElement('option');
           option.value = String(pack.id);
@@ -664,7 +675,9 @@
         if (listing.active_pack_id !== null) {
           packSelect.value = String(listing.active_pack_id);
         }
-        packSelect.disabled = listing.packs.length === 0;
+        packSelect.disabled = !packsExist;
+        noPackSection.hidden = packsExist;
+        noActivePackSection.hidden = !packsExist || Boolean(activePack);
       } catch (error) {
         console.warn('Failed to list packs', error);
       }

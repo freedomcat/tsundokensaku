@@ -1004,6 +1004,11 @@ def delete_pack(connection: sqlite3.Connection, pack_id: int) -> bool:
     return True
 
 
+# 「利用者が意図的に未選択にした」ことを表す番兵値。app_state.value に
+# 空文字列を入れて記録する（行が無い＝未設定、とは区別する）
+_ACTIVE_PACK_CLEARED_SENTINEL = ""
+
+
 def get_active_pack_id(connection: sqlite3.Connection) -> int | None:
     row = connection.execute("SELECT value FROM app_state WHERE key = 'active_pack_id'").fetchone()
     if row is None:
@@ -1028,12 +1033,28 @@ def set_active_pack(connection: sqlite3.Connection, pack_id: int) -> bool:
     return True
 
 
+def clear_active_pack(connection: sqlite3.Connection) -> None:
+    """現在の資料を意図的に未選択にする（資料自体は削除しない）。"""
+    connection.execute(
+        """
+        INSERT INTO app_state(key, value) VALUES ('active_pack_id', ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+        """,
+        (_ACTIVE_PACK_CLEARED_SENTINEL,),
+    )
+    connection.commit()
+
+
 def resolve_active_pack_id(connection: sqlite3.Connection) -> int | None:
     """アクティブパックIDを返す。無効・未設定なら既存の最新パックへフォールバック。
 
     パックが1件もなければ None。自動作成はしない（資料は利用者が
-    必要になったタイミングで作る）。
+    必要になったタイミングで作る）。利用者が明示的に未選択にした場合は
+    パックが残っていてもフォールバックせず None を返す。
     """
+    row = connection.execute("SELECT value FROM app_state WHERE key = 'active_pack_id'").fetchone()
+    if row is not None and row["value"] == _ACTIVE_PACK_CLEARED_SENTINEL:
+        return None
     active_id = get_active_pack_id(connection)
     if active_id is not None and get_pack(connection, active_id) is not None:
         return active_id

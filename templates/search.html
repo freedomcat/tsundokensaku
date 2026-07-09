@@ -211,6 +211,11 @@
           placeholder.disabled = true;
           placeholder.selected = true;
           packSelect.appendChild(placeholder);
+        } else if (!activePack) {
+          const placeholder = new Option('追加時に資料を作成します', '');
+          placeholder.disabled = true;
+          placeholder.selected = true;
+          packSelect.appendChild(placeholder);
         }
         for (const pack of listing.packs) {
           const count = activePack && pack.id === activePack.id ? TsundokuCart.bookCount(cart) : pack.book_count;

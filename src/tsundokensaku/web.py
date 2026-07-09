@@ -23,6 +23,7 @@ from markupsafe import Markup, escape
 from tsundokensaku.database import (
     SEARCH_MATCH_MODES,
     SEARCH_SCOPES,
+    clear_active_pack,
     connect,
     create_pack,
     delete_pack,
@@ -1134,6 +1135,16 @@ def api_activate_pack(pack_id: int) -> JSONResponse:
     finally:
         connection.close()
     return JSONResponse({"active_pack_id": pack_id})
+
+
+@app.post("/api/packs/deactivate")
+def api_deactivate_pack() -> JSONResponse:
+    connection = _pack_connection()
+    try:
+        clear_active_pack(connection)
+    finally:
+        connection.close()
+    return JSONResponse({"active_pack_id": None})
 
 
 @app.put("/api/packs/{pack_id}/books")

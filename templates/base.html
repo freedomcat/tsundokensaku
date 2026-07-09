@@ -982,7 +982,7 @@
       <div class="topbar">
         <div aria-hidden="true"></div>
         <div class="brand">
-          <a class="brand-link" href="/" aria-label="ホームへ戻る">
+          <a class="brand-link" href="/" aria-label="ホームへ戻る" id="brand-home-link">
             <img class="brand-mark" src="/static/tsundokensaku-logo.png" alt="">
             <div class="brand-text">
               <h1>つんどけんさく</h1>
@@ -1464,6 +1464,34 @@
           if (event.key === 'Escape' && modal.classList.contains('open')) {
             void closeModal();
           }
+        });
+      })();
+    </script>
+    <script>
+      (() => {
+        const homeLink = document.getElementById('brand-home-link');
+        // 資料棚（資料を編集中の画面）からは選択中の資料を維持したままホームへ戻る。
+        // それ以外の画面（検索結果等）からは、前の資料を引きずらず新しい調査を
+        // 始められるよう未選択に戻す
+        const keepActivePack = {{ 'true' if request.url.path == '/workspace' else 'false' }};
+        homeLink?.addEventListener('click', (event) => {
+          // 中クリック・修飾キー付きクリック（新規タブ等）はブラウザ標準の挙動に任せる
+          if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
+            return;
+          }
+          if (keepActivePack) {
+            return; // 通常のリンク遷移に任せる（deactivateしない）
+          }
+          event.preventDefault();
+          const destination = homeLink.href;
+          (async () => {
+            try {
+              await window.TsundokuCart.deactivatePack();
+            } catch (error) {
+              console.warn('Failed to deactivate pack', error);
+            }
+            window.location.href = destination;
+          })();
         });
       })();
     </script>

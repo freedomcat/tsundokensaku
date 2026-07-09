@@ -288,6 +288,13 @@ window.TsundokuCart = (() => {
     await fetchActivePack();
   }
 
+  // 現在の資料を意図的に未選択にする（資料自体・中身は削除しない）
+  async function deactivatePack() {
+    await flushPendingSave();
+    await fetchJson('/api/packs/deactivate', { method: 'POST' });
+    await fetchActivePack();
+  }
+
   async function renamePack(packId, name) {
     const pack = await fetchJson(`/api/packs/${packId}`, {
       method: 'PATCH',
@@ -333,6 +340,7 @@ window.TsundokuCart = (() => {
     listPacks,
     createPack,
     activatePack,
+    deactivatePack,
     renamePack,
     deletePack,
     refresh,
