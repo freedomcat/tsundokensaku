@@ -32,6 +32,7 @@ from tsundokensaku.web import (
     format_indexed_at,
     normalize_search_group,
     normalize_search_match,
+    pdf_thumbnails,
     resolve_pdf_scrapbox_url,
     save_pdf_export_to_configured_dir,
     save_uploaded_pdf,
@@ -216,6 +217,62 @@ class HighlightQueryTest(unittest.TestCase):
 
             self.assertEqual(response.status_code, 200)
             self.assertEqual(json.loads(response.body), {"page_count": 1, "chapters": []})
+
+    def test_pdf_thumbnails_returns_base64_jpeg_for_requested_pages(self) -> None:
+        import base64
+
+        import fitz
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            books_dir = Path(temp_dir) / "books"
+            books_dir.mkdir()
+            pdf_path = books_dir / "sample.pdf"
+
+            doc = fitz.open()
+            for _ in range(5):
+                doc.new_page(width=200, height=280)
+            doc.save(str(pdf_path))
+            doc.close()
+
+            with patch("tsundokensaku.web.get_books_dir", return_value=books_dir):
+                response = pdf_thumbnails(pdf_path="sample.pdf", pages="2,4")
+
+            self.assertEqual(response.status_code, 200)
+            payload = json.loads(response.body)
+            self.assertEqual([p["page"] for p in payload["pages"]], [2, 4])
+            for item in payload["pages"]:
+                decoded = base64.b64decode(item["data"])
+                self.assertTrue(decoded.startswith(b"\xff\xd8"))
+
+    def test_pdf_thumbnails_rejects_too_many_pages(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            books_dir = Path(temp_dir) / "books"
+            books_dir.mkdir()
+            pdf_path = books_dir / "sample.pdf"
+            writer = PdfWriter()
+            writer.add_blank_page(width=72, height=72)
+            with pdf_path.open("wb") as handle:
+                writer.write(handle)
+
+            with patch("tsundokensaku.web.get_books_dir", return_value=books_dir):
+                with self.assertRaises(HTTPException) as ctx:
+                    pdf_thumbnails(pdf_path="sample.pdf", pages="1-61")
+                self.assertEqual(ctx.exception.status_code, 400)
+
+    def test_pdf_thumbnails_requires_pages_param(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            books_dir = Path(temp_dir) / "books"
+            books_dir.mkdir()
+            pdf_path = books_dir / "sample.pdf"
+            writer = PdfWriter()
+            writer.add_blank_page(width=72, height=72)
+            with pdf_path.open("wb") as handle:
+                writer.write(handle)
+
+            with patch("tsundokensaku.web.get_books_dir", return_value=books_dir):
+                with self.assertRaises(HTTPException) as ctx:
+                    pdf_thumbnails(pdf_path="sample.pdf", pages="")
+                self.assertEqual(ctx.exception.status_code, 400)
 
     def test_export_pdf_returns_selected_pages(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

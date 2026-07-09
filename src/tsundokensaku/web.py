@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import base64
 import re
 import sqlite3
 import threading
@@ -57,6 +58,7 @@ from tsundokensaku.metadata import (
 from tsundokensaku.markdown_export import default_markdown_output_name, render_markdown_pages
 from tsundokensaku.pdf_export import default_output_path, parse_page_selection, render_selected_pages
 from tsundokensaku.pdf_outline import get_page_count, list_chapters
+from tsundokensaku.pdf_thumbnail import render_thumbnails
 from tsundokensaku.tokenizer import query_highlight_terms
 from tsundokensaku.zip_export import (
     PackExportEntry,
@@ -1436,6 +1438,42 @@ def pdf_outline(pdf_path: str) -> JSONResponse:
         for chapter in list_chapters(candidate)
     ]
     return JSONResponse({"page_count": get_page_count(candidate), "chapters": chapters})
+
+
+MAX_THUMBNAIL_PAGES_PER_REQUEST = 60
+# spec の展開上限。実際のページ数を知るには fitz.open() が必要（コストが
+# 支配的なため二重に開きたくない）ので、蔵書の実ページ数を十分に超える
+# 仮の上限を渡し、範囲外ページは render_thumbnails 側で無視させる
+_THUMBNAIL_SPEC_PAGE_COUNT_GUARD = 10_000
+
+
+@app.get("/pdf-thumbnails")
+def pdf_thumbnails(pdf_path: str, pages: str) -> JSONResponse:
+    candidate = _resolve_pdf_file_or_404(pdf_path, get_books_dir())
+    page_spec = pages.strip()
+    if not page_spec:
+        raise HTTPException(status_code=400, detail="pages is required")
+
+    try:
+        page_numbers = parse_page_selection(page_spec, _THUMBNAIL_SPEC_PAGE_COUNT_GUARD)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if len(page_numbers) > MAX_THUMBNAIL_PAGES_PER_REQUEST:
+        raise HTTPException(
+            status_code=400,
+            detail=f"一度に取得できるページ数は{MAX_THUMBNAIL_PAGES_PER_REQUEST}件までです",
+        )
+
+    rendered = render_thumbnails(candidate, page_numbers)
+    return JSONResponse(
+        {
+            "pages": [
+                {"page": page_number, "data": base64.b64encode(data).decode("ascii")}
+                for page_number, data in rendered
+            ]
+        }
+    )
 
 
 @app.get("/export-pdf")

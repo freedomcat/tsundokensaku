@@ -1005,6 +1005,107 @@
         background: white;
       }
 
+      .modal-thumb-heading {
+        font-weight: 600;
+        white-space: nowrap;
+      }
+
+      .modal-thumb-panel {
+        grid-row: 3;
+        grid-column: 1;
+        width: 100%;
+        height: 100%;
+        background: white;
+        padding: 16px;
+        overflow-y: auto;
+      }
+
+      .modal-thumb-scroll {
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+        align-items: center;
+      }
+
+      .modal-thumb-range-toggle {
+        display: flex;
+        justify-content: center;
+        width: 100%;
+      }
+
+      .modal-thumb-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+        gap: 16px;
+        width: 100%;
+      }
+
+      .modal-thumb-item {
+        position: relative;
+        display: block;
+        border: 3px solid var(--border);
+        border-radius: 10px;
+        overflow: hidden;
+        cursor: pointer;
+        background: white;
+      }
+
+      .modal-thumb-item.current-page {
+        border-color: #b45309;
+      }
+
+      .modal-thumb-item.selected {
+        border-color: var(--accent);
+        box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.25);
+      }
+
+      .modal-thumb-item img {
+        width: 100%;
+        display: block;
+      }
+
+      .modal-thumb-checkbox {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        opacity: 0;
+      }
+
+      .modal-thumb-check-badge {
+        display: none;
+        position: absolute;
+        top: 8px;
+        left: 8px;
+        width: 26px;
+        height: 26px;
+        border-radius: 50%;
+        background: var(--accent);
+        color: white;
+        align-items: center;
+        justify-content: center;
+        font-size: 0.9rem;
+      }
+
+      .modal-thumb-item.selected .modal-thumb-check-badge {
+        display: flex;
+      }
+
+      .modal-thumb-page-label {
+        position: absolute;
+        bottom: 6px;
+        right: 6px;
+        background: rgba(17, 24, 39, 0.72);
+        color: white;
+        font-size: 0.78rem;
+        padding: 2px 8px;
+        border-radius: 999px;
+      }
+
+      .modal-thumb-item.current-page .modal-thumb-page-label {
+        background: rgba(180, 83, 9, 0.85);
+      }
+
       @media (max-width: 640px) {
         .shell { padding: 16px 12px 32px; }
         .brand-mark { width: 48px; height: 48px; }
@@ -1057,7 +1158,7 @@
               <button type="button" id="pdf-modal-close">閉じる</button>
             </div>
           </div>
-          <div class="modal-bar">
+          <div class="modal-bar" id="pdf-modal-browse-bar">
             <div class="modal-actions modal-assemble-actions">
               <details class="modal-chapters" id="pdf-modal-chapters-wrap" hidden>
                 <summary id="pdf-modal-chapters-summary">章を選択</summary>
@@ -1068,6 +1169,7 @@
                 <input id="pdf-modal-pages" type="text" inputmode="numeric" placeholder="例: 11-15,18">
               </label>
               <button type="button" class="primary" id="pdf-modal-add-workspace" hidden>資料に追加</button>
+              <button type="button" id="pdf-modal-thumb-toggle" hidden>ページを選ぶ</button>
               <details class="modal-share" id="pdf-modal-export-wrap">
                 <summary class="button">切出 ▾</summary>
                 <div class="modal-share-menu">
@@ -1079,7 +1181,26 @@
               <div class="modal-export-status" id="pdf-modal-export-status"></div>
             </div>
           </div>
+          <div class="modal-bar" id="pdf-modal-thumb-bar" hidden>
+            <div class="modal-actions modal-assemble-actions">
+              <button type="button" id="pdf-modal-thumb-back">◀ 閲覧に戻る</button>
+              <span class="modal-thumb-heading" id="pdf-modal-thumb-heading"></span>
+              <button type="button" class="primary" id="pdf-modal-thumb-apply" disabled>0ページを資料に反映</button>
+              <div class="ws-status" id="pdf-modal-thumb-status"></div>
+            </div>
+          </div>
           <iframe class="modal-viewport" id="pdf-modal-frame" title="PDF viewer"></iframe>
+          <div class="modal-thumb-panel" id="pdf-modal-thumb-panel" hidden>
+            <div class="modal-thumb-scroll">
+              <div class="modal-thumb-range-toggle">
+                <button type="button" id="pdf-modal-thumb-prev" hidden>前の10ページを表示</button>
+              </div>
+              <div class="modal-thumb-grid" id="pdf-modal-thumb-grid"></div>
+              <div class="modal-thumb-range-toggle">
+                <button type="button" id="pdf-modal-thumb-next" hidden>次の10ページを表示</button>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     <script>
@@ -1102,6 +1223,17 @@
         const shareDetails = modal?.querySelector('.modal-share');
         const scrapboxLink = document.getElementById('pdf-modal-scrapbox');
         const closeButton = document.getElementById('pdf-modal-close');
+        const browseBar = document.getElementById('pdf-modal-browse-bar');
+        const thumbBar = document.getElementById('pdf-modal-thumb-bar');
+        const thumbToggleButton = document.getElementById('pdf-modal-thumb-toggle');
+        const thumbBackButton = document.getElementById('pdf-modal-thumb-back');
+        const thumbHeading = document.getElementById('pdf-modal-thumb-heading');
+        const thumbPanel = document.getElementById('pdf-modal-thumb-panel');
+        const thumbGrid = document.getElementById('pdf-modal-thumb-grid');
+        const thumbPrevButton = document.getElementById('pdf-modal-thumb-prev');
+        const thumbNextButton = document.getElementById('pdf-modal-thumb-next');
+        const thumbApplyButton = document.getElementById('pdf-modal-thumb-apply');
+        const thumbStatus = document.getElementById('pdf-modal-thumb-status');
         let currentPdfPath = '';
 
         function canUseWebShare() {
@@ -1171,6 +1303,7 @@
           frame.src = 'about:blank';
           modal.querySelector('.modal-share')?.removeAttribute('open');
           chaptersWrap?.removeAttribute('open');
+          resetThumbPanel();
           updateFullscreenButton();
         }
 
@@ -1233,6 +1366,324 @@
 
         let chaptersRequestToken = 0;
         let currentPageCount = null;
+
+        // --- ページを選ぶ（現在ページ周辺のサムネイル） ---
+        const THUMB_INITIAL_RADIUS = 10; // 初期表示: 現在ページの前後何ページ分を読み込むか
+        const THUMB_EXPAND_STEP = 10; // 「前/次の10ページを表示」1回あたりの拡張ページ数
+        let thumbRequestToken = 0;
+        let thumbLoadedPages = new Set();
+        let thumbSelectedPages = new Set();
+        let thumbLoadedMin = null; // ロード済み範囲の最小ページ番号（未初期化は null）
+        let thumbLoadedMax = null; // ロード済み範囲の最大ページ番号
+        let thumbAnchorPage = 1; // 起点にした「現在ページ」（見出し・マーカー表示用）
+        let thumbLoadingDirection = null; // 'prev' | 'next' | null（前後ボタンの多重クリック防止）
+
+        function extractPageFromUrl(url) {
+          const match = /#page=(\d+)/.exec(url || '');
+          return match ? parseInt(match[1], 10) : null;
+        }
+
+        // spec文字列の最初の閉区間の開始ページを返す。開区間のみ・空なら null
+        function firstPageOfSpec(spec) {
+          const closed = TsundokuPages.specToIntervals(spec || '').find((interval) => !interval.open);
+          return closed ? closed.start : null;
+        }
+
+        function setThumbStatus(message, isError = false) {
+          if (!thumbStatus) {
+            return;
+          }
+          thumbStatus.textContent = message || '';
+          thumbStatus.classList.toggle('is-error', Boolean(isError && message));
+        }
+
+        // 現在開いている本が既に資料内にあるかどうかで「反映」の意味が変わる
+        // （資料内: 即保存の置き換え / 資料外: ページ欄への反映のみ）。
+        // 呼び出し側は事前に TsundokuCart.ready を await しておくこと
+        function currentCartEntry() {
+          if (!currentPdfPath) {
+            return null;
+          }
+          return TsundokuCart.load().books[currentPdfPath] || null;
+        }
+
+        function updateThumbApplyButton() {
+          if (!thumbApplyButton) {
+            return;
+          }
+          const count = thumbSelectedPages.size;
+          const inCart = Boolean(currentCartEntry());
+          thumbApplyButton.textContent = inCart ? `${count}ページを資料に反映` : `${count}ページを選択`;
+          thumbApplyButton.disabled = count === 0;
+        }
+
+        function updateThumbRangeButtons() {
+          if (thumbPrevButton) {
+            const canGoPrev = thumbLoadedMin !== null && thumbLoadedMin > 1;
+            thumbPrevButton.hidden = thumbLoadedMin === null;
+            thumbPrevButton.disabled = !canGoPrev || thumbLoadingDirection !== null;
+          }
+          if (thumbNextButton) {
+            const canGoNext = thumbLoadedMax !== null && (!currentPageCount || thumbLoadedMax < currentPageCount);
+            thumbNextButton.hidden = thumbLoadedMax === null;
+            thumbNextButton.disabled = !canGoNext || thumbLoadingDirection !== null;
+          }
+        }
+
+        function enterThumbMode() {
+          if (!thumbPanel) {
+            return;
+          }
+          thumbPanel.hidden = false;
+          frame.hidden = true;
+          if (browseBar) {
+            browseBar.hidden = true;
+          }
+          if (thumbBar) {
+            thumbBar.hidden = false;
+          }
+          void ensureThumbPanelInitialized();
+        }
+
+        function exitThumbMode() {
+          if (!thumbPanel) {
+            return;
+          }
+          thumbPanel.hidden = true;
+          frame.hidden = false;
+          if (browseBar) {
+            browseBar.hidden = false;
+          }
+          if (thumbBar) {
+            thumbBar.hidden = true;
+          }
+        }
+
+        function resetThumbPanel() {
+          thumbRequestToken += 1; // 進行中のリクエストの結果を無効化する
+          thumbLoadedPages = new Set();
+          thumbSelectedPages = new Set();
+          thumbLoadedMin = null;
+          thumbLoadedMax = null;
+          thumbAnchorPage = 1;
+          thumbLoadingDirection = null;
+          if (thumbGrid) {
+            thumbGrid.innerHTML = '';
+            delete thumbGrid.dataset.initialized;
+          }
+          if (thumbHeading) {
+            thumbHeading.textContent = '';
+          }
+          exitThumbMode();
+          setThumbStatus('');
+          updateThumbApplyButton();
+          updateThumbRangeButtons();
+        }
+
+        function insertThumbCell(pageNumber, base64Data) {
+          const cell = document.createElement('label');
+          cell.className = 'modal-thumb-item';
+          cell.dataset.page = String(pageNumber);
+          if (thumbSelectedPages.has(pageNumber)) {
+            cell.classList.add('selected');
+          }
+          if (pageNumber === thumbAnchorPage) {
+            cell.classList.add('current-page');
+          }
+          const checkbox = document.createElement('input');
+          checkbox.type = 'checkbox';
+          checkbox.className = 'modal-thumb-checkbox';
+          checkbox.checked = thumbSelectedPages.has(pageNumber);
+          const img = document.createElement('img');
+          img.src = `data:image/jpeg;base64,${base64Data}`;
+          img.loading = 'lazy';
+          img.alt = `p.${pageNumber}`;
+          const badge = document.createElement('span');
+          badge.className = 'modal-thumb-check-badge';
+          badge.textContent = '✓';
+          badge.setAttribute('aria-hidden', 'true');
+          const pageLabel = document.createElement('span');
+          pageLabel.className = 'modal-thumb-page-label';
+          pageLabel.textContent = pageNumber === thumbAnchorPage ? `p.${pageNumber}（現在）` : `p.${pageNumber}`;
+          cell.appendChild(checkbox);
+          cell.appendChild(img);
+          cell.appendChild(badge);
+          cell.appendChild(pageLabel);
+          checkbox.addEventListener('change', () => {
+            if (checkbox.checked) {
+              thumbSelectedPages.add(pageNumber);
+              cell.classList.add('selected');
+            } else {
+              thumbSelectedPages.delete(pageNumber);
+              cell.classList.remove('selected');
+            }
+            updateThumbApplyButton();
+          });
+
+          // レスポンスの到着順はページ番号順と限らないため、挿入位置をページ番号で揃える
+          const target = [...thumbGrid.children].find((child) => Number(child.dataset.page) > pageNumber);
+          if (target) {
+            thumbGrid.insertBefore(cell, target);
+          } else {
+            thumbGrid.appendChild(cell);
+          }
+        }
+
+        // 成功可否を返す。呼び出し側は成否に応じて thumbLoadedMin/Max を扱う
+        async function loadThumbRange(start, end) {
+          if (!currentPdfPath || start > end) {
+            return false;
+          }
+          const clampedStart = Math.max(1, start);
+          const clampedEnd = currentPageCount ? Math.min(end, currentPageCount) : end;
+          if (clampedEnd < clampedStart) {
+            return false;
+          }
+          const token = thumbRequestToken;
+          setThumbStatus('サムネイルを読み込み中...');
+          try {
+            const response = await fetch(
+              `/pdf-thumbnails?${new URLSearchParams({ pdf_path: currentPdfPath, pages: `${clampedStart}-${clampedEnd}` })}`
+            );
+            if (token !== thumbRequestToken) {
+              return false;
+            }
+            if (!response.ok) {
+              setThumbStatus('サムネイルの取得に失敗しました', true);
+              return false;
+            }
+            const payload = await response.json();
+            if (token !== thumbRequestToken) {
+              return false;
+            }
+            for (const item of payload.pages) {
+              if (thumbLoadedPages.has(item.page)) {
+                continue;
+              }
+              thumbLoadedPages.add(item.page);
+              insertThumbCell(item.page, item.data);
+            }
+            thumbLoadedMin = thumbLoadedMin === null ? clampedStart : Math.min(thumbLoadedMin, clampedStart);
+            thumbLoadedMax = thumbLoadedMax === null ? clampedEnd : Math.max(thumbLoadedMax, clampedEnd);
+            setThumbStatus('');
+            return true;
+          } catch (error) {
+            if (token === thumbRequestToken) {
+              setThumbStatus('サムネイルの取得に失敗しました', true);
+            }
+            console.warn('Failed to load thumbnails', error);
+            return false;
+          }
+        }
+
+        // 既にロード済みの範囲を前後に広げる（置き換えではなく追加）
+        async function expandThumbRange(direction) {
+          if (thumbLoadingDirection || thumbLoadedMin === null || thumbLoadedMax === null) {
+            return;
+          }
+          thumbLoadingDirection = direction;
+          updateThumbRangeButtons();
+          if (direction === 'prev') {
+            const newStart = Math.max(1, thumbLoadedMin - THUMB_EXPAND_STEP);
+            if (newStart < thumbLoadedMin) {
+              await loadThumbRange(newStart, thumbLoadedMin - 1);
+            }
+          } else {
+            const newEnd = currentPageCount
+              ? Math.min(currentPageCount, thumbLoadedMax + THUMB_EXPAND_STEP)
+              : thumbLoadedMax + THUMB_EXPAND_STEP;
+            if (newEnd > thumbLoadedMax) {
+              await loadThumbRange(thumbLoadedMax + 1, newEnd);
+            }
+          }
+          thumbLoadingDirection = null;
+          updateThumbRangeButtons();
+        }
+
+        async function ensureThumbPanelInitialized() {
+          if (!thumbGrid || thumbGrid.dataset.initialized === '1') {
+            return;
+          }
+          thumbGrid.dataset.initialized = '1';
+          // cart の初回ロードが未完了だと「資料内の本」を誤って「新規」と
+          // 判定してしまう（空キャッシュのため）。判定前に必ず完了を待つ
+          await TsundokuCart.ready;
+
+          // 初期チェック状態: 既にこの本が資料に入っていればそのページを、
+          // なければモーダルのページ欄（検索起点等）の現在値を起点にする
+          const entry = currentCartEntry();
+          const baseSpec = entry ? entry.pages : pagesInput.value;
+          for (const interval of TsundokuPages.specToIntervals(baseSpec || '')) {
+            if (interval.open) {
+              continue; // 開区間はサムネイル一覧（有限枚数）では表現しない
+            }
+            for (let page = interval.start; page <= interval.end; page += 1) {
+              thumbSelectedPages.add(page);
+            }
+          }
+          updateThumbApplyButton();
+
+          // 起点ページ: ページ欄（検索結果起点ならヒットページ） → URL の #page= →
+          // 資料内の既存ページ → 1 の優先順位。画面に見えているページ欄を最優先する。
+          // URL の #page= は検索結果グループ化ロジックが選んだ代表ページであり、
+          // ページ欄に見えているヒット一覧（利用者が実際に見ている文脈）とズレることが
+          // あるため、ページ欄より後ろにする。workspace起点はページ欄が空なので
+          // 従来どおり URL → entry.pages の順にフォールバックする
+          thumbAnchorPage =
+            firstPageOfSpec(pagesInput.value) ||
+            extractPageFromUrl(frame.src) ||
+            firstPageOfSpec(entry ? entry.pages : '') ||
+            1;
+          if (thumbHeading) {
+            thumbHeading.textContent = `p.${thumbAnchorPage} 周辺のページを選ぶ`;
+          }
+          const start = Math.max(1, thumbAnchorPage - THUMB_INITIAL_RADIUS);
+          const end = thumbAnchorPage + THUMB_INITIAL_RADIUS;
+          await loadThumbRange(start, end);
+          updateThumbRangeButtons();
+        }
+
+        thumbToggleButton?.addEventListener('click', () => {
+          enterThumbMode();
+        });
+
+        thumbBackButton?.addEventListener('click', () => {
+          exitThumbMode();
+        });
+
+        thumbPrevButton?.addEventListener('click', () => {
+          void expandThumbRange('prev');
+        });
+
+        thumbNextButton?.addEventListener('click', () => {
+          void expandThumbRange('next');
+        });
+
+        thumbApplyButton?.addEventListener('click', async () => {
+          // cart初回ロード未完了だと資料内の本を誤って「新規」判定してしまうため待つ
+          await TsundokuCart.ready;
+          const sortedPages = [...thumbSelectedPages].sort((a, b) => a - b);
+          const newSpec = TsundokuPages.pagesToSpec(sortedPages);
+          // ページ欄は常に同期する。資料内の本の場合にここを省略すると、反映後に
+          // 「資料に追加」を押した際、古いページ欄の値がマージされて反映前の
+          // 状態が復活してしまう（追加＝マージ、反映＝置き換え、の役割分担が壊れる）
+          pagesInput.value = newSpec;
+          pagesInput.dispatchEvent(new Event('input'));
+          // save() は load() で得た同一の cart オブジェクトをミューテートしてから
+          // 渡す必要があるため、判定用の currentCartEntry() ではなくここで直接取得する
+          const cart = TsundokuCart.load();
+          const entry = currentPdfPath ? cart.books[currentPdfPath] : null;
+          if (entry) {
+            // 資料棚起点（既にこの本が資料内にある）: そのページ範囲を直接置き換えて即保存
+            entry.pages = newSpec;
+            TsundokuCart.save(cart);
+            setThumbStatus(`${sortedPages.length}ページを資料に反映しました`);
+            document.dispatchEvent(new CustomEvent('tsundoku-cart-updated'));
+          } else {
+            // 検索結果起点（まだ資料にない）: ページ欄の反映のみ。「資料に追加」で確定する
+            setThumbStatus(`${sortedPages.length}ページを選択しました`);
+          }
+        });
 
         function clearChapterSelection() {
           if (chaptersMenu) {
@@ -1403,6 +1854,7 @@
         }
 
         function openModal(url, label, scrapboxUrl, pdfPath, pages) {
+          resetThumbPanel();
           frame.src = url;
           openLink.href = url;
           title.textContent = label || 'PDF';
@@ -1412,6 +1864,9 @@
           if (addWorkspaceButton) {
             // 検索・資料棚どちらの起点でも、PDFパスが分かるモーダルなら資料へ追加できる
             addWorkspaceButton.hidden = !currentPdfPath;
+          }
+          if (thumbToggleButton) {
+            thumbToggleButton.hidden = !currentPdfPath;
           }
           setExportLink();
           void loadChapters(currentPdfPath);
