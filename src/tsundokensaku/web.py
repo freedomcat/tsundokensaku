@@ -134,6 +134,17 @@ templates.env.globals["pdf_export_save_dir"] = get_pdf_export_save_dir
 templates.env.globals["is_pdf_export_save_dir_configured"] = lambda: get_pdf_export_save_dir() is not None
 
 
+DEMO_MODE_UPLOAD_MESSAGE = "Upload is disabled in demo mode."
+DEMO_MODE_SETTING_MESSAGE = "デモモードのため無効です"
+
+
+def is_demo_mode() -> bool:
+    return os.environ.get("DEMO_MODE", "").strip().lower() == "true"
+
+
+templates.env.globals["is_demo_mode"] = is_demo_mode
+
+
 def get_metadata() -> dict[str, BookMetadata]:
     return load_metadata_by_pdf_stem(find_export_json(PROJECT_ROOT))
 
@@ -1306,6 +1317,9 @@ def settings_info_page(request: Request, message: str = "") -> HTMLResponse:
 
 @app.get("/settings/scrapbox-import")
 def import_scrapbox_json(export_json_path: str = "") -> RedirectResponse:
+    if is_demo_mode():
+        message = quote(DEMO_MODE_SETTING_MESSAGE)
+        return RedirectResponse(url=f"/settings?message={message}", status_code=303)
     db_path = get_db_path()
     connection = connect(db_path)
     initialize(connection)
@@ -1328,6 +1342,8 @@ def import_scrapbox_json(export_json_path: str = "") -> RedirectResponse:
 
 @app.post("/settings/scrapbox-upload")
 async def upload_scrapbox_json(request: Request, filename: str = "") -> PlainTextResponse:
+    if is_demo_mode():
+        return PlainTextResponse(DEMO_MODE_UPLOAD_MESSAGE, status_code=403)
     if not filename.strip():
         return PlainTextResponse("filename が必要です", status_code=400)
     if not filename.lower().endswith(".json"):
@@ -1347,8 +1363,11 @@ async def upload_scrapbox_json(request: Request, filename: str = "") -> PlainTex
 
 @app.get("/settings/pdf-import")
 def import_pdf_directory(source_dir: str = "") -> RedirectResponse:
-    books_dir = get_books_dir()
     target = "/settings"
+    if is_demo_mode():
+        message = quote(DEMO_MODE_SETTING_MESSAGE)
+        return RedirectResponse(url=f"{target}?message={message}", status_code=303)
+    books_dir = get_books_dir()
     source = Path(source_dir).expanduser() if source_dir.strip() else None
     if source is None:
         message = quote("PDF の取り込み元フォルダを指定してください")
@@ -1368,6 +1387,8 @@ def import_pdf_directory(source_dir: str = "") -> RedirectResponse:
 
 @app.post("/settings/pdf-upload")
 async def upload_pdf(request: Request, filename: str = "", relative_path: str = "") -> PlainTextResponse:
+    if is_demo_mode():
+        return PlainTextResponse(DEMO_MODE_UPLOAD_MESSAGE, status_code=403)
     books_dir = get_books_dir()
     if not filename.strip():
         return PlainTextResponse("filename が必要です", status_code=400)
@@ -1410,6 +1431,9 @@ def settings_progress() -> JSONResponse:
 
 @app.post("/settings/pdf-export-save-dir")
 def update_pdf_export_save_dir(save_dir: str = Form(default="")) -> RedirectResponse:
+    if is_demo_mode():
+        message = quote(DEMO_MODE_SETTING_MESSAGE)
+        return RedirectResponse(url=f"/settings?message={message}", status_code=303)
     normalized = save_dir.strip()
     update_env_setting(PDF_EXPORT_SAVE_DIR_ENV, normalized)
     message = quote("PDF切り出し保存先を保存しました" if normalized else "PDF切り出し保存先を未設定にしました")

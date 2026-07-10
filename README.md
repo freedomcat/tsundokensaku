@@ -91,8 +91,38 @@ docker compose up --build
 | `WEB_PORT` | `8000` | Web UIの公開ポート |
 | `SCRAPBOX_BASE_URL` | 空 | Scrapbox/Cosense連携用URL |
 | `SCRAPBOX_EXPORT_JSON` | 空 | Scrapbox/CosenseエクスポートJSONのパス。例: `./shino-books_imported.json` |
+| `DEMO_MODE` | `false` | `true` にすると、外部から書き込み・パス指定を伴う機能をすべて無効化します（UIは非表示 + APIも拒否）。Cloudflare Tunnel等で一時的に外部公開するときに使います。 |
 
 Scrapbox/Cosense関連を設定しない場合、メモ検索やScrapboxリンク表示は使わずにPDF検索だけで動きます。
+
+### デモモードでの外部公開について
+
+`DEMO_MODE=true` で無効化される機能:
+
+- PDF/scrapbox.jsonのアップロード（`/settings/pdf-upload`, `/settings/scrapbox-upload`） → 403 `"Upload is disabled in demo mode."`
+- フォルダからまとめて追加（`/settings/pdf-import`）→ サーバー側の任意ローカルパスを指定してPDFをコピーできる機能のため対象
+- scrapbox.jsonインポート（`/settings/scrapbox-import`）→ 同様にサーバー側の任意パスを指定できる機能のため対象
+- PDF切り出し保存先の変更（`/settings/pdf-export-save-dir`）→ `.env` に任意パスを書き込める機能のため対象
+
+いずれも「第三者がサーバー側の任意パスを指定してファイルシステムを操作できる」という同じ理由でブロック対象にしている。上記いずれもRedirectResponse + `"デモモードのため無効です"` メッセージで、実際の処理（コピー・DB同期・`.env`書き込み）は実行されない。
+
+動作確認手順:
+
+```bash
+# 通常モード（デフォルト）: 全機能が使える
+docker compose up -d app
+curl -s http://localhost:8000/settings | grep pdf-dropzone   # ドロップゾーンあり
+curl -s -X POST "http://localhost:8000/settings/pdf-upload?filename=test.pdf" --data-binary $'%PDF-1.4\ndummy'
+# -> 201, /data/books/test.pdf が保存される
+
+# デモモード: 上記すべてが無効
+DEMO_MODE=true docker compose up -d app
+curl -s http://localhost:8000/settings | grep "デモモードのため"   # 案内文のみ、フォーム類は非表示
+curl -s -o /dev/null -w "%{http_code}\n" -X POST "http://localhost:8000/settings/pdf-upload?filename=test.pdf" --data-binary $'%PDF-1.4\ndummy'
+# -> 403 "Upload is disabled in demo mode."
+curl -s -D - -o /dev/null "http://localhost:8000/settings/pdf-import?source_dir=/etc" | grep -i location
+# -> /settings?message=... (デモモードのため無効です)
+```
 
 ## Web UIでできること
 

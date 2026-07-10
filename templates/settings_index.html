@@ -31,80 +31,100 @@
     <section class="card">
       <h2 style="margin-top: 0;">PDFを追加</h2>
       <p>保存先: <code>{{ books_dir }}</code></p>
-      <input id="pdf-file-input" type="file" accept=".pdf,application/pdf" multiple webkitdirectory directory hidden>
-      <div
-        id="pdf-dropzone"
-        style="border: 1px dashed var(--border-subtle); border-radius: 8px; padding: 18px; background: rgba(255,255,255,0.32); cursor: pointer;"
-        tabindex="0"
-        role="button"
-        aria-label="PDF をドラッグ&ドロップしてインポート"
-      >
-        <div style="font-weight: 600;">① PDFをドラッグ&amp;ドロップ</div>
-        <div class="muted" style="margin-top: 6px;">またはクリックして選択</div>
-        <div class="muted" id="pdf-upload-status" style="margin-top: 10px;">待機中</div>
-      </div>
-      <div id="pdf-upload-list" class="muted" style="margin-top: 10px;"></div>
+      {% if is_demo_mode() %}
+        <p class="ws-error" id="pdf-upload-disabled-notice">デモモードのため、アップロードは無効化しています。</p>
+      {% else %}
+        <input id="pdf-file-input" type="file" accept=".pdf,application/pdf" multiple webkitdirectory directory hidden>
+        <div
+          id="pdf-dropzone"
+          style="border: 1px dashed var(--border-subtle); border-radius: 8px; padding: 18px; background: rgba(255,255,255,0.32); cursor: pointer;"
+          tabindex="0"
+          role="button"
+          aria-label="PDF をドラッグ&ドロップしてインポート"
+        >
+          <div style="font-weight: 600;">① PDFをドラッグ&amp;ドロップ</div>
+          <div class="muted" style="margin-top: 6px;">またはクリックして選択</div>
+          <div class="muted" id="pdf-upload-status" style="margin-top: 10px;">待機中</div>
+        </div>
+        <div id="pdf-upload-list" class="muted" style="margin-top: 10px;"></div>
+      {% endif %}
       <div style="margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--border-subtle);">
         <h3 style="margin: 0 0 8px 0; font-size: 1rem;">② フォルダからまとめて追加</h3>
-        <form class="search" action="/settings/pdf-import" method="get">
-          <input
-            type="search"
-            name="source_dir"
-            value="{{ '' }}"
-            placeholder="/path/to/pdf-folder"
-            aria-label="PDF取り込み元フォルダ"
-          >
-          <button class="primary" type="submit">追加する</button>
-        </form>
+        {% if is_demo_mode() %}
+          <p class="ws-error" id="pdf-import-disabled-notice">デモモードのため、無効化しています。</p>
+        {% else %}
+          <form class="search" action="/settings/pdf-import" method="get">
+            <input
+              type="search"
+              name="source_dir"
+              value="{{ '' }}"
+              placeholder="/path/to/pdf-folder"
+              aria-label="PDF取り込み元フォルダ"
+            >
+            <button class="primary" type="submit">追加する</button>
+          </form>
+        {% endif %}
       </div>
     </section>
 
     <section class="card">
       <h2 style="margin-top: 0;">scrapbox.json インポート</h2>
       <p class="muted">ScrapboxのメモとKindle本情報を検索対象に追加・更新します。</p>
-      <input id="scrapbox-file-input" type="file" accept=".json,application/json" hidden>
-      <div
-        id="scrapbox-dropzone"
-        style="border: 1px dashed var(--border-subtle); border-radius: 8px; padding: 18px; background: rgba(255,255,255,0.32); cursor: pointer;"
-        tabindex="0"
-        role="button"
-        aria-label="scrapbox.json をドラッグ&ドロップしてインポート"
-      >
-        <div style="font-weight: 600;">scrapbox.json をここにドロップ</div>
-        <div class="muted" style="margin-top: 6px;">またはクリックして選択</div>
-        <div class="muted" id="scrapbox-upload-status" style="margin-top: 10px;">待機中</div>
-      </div>
-      <div id="scrapbox-upload-list" class="muted" style="margin-top: 10px;"></div>
-      <p class="muted" style="margin-top: 12px;">空欄なら最近の `shino-books_*.json` を使います。</p>
-      <form class="search" action="/settings/scrapbox-import" method="get">
-        <input
-          type="search"
-          name="export_json_path"
-          value="{{ default_export_json or '' }}"
-          placeholder="/path/to/shino-books_20260628_000000.json"
-          aria-label="Scrapbox export JSON"
+      {% if is_demo_mode() %}
+        <p class="ws-error" id="scrapbox-upload-disabled-notice">デモモードのため、アップロードは無効化しています。</p>
+      {% else %}
+        <input id="scrapbox-file-input" type="file" accept=".json,application/json" hidden>
+        <div
+          id="scrapbox-dropzone"
+          style="border: 1px dashed var(--border-subtle); border-radius: 8px; padding: 18px; background: rgba(255,255,255,0.32); cursor: pointer;"
+          tabindex="0"
+          role="button"
+          aria-label="scrapbox.json をドラッグ&ドロップしてインポート"
         >
-        <button class="primary" type="submit">メモとKindleを取り込む</button>
-      </form>
+          <div style="font-weight: 600;">scrapbox.json をここにドロップ</div>
+          <div class="muted" style="margin-top: 6px;">またはクリックして選択</div>
+          <div class="muted" id="scrapbox-upload-status" style="margin-top: 10px;">待機中</div>
+        </div>
+        <div id="scrapbox-upload-list" class="muted" style="margin-top: 10px;"></div>
+      {% endif %}
+      {% if is_demo_mode() %}
+        <p class="ws-error" id="scrapbox-import-disabled-notice">デモモードのため、無効化しています。</p>
+      {% else %}
+        <p class="muted" style="margin-top: 12px;">空欄なら最近の `shino-books_*.json` を使います。</p>
+        <form class="search" action="/settings/scrapbox-import" method="get">
+          <input
+            type="search"
+            name="export_json_path"
+            value="{{ default_export_json or '' }}"
+            placeholder="/path/to/shino-books_20260628_000000.json"
+            aria-label="Scrapbox export JSON"
+          >
+          <button class="primary" type="submit">メモとKindleを取り込む</button>
+        </form>
+      {% endif %}
     </section>
 
     <section class="card">
       <h2 style="margin-top: 0;">PDF切り出し保存先</h2>
       <p class="muted">切り出したPDFをブラウザでダウンロードせず、サーバー側から直接保存するフォルダです。</p>
-      <form class="search" action="/settings/pdf-export-save-dir" method="post">
-        <input
-          type="search"
-          name="save_dir"
-          value="{{ pdf_export_save_dir or '' }}"
-          placeholder="/path/to/NotebookLM-folder"
-          aria-label="PDF切り出し保存先フォルダ"
-        >
-        <button class="primary" type="submit">保存する</button>
-      </form>
-      {% if pdf_export_save_dir %}
-        <p class="muted" style="margin-top: 10px;">現在の保存先: <code>{{ pdf_export_save_dir }}</code></p>
+      {% if is_demo_mode() %}
+        <p class="ws-error" id="pdf-export-save-dir-disabled-notice">デモモードのため、無効化しています。</p>
       {% else %}
-        <p class="muted" style="margin-top: 10px;">未設定の場合、PDFモーダルの「指定フォルダへ保存」は無効になります。</p>
+        <form class="search" action="/settings/pdf-export-save-dir" method="post">
+          <input
+            type="search"
+            name="save_dir"
+            value="{{ pdf_export_save_dir or '' }}"
+            placeholder="/path/to/NotebookLM-folder"
+            aria-label="PDF切り出し保存先フォルダ"
+          >
+          <button class="primary" type="submit">保存する</button>
+        </form>
+        {% if pdf_export_save_dir %}
+          <p class="muted" style="margin-top: 10px;">現在の保存先: <code>{{ pdf_export_save_dir }}</code></p>
+        {% else %}
+          <p class="muted" style="margin-top: 10px;">未設定の場合、PDFモーダルの「指定フォルダへ保存」は無効になります。</p>
+        {% endif %}
       {% endif %}
     </section>
 

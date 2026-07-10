@@ -1,9 +1,12 @@
+import asyncio
+import os
 import tempfile
 import unittest
 import zipfile
 from io import BytesIO
 from unittest.mock import patch
 from pathlib import Path
+from urllib.parse import unquote
 import json
 
 from pypdf import PdfReader, PdfWriter
@@ -26,10 +29,13 @@ from tsundokensaku.web import (
     export_pdf,
     group_pdf_results,
     highlight_query,
+    import_pdf_directory,
     import_pdfs_from_directory,
+    import_scrapbox_json,
     pdf_outline,
     import_scrapbox_export_bytes,
     format_indexed_at,
+    is_demo_mode,
     normalize_search_group,
     normalize_search_match,
     pdf_thumbnails,
@@ -37,6 +43,9 @@ from tsundokensaku.web import (
     save_pdf_export_to_configured_dir,
     save_uploaded_pdf,
     search_pages,
+    update_pdf_export_save_dir,
+    upload_pdf,
+    upload_scrapbox_json,
     workspace_page,
 )
 from tsundokensaku.database import connect, initialize, upsert_book
@@ -902,6 +911,87 @@ class PackApiTest(unittest.TestCase):
                 with self.assertRaises(HTTPException) as ctx:
                     api_export_pack(created["id"], format="pdf")
                 self.assertEqual(ctx.exception.status_code, 400)
+
+
+class _FakeUploadRequest:
+    """request.body() だけを使う upload エンドポイント用の最小スタブ。"""
+
+    def __init__(self, body: bytes) -> None:
+        self._body = body
+
+    async def body(self) -> bytes:
+        return self._body
+
+
+class DemoModeUploadTest(unittest.TestCase):
+    def test_is_demo_mode_reads_env_var_case_insensitively(self) -> None:
+        with patch.dict(os.environ, {"DEMO_MODE": "True"}):
+            self.assertTrue(is_demo_mode())
+        with patch.dict(os.environ, {"DEMO_MODE": "false"}):
+            self.assertFalse(is_demo_mode())
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertFalse(is_demo_mode())
+
+    def test_pdf_upload_returns_403_in_demo_mode(self) -> None:
+        with patch.dict(os.environ, {"DEMO_MODE": "true"}):
+            # DEMO_MODE チェックは request.body() を読む前に早期returnするため、
+            # request には未使用のダミーを渡すだけでよい
+            response = asyncio.run(upload_pdf(request=None, filename="a.pdf"))
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.body, b"Upload is disabled in demo mode.")
+
+    def test_scrapbox_upload_returns_403_in_demo_mode(self) -> None:
+        with patch.dict(os.environ, {"DEMO_MODE": "true"}):
+            response = asyncio.run(upload_scrapbox_json(request=None, filename="a.json"))
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.body, b"Upload is disabled in demo mode.")
+
+    def test_pdf_upload_succeeds_when_demo_mode_disabled(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            books_dir = Path(temp_dir) / "books"
+            books_dir.mkdir()
+            with patch("tsundokensaku.web.get_books_dir", return_value=books_dir), \
+                    patch.dict(os.environ, {"DEMO_MODE": "false"}):
+                request = _FakeUploadRequest(b"%PDF-1.4 dummy")
+                response = asyncio.run(upload_pdf(request=request, filename="sample.pdf"))
+            self.assertEqual(response.status_code, 201)
+            self.assertTrue((books_dir / "sample.pdf").exists())
+
+    def test_pdf_import_directory_blocked_in_demo_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source_dir = Path(temp_dir) / "source"
+            source_dir.mkdir()
+            (source_dir / "a.pdf").write_bytes(b"%PDF-1.4 dummy")
+            books_dir = Path(temp_dir) / "books"
+            books_dir.mkdir()
+            with patch("tsundokensaku.web.get_books_dir", return_value=books_dir), \
+                    patch.dict(os.environ, {"DEMO_MODE": "true"}):
+                response = import_pdf_directory(source_dir=str(source_dir))
+            self.assertEqual(response.status_code, 303)
+            self.assertIn("デモモードのため無効です", unquote(response.headers["location"]))
+            # 取り込み処理自体が実行されていないこと（コピーされていない）を確認
+            self.assertFalse((books_dir / "a.pdf").exists())
+
+    def test_scrapbox_import_blocked_in_demo_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "index.db"
+            with patch("tsundokensaku.web.get_db_path", return_value=db_path), \
+                    patch.dict(os.environ, {"DEMO_MODE": "true"}):
+                response = import_scrapbox_json(export_json_path="")
+            self.assertEqual(response.status_code, 303)
+            self.assertIn("デモモードのため無効です", unquote(response.headers["location"]))
+            # DB接続すら発生していないこと（db_path のファイルが作られない）を確認
+            self.assertFalse(db_path.exists())
+
+    def test_update_pdf_export_save_dir_blocked_in_demo_mode(self) -> None:
+        # update_env_setting はデフォルト引数で実 .env のパスを束縛しているため、
+        # ここではパスをpatchせず関数呼び出し自体が起きないことで安全に検証する
+        with patch("tsundokensaku.web.update_env_setting") as mock_update_env, \
+                patch.dict(os.environ, {"DEMO_MODE": "true"}):
+            response = update_pdf_export_save_dir(save_dir="/tmp/somewhere")
+        self.assertEqual(response.status_code, 303)
+        self.assertIn("デモモードのため無効です", unquote(response.headers["location"]))
+        mock_update_env.assert_not_called()
 
 
 if __name__ == "__main__":
