@@ -21,6 +21,30 @@
 | 実行例 | `./scripts/dev.sh index --books-dir /books/tech --db data/index.db` |
 | 想定シーン | ローカルにPython環境を作らず、開発中のコードをコンテナで試したいとき |
 
+### デモ公開支援
+
+#### cloudflare_tunnel.sh
+
+| | |
+|---|---|
+| 用途 | cloudflared Quick Tunnel（trycloudflare.com）を落ちても自動再起動しながら動かす監視ループ |
+| 実行例 | `./scripts/cloudflare_tunnel.sh` |
+| 想定シーン | Cloudflare Tunnelで一時的に外部公開するデモ環境の可用性を上げたいとき |
+
+Quick Tunnelは一時利用向けの仕様で接続が切れることがあります。落ちても5秒後に再起動し、最新URLを `data/cloudflared_url.txt` に書き出します。再起動のたびに発行URLが変わる点はQuick Tunnelの仕様上避けられません（固定URLが要る場合はNamed Tunnelの利用を検討してください）。
+
+`.env` に `GMAIL_ADDRESS` / `GMAIL_APP_PASSWORD` / `NOTIFY_EMAIL_TO` を設定していると、URLが変わるたびに `notify_email.py` 経由で通知メールを送ります。未設定ならTunnel自体は通知なしで動きます。外部公開前に `DEMO_MODE=true` の設定も合わせて確認してください（ルートREADMEの「デモモードでの外部公開について」参照）。
+
+#### notify_email.py
+
+| | |
+|---|---|
+| 用途 | Gmail SMTP経由で通知メールを1通送るだけの薄いスクリプト |
+| 実行例 | `python3 scripts/notify_email.py "件名" "本文"` |
+| 想定シーン | `cloudflare_tunnel.sh` からURL変更を通知するとき。単独でも呼び出せます |
+
+`GMAIL_APP_PASSWORD` は通常のGmailパスワードではなく、Googleアカウントの「アプリパスワード」（2段階認証が前提）を発行して使います。
+
 ### PDF操作
 
 #### export_pdf_pages.py
