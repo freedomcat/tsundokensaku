@@ -21,6 +21,12 @@ def build_pack_zip_filename(pack_name: str, exported_at: datetime) -> str:
 
 
 def _count_pages_in_spec(page_spec: str) -> int:
+    """spec文字列のページ数を概算する（ファイル名短縮の表示用）。
+
+    pdf_export.parse_page_selection は実ページ数を超える番号があると
+    ValueError を送出する検証込みの実装で、ここでは検証不要な概算件数
+    だけが欲しいため使わず、専用の簡易カウントにしている。
+    """
     total = 0
     for part in page_spec.split(","):
         chunk = part.strip()
