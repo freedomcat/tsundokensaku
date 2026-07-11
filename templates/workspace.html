@@ -201,6 +201,12 @@
       const card = document.createElement('details');
       card.className = 'ws-book';
       card.open = !entry.collapsed;
+      if (entry.id !== undefined && entry.id !== null) {
+        card.dataset.itemId = String(entry.id);
+      }
+      if (entry.clientId !== undefined && entry.clientId !== null) {
+        card.dataset.clientId = String(entry.clientId);
+      }
 
       const summary = document.createElement('summary');
       const title = document.createElement('span');
