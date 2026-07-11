@@ -21,6 +21,15 @@
 | 実行例 | `./scripts/dev.sh index --books-dir /books/tech --db data/index.db` |
 | 想定シーン | ローカルにPython環境を作らず、開発中のコードをコンテナで試したいとき |
 
+#### benchmark_thumbnail.py
+
+| | |
+|---|---|
+| 用途 | サムネイル生成処理のパフォーマンス測定（レンダリング時間、画質ごとのデータサイズ）を行う |
+| 実行例 | `docker compose run --rm --entrypoint python app /app/benchmark_thumbnail.py` |
+| 想定シーン | サムネイルのズーム倍率や品質の調整、PyMuPDFなどのライブラリ更新時にパフォーマンスやファイルサイズの変動を定量的に比較したいとき |
+
+
 ### デモ公開支援
 
 #### cloudflare_tunnel.sh
