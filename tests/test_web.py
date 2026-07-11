@@ -1061,6 +1061,96 @@ class PackApiTest(unittest.TestCase):
                     api_export_pack(created["id"], format="pdf")
                 self.assertEqual(ctx.exception.status_code, 400)
 
+    def test_pack_api_export_zip_supports_duplicate_items(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            db_path = root / "index.db"
+            books_dir = root / "books"
+            books_dir.mkdir(parents=True)
+
+            # 10ページのPDFを作成
+            writer = PdfWriter()
+            for _ in range(10):
+                writer.add_blank_page(width=72, height=72)
+            with (books_dir / "a.pdf").open("wb") as handle:
+                writer.write(handle)
+
+            with patch("tsundokensaku.web.get_db_path", return_value=db_path), \
+                    patch("tsundokensaku.web.get_books_dir", return_value=books_dir):
+                created = self._payload(api_create_pack({"name": "重複資料"}))
+                
+                # 同一 pdf_path (a.pdf) を2件、異なるページ範囲で追加
+                items = [
+                    {"pdf_path": "a.pdf", "title": "本Aのパート1", "pages": "1-3", "collapsed": False, "position": 0},
+                    {"pdf_path": "a.pdf", "title": "本Aのパート2", "pages": "5-8", "collapsed": False, "position": 1},
+                ]
+                from tsundokensaku.web import api_replace_pack_items
+                self._payload(api_replace_pack_items(created["id"], {"items": items}))
+
+                # エクスポートAPI呼び出し
+                response = api_export_pack(created["id"], format="pdf")
+
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.media_type, "application/zip")
+
+                with zipfile.ZipFile(BytesIO(response.body)) as archive:
+                    names = archive.namelist()
+                    # 2件が別ファイルとしてZIPに含まれ、衝突せずに出力順 (position順) になっている
+                    self.assertEqual(names[0], "manifest.md")
+                    self.assertEqual(names[1], "01_本Aのパート1_p1-3.pdf")
+                    self.assertEqual(names[2], "02_本Aのパート2_p5-8.pdf")
+
+                    # manifest の内容検証
+                    manifest = archive.read("manifest.md").decode("utf-8")
+                    self.assertIn("重複資料", manifest)
+                    self.assertIn("本Aのパート1", manifest)
+                    self.assertIn("本Aのパート2", manifest)
+
+                    # 1件目のPDF（p.1-3 = 3ページ）
+                    reader1 = PdfReader(BytesIO(archive.read(names[1])))
+                    self.assertEqual(len(reader1.pages), 3)
+
+                    # 2件目のPDF（p.5-8 = 4ページ）
+                    reader2 = PdfReader(BytesIO(archive.read(names[2])))
+                    self.assertEqual(len(reader2.pages), 4)
+
+    def test_pack_api_export_zip_handles_missing_file_and_invalid_pages(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            db_path = root / "index.db"
+            books_dir = root / "books"
+            books_dir.mkdir(parents=True)
+
+            with patch("tsundokensaku.web.get_db_path", return_value=db_path), \
+                    patch("tsundokensaku.web.get_books_dir", return_value=books_dir):
+                created = self._payload(api_create_pack({"name": "エラー資料"}))
+                
+                # 1. 存在しない PDF
+                items_missing = [
+                    {"pdf_path": "non_existent.pdf", "title": "消えた本", "pages": "1-3", "collapsed": False, "position": 0},
+                ]
+                from tsundokensaku.web import api_replace_pack_items
+                self._payload(api_replace_pack_items(created["id"], {"items": items_missing}))
+
+                with self.assertRaises(HTTPException) as ctx:
+                    api_export_pack(created["id"], format="pdf")
+                self.assertEqual(ctx.exception.status_code, 404)
+
+                # 2. 存在するPDFだがページ範囲が不正
+                writer = PdfWriter()
+                writer.add_blank_page(width=72, height=72)
+                with (books_dir / "valid.pdf").open("wb") as handle:
+                    writer.write(handle)
+
+                items_invalid_pages = [
+                    {"pdf_path": "valid.pdf", "title": "本A", "pages": "99-100", "collapsed": False, "position": 0},
+                ]
+                self._payload(api_replace_pack_items(created["id"], {"items": items_invalid_pages}))
+
+                with self.assertRaises(HTTPException) as ctx:
+                    api_export_pack(created["id"], format="pdf")
+                self.assertEqual(ctx.exception.status_code, 400)
+
 
 class _FakeUploadRequest:
     """request.body() だけを使う upload エンドポイント用の最小スタブ。"""

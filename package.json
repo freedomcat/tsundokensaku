@@ -1,6 +1,6 @@
 {
   "scripts": {
-    "test:ui": "playwright test"
+    "test:ui": "playwright test --workers=1"
   },
   "devDependencies": {
     "@playwright/test": "^1.55.0"

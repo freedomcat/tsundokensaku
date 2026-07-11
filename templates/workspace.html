@@ -500,11 +500,12 @@
         return;
       }
       const cart = TsundokuCart.load();
-      const entries = Object.entries(cart.books);
-      if (entries.length === 0) {
+      const items = Array.isArray(cart.items) ? cart.items : [];
+      if (items.length === 0) {
         return;
       }
-      for (const [path, entry] of entries) {
+      for (const entry of items) {
+        const path = entry.pdf_path;
         const outline = outlineCache.get(path);
         const error = entry.pages.trim()
           ? TsundokuPages.validatePageSpec(entry.pages, outline ? outline.pageCount : null)

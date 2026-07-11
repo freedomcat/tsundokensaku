@@ -185,6 +185,11 @@ test.describe('Search multiple additions (Phase 3A E2E)', () => {
     // モーダルを閉じる
     await page.locator('#pdf-modal-close').click();
 
+    // サーバーへの保存が完了するのを待つ
+    await page.evaluate(async () => {
+      await window.TsundokuCart.flushPendingSave();
+    });
+
     // 資料棚で、1枚目のカードの表示範囲のみが更新され、2枚目のカードが変更されていないことを確認
     // （かつ、編集操作によってカードの件数が増えていないことも確認）
     await expect(cards).toHaveCount(2);
@@ -198,5 +203,70 @@ test.describe('Search multiple additions (Phase 3A E2E)', () => {
     await expect(cards).toHaveCount(2);
     expect(await cards.nth(0).locator('.ws-book-range').textContent()).toContain('3ページ');
     expect(await cards.nth(1).locator('.ws-book-range').textContent()).toContain('6ページ');
+
+    // 9. PDF一式を書き出すボタンをクリックしてダウンロードする
+    const downloadPromise = page.waitForEvent('download');
+    await page.locator('#ws-export-pdf').click();
+    const download = await downloadPromise;
+
+    // 一時フォルダに保存
+    const downloadPath = await download.path();
+    expect(downloadPath).not.toBeNull();
+
+    // Node.js の child_process を使って ZIP 内のファイル名と各PDFのページ数を検証する
+    const { execSync } = require('child_process');
+    const fs = require('fs');
+    const path = require('path');
+
+    // unzip -l でファイル名一覧を取得
+    const fileList = execSync(`unzip -l "${downloadPath}"`).toString();
+    console.log("ZIP FILE LIST:\n", fileList);
+
+    // 期待するファイルが含まれていることを確認
+    // 連番_書籍タイトル_pページ範囲.pdf
+    expect(fileList).toContain('manifest.md');
+    expect(fileList).toContain('01_1_伽藍方式とバザール方式_p.1_p.2_p.3_p.10_15件_p2-4.pdf');
+    expect(fileList).toContain('02_1_伽藍方式とバザール方式_p.1_p.2_p.3_p.10_15件_p10-15.pdf');
+
+    // 実際に解凍して PDF のページ数を検証する
+    const extractDir = path.join(path.dirname(downloadPath), 'extracted_zip');
+    if (fs.existsSync(extractDir)) {
+      fs.rmSync(extractDir, { recursive: true });
+    }
+    fs.mkdirSync(extractDir);
+    execSync(`unzip "${downloadPath}" -d "${extractDir}"`);
+
+    // 01_...pdf = 2-4 (3ページ)
+    const pdfPath1 = path.join(extractDir, '01_1_伽藍方式とバザール方式_p.1_p.2_p.3_p.10_15件_p2-4.pdf');
+    const pdfBuffer1 = fs.readFileSync(pdfPath1);
+    const pdfText1 = pdfBuffer1.toString('binary');
+    const pageCount1 = (pdfText1.match(/\/Type\s*\/Page\b/g) || []).length;
+    expect(pageCount1).toBe(3);
+
+    // 02_...pdf = 10-15 (6ページ)
+    const pdfPath2 = path.join(extractDir, '02_1_伽藍方式とバザール方式_p.1_p.2_p.3_p.10_15件_p10-15.pdf');
+    const pdfBuffer2 = fs.readFileSync(pdfPath2);
+    const pdfText2 = pdfBuffer2.toString('binary');
+    const pageCount2 = (pdfText2.match(/\/Type\s*\/Page\b/g) || []).length;
+    expect(pageCount2).toBe(6);
+
+    // 片方を削除した場合、残った項目だけが出力される
+    // 1件目のカード（2-4 ページ）を削除
+    await cards.nth(0).locator('button:has-text("削除")').click();
+    await page.evaluate(async () => {
+      await window.TsundokuCart.flushPendingSave();
+    });
+    await expect(cards).toHaveCount(1);
+
+    // 再度エクスポート
+    const downloadPromise2 = page.waitForEvent('download');
+    await page.locator('#ws-export-pdf').click();
+    const download2 = await downloadPromise2;
+    const downloadPath2 = await download2.path();
+
+    const fileList2 = execSync(`unzip -l "${downloadPath2}"`).toString();
+    expect(fileList2).toContain('manifest.md');
+    expect(fileList2).not.toContain('01_1_伽藍方式とバザール方式_p.1_p.2_p.3_p.10_15件_p2-4.pdf');
+    expect(fileList2).toContain('01_1_伽藍方式とバザール方式_p.1_p.2_p.3_p.10_15件_p10-15.pdf'); // 残ったのが01番になる
   });
 });
