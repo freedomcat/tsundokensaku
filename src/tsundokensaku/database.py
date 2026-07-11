@@ -1155,47 +1155,55 @@ def replace_pack_item_entries(connection: sqlite3.Connection, pack_id: int, item
     existing_ids = {int(row["id"]) for row in existing_rows}
     seen_ids: set[int] = set()
 
-    position = 0
-    for raw in items:
-        if not isinstance(raw, dict):
-            continue
-        pdf_path = raw.get("pdf_path")
-        if not isinstance(pdf_path, str) or not pdf_path:
-            continue
-        title = raw.get("title") if isinstance(raw.get("title"), str) and raw.get("title") else pdf_path
-        pages = raw.get("pages") if isinstance(raw.get("pages"), str) else ""
-        collapsed = 1 if raw.get("collapsed") else 0
-        added_at = raw.get("addedAt") if isinstance(raw.get("addedAt"), str) and raw.get("addedAt") else now
-        raw_id = raw.get("id")
-        item_id = raw_id if isinstance(raw_id, int) else None
-        
-        if item_id is not None:
-            if item_id not in existing_ids:
-                raise ValueError("item id does not belong to this pack")
-            seen_ids.add(item_id)
-            connection.execute(
-                """
-                UPDATE pack_items SET pdf_path = ?, title = ?, pages = ?, collapsed = ?, position = ?, updated_at = ?
-                WHERE pack_id = ? AND id = ?
-                """,
-                (pdf_path, title, pages, collapsed, position, now, pack_id, item_id),
-            )
-        else:
-            cursor = connection.execute(
-                """
-                INSERT INTO pack_items(pack_id, pdf_path, title, pages, collapsed, position, added_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (pack_id, pdf_path, title, pages, collapsed, position, added_at, now),
-            )
-            seen_ids.add(int(cursor.lastrowid))
-        position += 1
+    connection.execute("BEGIN TRANSACTION")
+    try:
+        position = 0
+        for raw in items:
+            if not isinstance(raw, dict):
+                continue
+            pdf_path = raw.get("pdf_path")
+            if not isinstance(pdf_path, str) or not pdf_path:
+                continue
+            title = raw.get("title") if isinstance(raw.get("title"), str) and raw.get("title") else pdf_path
+            pages = raw.get("pages") if isinstance(raw.get("pages"), str) else ""
+            collapsed = 1 if raw.get("collapsed") else 0
+            added_at = raw.get("addedAt") if isinstance(raw.get("addedAt"), str) and raw.get("addedAt") else now
+            raw_id = raw.get("id")
+            item_id = raw_id if isinstance(raw_id, int) else None
+            
+            if item_id is not None:
+                if item_id not in existing_ids:
+                    raise ValueError("item id does not belong to this pack")
+                if item_id in seen_ids:
+                    raise ValueError("duplicate item id in request")
+                seen_ids.add(item_id)
+                connection.execute(
+                    """
+                    UPDATE pack_items SET pdf_path = ?, title = ?, pages = ?, collapsed = ?, position = ?, updated_at = ?
+                    WHERE pack_id = ? AND id = ?
+                    """,
+                    (pdf_path, title, pages, collapsed, position, now, pack_id, item_id),
+                )
+            else:
+                cursor = connection.execute(
+                    """
+                    INSERT INTO pack_items(pack_id, pdf_path, title, pages, collapsed, position, added_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (pack_id, pdf_path, title, pages, collapsed, position, added_at, now),
+                )
+                seen_ids.add(int(cursor.lastrowid))
+            position += 1
 
-    for item_id in existing_ids - seen_ids:
-        connection.execute("DELETE FROM pack_items WHERE pack_id = ? AND id = ?", (pack_id, item_id))
+        for item_id in existing_ids - seen_ids:
+            connection.execute("DELETE FROM pack_items WHERE pack_id = ? AND id = ?", (pack_id, item_id))
 
-    connection.execute("UPDATE packs SET updated_at = ? WHERE id = ?", (now, pack_id))
-    connection.commit()
+        connection.execute("UPDATE packs SET updated_at = ? WHERE id = ?", (now, pack_id))
+        connection.commit()
+    except Exception as exc:
+        connection.rollback()
+        raise exc
+
     return get_pack_items(connection, pack_id)
 
 
@@ -1210,9 +1218,15 @@ def replace_pack_items(connection: sqlite3.Connection, pack_id: int, books: dict
         return False
     if not isinstance(books, dict):
         return False
+
+    existing_items = get_pack_items(connection, pack_id)
+    existing_paths = [item.pdf_path for item in existing_items]
+    if len(existing_paths) != len(set(existing_paths)):
+        raise ValueError("Cannot overwrite pack using v2 format because it contains duplicate PDF paths")
+
     entries = _books_to_item_entries(books)
     existing_by_path: dict[str, PackItemRecord] = {}
-    for item in get_pack_items(connection, pack_id):
+    for item in existing_items:
         existing_by_path.setdefault(item.pdf_path, item)
     for entry in entries:
         current = existing_by_path.get(str(entry["pdf_path"]))

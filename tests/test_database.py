@@ -1090,6 +1090,60 @@ class PackTest(unittest.TestCase):
 
             connection.close()
 
+    def test_phase2_api_safety(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            connection = self._make_connection(temp_dir)
+            pack1_id = create_pack(connection, name="パック1")
+            pack2_id = create_pack(connection, name="パック2")
+
+            # 項目初期登録
+            items1 = replace_pack_item_entries(connection, pack1_id, [
+                {"pdf_path": "books/a.pdf", "title": "A1", "pages": "1"}
+            ])
+            id1 = items1[0].id
+
+            # 1. 別パックに属する id を指定した場合に ValueError がスローされること
+            invalid_payload = [
+                {"id": id1, "pdf_path": "books/a.pdf", "title": "ハック", "pages": "2"}
+            ]
+            with self.assertRaises(ValueError):
+                replace_pack_item_entries(connection, pack2_id, invalid_payload)
+
+            # 2. 同一リクエスト内で同じ id を複数回指定した場合に ValueError がスローされること
+            duplicate_payload = [
+                {"id": id1, "pdf_path": "books/a.pdf", "title": "重複1", "pages": "2"},
+                {"id": id1, "pdf_path": "books/a.pdf", "title": "重複2", "pages": "3"},
+            ]
+            with self.assertRaises(ValueError):
+                replace_pack_item_entries(connection, pack1_id, duplicate_payload)
+
+            # 3. トランザクション途中で失敗した場合（別パックのID検出など）に部分更新されずロールバックされること
+            items2 = replace_pack_item_entries(connection, pack2_id, [
+                {"pdf_path": "books/b.pdf", "title": "B1", "pages": "1"}
+            ])
+            id2 = items2[0].id
+
+            failed_payload = [
+                {"id": id2, "pdf_path": "books/b.pdf", "title": "更新しようとするB1", "pages": "99"}, # 正常
+                {"id": id1, "pdf_path": "books/a.pdf", "title": "他人のA1", "pages": "99"}, # エラー (別パックID)
+            ]
+            with self.assertRaises(ValueError):
+                replace_pack_item_entries(connection, pack2_id, failed_payload)
+
+            # ロールバックされているため、B1 のページは元の "1" のままであること
+            items2_after = get_pack_items(connection, pack2_id)
+            self.assertEqual(items2_after[0].pages, "1")
+
+            # 4. パック内に重複 pdf_path がある時、replace_pack_items (books形式) を呼ぶとガードが働き ValueError になること
+            items_dup = replace_pack_item_entries(connection, pack1_id, [
+                {"pdf_path": "books/a.pdf", "title": "A1", "pages": "1"},
+                {"pdf_path": "books/a.pdf", "title": "A2", "pages": "2"},
+            ])
+            with self.assertRaises(ValueError):
+                replace_pack_items(connection, pack1_id, {"books/a.pdf": {"pages": "3"}})
+
+            connection.close()
+
 
 if __name__ == "__main__":
     unittest.main()
