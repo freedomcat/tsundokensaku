@@ -36,7 +36,9 @@ from tsundokensaku.database import (
     list_books,
     list_packs,
     pack_items_as_cart,
+    pack_items_as_items,
     parse_query,
+    replace_pack_item_entries,
     replace_pack_items,
     resolve_active_pack_id,
     search,
@@ -65,6 +67,7 @@ from tsundokensaku.zip_export import (
     build_entry_filename,
     build_pack_zip,
     build_pack_zip_filename,
+    sanitize_filename_component,
 )
 
 
@@ -1115,9 +1118,10 @@ def api_get_pack(pack_id: int) -> JSONResponse:
         if pack is None:
             raise HTTPException(status_code=404, detail="資料が見つかりません")
         cart = pack_items_as_cart(connection, pack_id)
+        items = pack_items_as_items(connection, pack_id)
     finally:
         connection.close()
-    return JSONResponse({**_pack_to_json(pack), "cart": cart})
+    return JSONResponse({**_pack_to_json(pack), "cart": cart, **items})
 
 
 @app.patch("/api/packs/{pack_id}")
@@ -1177,15 +1181,36 @@ def api_replace_pack_books(pack_id: int, payload: dict = Body(default={})) -> JS
         if not replace_pack_items(connection, pack_id, books):
             raise HTTPException(status_code=404, detail="資料が見つかりません")
         cart = pack_items_as_cart(connection, pack_id)
+        items_payload = pack_items_as_items(connection, pack_id)
     finally:
         connection.close()
-    return JSONResponse({"pack_id": pack_id, "cart": cart})
+    return JSONResponse({"pack_id": pack_id, "cart": cart, **items_payload})
+
+
+@app.put("/api/packs/{pack_id}/items")
+def api_replace_pack_items(pack_id: int, payload: dict = Body(default={})) -> JSONResponse:
+    items = payload.get("items")
+    if not isinstance(items, list):
+        raise HTTPException(status_code=400, detail="items 配列が必要です")
+    connection = _pack_connection()
+    try:
+        try:
+            saved_items = replace_pack_item_entries(connection, pack_id, items)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if saved_items is None:
+            raise HTTPException(status_code=404, detail="資料が見つかりません")
+        items_payload = pack_items_as_items(connection, pack_id)
+        cart = pack_items_as_cart(connection, pack_id)
+    finally:
+        connection.close()
+    return JSONResponse({"pack_id": pack_id, "cart": cart, **items_payload})
 
 
 @app.get("/api/packs/{pack_id}/export")
 def api_export_pack(pack_id: int, format: str = Query("pdf")) -> Response:
-    if format not in ("pdf", "md"):
-        raise HTTPException(status_code=400, detail="format は pdf か md を指定してください")
+    if format not in ("pdf", "md", "json"):
+        raise HTTPException(status_code=400, detail="format は pdf, md, または json を指定してください")
 
     connection = _pack_connection()
     try:
@@ -1195,6 +1220,31 @@ def api_export_pack(pack_id: int, format: str = Query("pdf")) -> Response:
         items = get_pack_items(connection, pack_id)
     finally:
         connection.close()
+
+    if format == "json":
+        import json
+        export_data = {
+            "version": 3,
+            "name": pack.name,
+            "items": [
+                {
+                    "pdf_path": item.pdf_path,
+                    "title": item.title,
+                    "pages": item.pages,
+                    "collapsed": item.collapsed,
+                    "addedAt": item.added_at,
+                    "position": item.position,
+                }
+                for item in items
+            ]
+        }
+        json_bytes = json.dumps(export_data, ensure_ascii=False, indent=2).encode("utf-8")
+        filename = f"{sanitize_filename_component(pack.name)}_{_now_jst():%Y%m%d}.json"
+        return Response(
+            content=json_bytes,
+            media_type="application/json",
+            headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"},
+        )
 
     if not items:
         raise HTTPException(status_code=400, detail="資料が空です")
@@ -1234,19 +1284,31 @@ def api_export_pack(pack_id: int, format: str = Query("pdf")) -> Response:
 
 @app.post("/api/packs/import")
 def api_import_pack(payload: dict = Body(default={})) -> JSONResponse:
-    cart = payload.get("cart")
+    cart = payload.get("cart") if "cart" in payload else payload
+    
+    if not isinstance(cart, dict) or ("version" not in cart and "items" not in cart and "books" not in cart):
+        raise HTTPException(status_code=400, detail="取り込めるカートデータがありません")
+
+    if cart.get("version") == 3 and not isinstance(cart.get("items"), list):
+        raise HTTPException(status_code=400, detail="items はリストでなければなりません")
+    if cart.get("version") == 2 and not isinstance(cart.get("books"), dict):
+        raise HTTPException(status_code=400, detail="books は辞書でなければなりません")
+
     name = payload.get("name") if isinstance(payload.get("name"), str) and payload.get("name") else "移行された資料"
     connection = _pack_connection()
     try:
-        pack_id = import_cart_as_pack(connection, cart, name=name) if isinstance(cart, dict) else None
+        pack_id = import_cart_as_pack(connection, cart, name=name)
         if pack_id is None:
             raise HTTPException(status_code=400, detail="取り込めるカートデータがありません")
         set_active_pack(connection, pack_id)
         pack = get_pack(connection, pack_id)
         imported_cart = pack_items_as_cart(connection, pack_id)
+        imported_items = pack_items_as_items(connection, pack_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     finally:
         connection.close()
-    return JSONResponse({**_pack_to_json(pack), "cart": imported_cart}, status_code=201)
+    return JSONResponse({**_pack_to_json(pack), "cart": imported_cart, **imported_items}, status_code=201)
 
 
 @app.get("/settings", response_class=HTMLResponse)

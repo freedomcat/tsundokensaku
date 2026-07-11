@@ -17,6 +17,7 @@ from tsundokensaku.database import (
     list_packs,
     pack_items_as_cart,
     parse_query,
+    replace_pack_item_entries,
     replace_pack_items,
     resolve_active_pack_id,
     set_active_pack,
@@ -981,6 +982,166 @@ class PackTest(unittest.TestCase):
             pack_id = create_pack(connection, name="残る")
             initialize(connection)
             self.assertEqual(get_pack(connection, pack_id).name, "残る")
+            connection.close()
+
+    def test_initialize_drops_legacy_pack_items_pdf_path_unique_constraint(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "index.db"
+            connection = connect(db_path)
+            connection.executescript(
+                """
+                CREATE TABLE packs (
+                    id INTEGER PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    note TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    archived_at TEXT
+                );
+                CREATE TABLE pack_items (
+                    id INTEGER PRIMARY KEY,
+                    pack_id INTEGER NOT NULL REFERENCES packs(id) ON DELETE CASCADE,
+                    pdf_path TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    pages TEXT NOT NULL DEFAULT '',
+                    collapsed INTEGER NOT NULL DEFAULT 0,
+                    position INTEGER NOT NULL DEFAULT 0,
+                    added_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(pack_id, pdf_path)
+                );
+                CREATE TABLE app_state (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                INSERT INTO packs(id, name, note, created_at, updated_at) VALUES (1, 'p', '', 'a', 'a');
+                INSERT INTO pack_items(id, pack_id, pdf_path, title, pages, collapsed, position, added_at, updated_at)
+                VALUES (10, 1, 'books/a.pdf', '本A', '1', 0, 7, 'old', 'old');
+                """
+            )
+            connection.commit()
+
+            initialize(connection)
+            connection.execute(
+                """
+                INSERT INTO pack_items(pack_id, pdf_path, title, pages, collapsed, position, added_at, updated_at)
+                VALUES (1, 'books/a.pdf', '本A', '2', 0, 8, 'new', 'new')
+                """
+            )
+            connection.commit()
+
+            items = get_pack_items(connection, 1)
+            self.assertEqual([item.id for item in items], [10, 11])
+            self.assertEqual([item.position for item in items], [7, 8])
+            self.assertEqual([item.pages for item in items], ["1", "2"])
+            connection.close()
+
+    def test_phase2_item_id_operations(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            connection = self._make_connection(temp_dir)
+            pack_id = create_pack(connection, name="テストパック")
+            
+            # 1. 同一資料内に同じ pdf_path の項目を2件登録できる
+            # 2. 2件が異なる id を持つ
+            items_payload = [
+                {"pdf_path": "books/a.pdf", "title": "本A-1", "pages": "1-5", "collapsed": False},
+                {"pdf_path": "books/a.pdf", "title": "本A-2", "pages": "10-15", "collapsed": True},
+            ]
+            saved_items = replace_pack_item_entries(connection, pack_id, items_payload)
+            self.assertEqual(len(saved_items), 2)
+            id1 = saved_items[0].id
+            id2 = saved_items[1].id
+            self.assertNotEqual(id1, id2)
+            self.assertEqual(saved_items[0].pdf_path, "books/a.pdf")
+            self.assertEqual(saved_items[1].pdf_path, "books/a.pdf")
+
+            # 3. 一方のページ範囲だけ更新できる
+            # 6. 操作対象でない同一PDF項目の内容が変わらない
+            update_payload = [
+                {"id": id1, "pdf_path": "books/a.pdf", "title": "本A-1", "pages": "1-10", "collapsed": False},
+                {"id": id2, "pdf_path": "books/a.pdf", "title": "本A-2", "pages": "10-15", "collapsed": True},
+            ]
+            saved_items = replace_pack_item_entries(connection, pack_id, update_payload)
+            self.assertEqual(saved_items[0].pages, "1-10")
+            self.assertEqual(saved_items[1].pages, "10-15")
+
+            # 5. 一方だけ並び替えできる
+            reorder_payload = [
+                {"id": id2, "pdf_path": "books/a.pdf", "title": "本A-2", "pages": "10-15", "collapsed": True},
+                {"id": id1, "pdf_path": "books/a.pdf", "title": "本A-1", "pages": "1-10", "collapsed": False},
+            ]
+            saved_items = replace_pack_item_entries(connection, pack_id, reorder_payload)
+            self.assertEqual(saved_items[0].id, id2)
+            self.assertEqual(saved_items[1].id, id1)
+            self.assertEqual(saved_items[0].position, 0)
+            self.assertEqual(saved_items[1].position, 1)
+
+            # 4. 一方だけ削除できる
+            delete_payload = [
+                {"id": id2, "pdf_path": "books/a.pdf", "title": "本A-2", "pages": "10-15", "collapsed": True},
+            ]
+            saved_items = replace_pack_item_entries(connection, pack_id, delete_payload)
+            self.assertEqual(len(saved_items), 1)
+            self.assertEqual(saved_items[0].id, id2)
+
+            # 7. 存在しない item.id を指定した場合に適切な結果になる
+            invalid_payload = [
+                {"id": 9999, "pdf_path": "books/a.pdf", "title": "無効", "pages": "1", "collapsed": False}
+            ]
+            with self.assertRaises(ValueError):
+                replace_pack_item_entries(connection, pack_id, invalid_payload)
+
+            connection.close()
+
+    def test_phase2_api_safety(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            connection = self._make_connection(temp_dir)
+            pack1_id = create_pack(connection, name="パック1")
+            pack2_id = create_pack(connection, name="パック2")
+
+            # 項目初期登録
+            items1 = replace_pack_item_entries(connection, pack1_id, [
+                {"pdf_path": "books/a.pdf", "title": "A1", "pages": "1"}
+            ])
+            id1 = items1[0].id
+
+            # 1. 別パックに属する id を指定した場合に ValueError がスローされること
+            invalid_payload = [
+                {"id": id1, "pdf_path": "books/a.pdf", "title": "ハック", "pages": "2"}
+            ]
+            with self.assertRaises(ValueError):
+                replace_pack_item_entries(connection, pack2_id, invalid_payload)
+
+            # 2. 同一リクエスト内で同じ id を複数回指定した場合に ValueError がスローされること
+            duplicate_payload = [
+                {"id": id1, "pdf_path": "books/a.pdf", "title": "重複1", "pages": "2"},
+                {"id": id1, "pdf_path": "books/a.pdf", "title": "重複2", "pages": "3"},
+            ]
+            with self.assertRaises(ValueError):
+                replace_pack_item_entries(connection, pack1_id, duplicate_payload)
+
+            # 3. トランザクション途中で失敗した場合（別パックのID検出など）に部分更新されずロールバックされること
+            items2 = replace_pack_item_entries(connection, pack2_id, [
+                {"pdf_path": "books/b.pdf", "title": "B1", "pages": "1"}
+            ])
+            id2 = items2[0].id
+
+            failed_payload = [
+                {"id": id2, "pdf_path": "books/b.pdf", "title": "更新しようとするB1", "pages": "99"}, # 正常
+                {"id": id1, "pdf_path": "books/a.pdf", "title": "他人のA1", "pages": "99"}, # エラー (別パックID)
+            ]
+            with self.assertRaises(ValueError):
+                replace_pack_item_entries(connection, pack2_id, failed_payload)
+
+            # ロールバックされているため、B1 のページは元の "1" のままであること
+            items2_after = get_pack_items(connection, pack2_id)
+            self.assertEqual(items2_after[0].pages, "1")
+
+            # 4. パック内に重複 pdf_path がある時、replace_pack_items (books形式) を呼ぶとガードが働き ValueError になること
+            items_dup = replace_pack_item_entries(connection, pack1_id, [
+                {"pdf_path": "books/a.pdf", "title": "A1", "pages": "1"},
+                {"pdf_path": "books/a.pdf", "title": "A2", "pages": "2"},
+            ])
+            with self.assertRaises(ValueError):
+                replace_pack_items(connection, pack1_id, {"books/a.pdf": {"pages": "3"}})
+
             connection.close()
 
 

@@ -939,6 +939,292 @@ class PackApiTest(unittest.TestCase):
                     api_import_pack({"cart": {"version": 2, "books": {}}})
                 self.assertEqual(ctx.exception.status_code, 400)
 
+    def test_pack_api_round_trip_and_validation(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "index.db"
+            with patch("tsundokensaku.web.get_db_path", return_value=db_path):
+                # 1. テストデータのインポート (v3形式)
+                # 項目A, 項目B (同一PDF同一項目), 項目C
+                payload = {
+                    "version": 3,
+                    "name": "ラウンドトリップ資料",
+                    "items": [
+                        {
+                            "pdf_path": "same.pdf",
+                            "title": "項目A",
+                            "pages": "1-10",
+                            "collapsed": False,
+                            "addedAt": "2026-07-11T00:00:00Z",
+                            "position": 0
+                        },
+                        {
+                            "pdf_path": "same.pdf",
+                            "title": "項目B",
+                            "pages": "50-70",
+                            "collapsed": True,
+                            "addedAt": "2026-07-11T00:01:00Z",
+                            "position": 1
+                        },
+                        {
+                            "pdf_path": "other.pdf",
+                            "title": "項目C",
+                            "pages": "3-5",
+                            "collapsed": False,
+                            "addedAt": "2026-07-11T00:02:00Z",
+                            "position": 2
+                        }
+                    ]
+                }
+
+                # 5. エクスポートデータを新しい資料へインポートできる
+                imported = self._payload(api_import_pack(payload))
+                pack_id = imported["id"]
+                self.assertEqual(imported["name"], "ラウンドトリップ資料")
+
+                # 6. インポート後も項目数が3件である
+                # 13. インポート後のDB idは新規発行される
+                self.assertEqual(len(imported["items"]), 3)
+                for item in imported["items"]:
+                    self.assertIsInstance(item["id"], int)
+                    self.assertTrue(item["id"] > 0)
+
+                # 2. JSONエクスポートの実行
+                # 1. version: 3でエクスポートされる
+                # 2. itemsが3件含まれる
+                # 3. same.pdfの2件が統合されない
+                # 4. itemsの順序がposition順である
+                export_resp = api_export_pack(pack_id, format="json")
+                self.assertEqual(export_resp.status_code, 200)
+                self.assertEqual(export_resp.media_type, "application/json")
+                
+                import json
+                exported = json.loads(export_resp.body.decode("utf-8"))
+                
+                self.assertEqual(exported["version"], 3)
+                self.assertEqual(exported["name"], "ラウンドトリップ資料")
+                self.assertEqual(len(exported["items"]), 3)
+                
+                # 7-12. 各フィールドが一致することの検証
+                items = exported["items"]
+                self.assertEqual(items[0]["pdf_path"], "same.pdf")
+                self.assertEqual(items[0]["title"], "項目A")
+                self.assertEqual(items[0]["pages"], "1-10")
+                self.assertEqual(items[0]["collapsed"], False)
+                self.assertEqual(items[0]["addedAt"], "2026-07-11T00:00:00Z")
+                self.assertEqual(items[0]["position"], 0)
+
+                self.assertEqual(items[1]["pdf_path"], "same.pdf")
+                self.assertEqual(items[1]["title"], "項目B")
+                self.assertEqual(items[1]["pages"], "50-70")
+                self.assertEqual(items[1]["collapsed"], True)
+                self.assertEqual(items[1]["addedAt"], "2026-07-11T00:01:00Z")
+                self.assertEqual(items[1]["position"], 1)
+
+                self.assertEqual(items[2]["pdf_path"], "other.pdf")
+                self.assertEqual(items[2]["title"], "項目C")
+                self.assertEqual(items[2]["pages"], "3-5")
+                self.assertEqual(items[2]["collapsed"], False)
+                self.assertEqual(items[2]["addedAt"], "2026-07-11T00:02:00Z")
+                self.assertEqual(items[2]["position"], 2)
+
+                # 14. 再エクスポートしたversion: 3データが意味的に一致する (Round Trip)
+                re_imported = self._payload(api_import_pack(exported))
+                re_export_resp = api_export_pack(re_imported["id"], format="json")
+                re_exported = json.loads(re_export_resp.body.decode("utf-8"))
+                
+                self.assertEqual(re_exported["version"], exported["version"])
+                self.assertEqual(re_exported["name"], exported["name"])
+                self.assertEqual(len(re_exported["items"]), len(exported["items"]))
+                for item_re, item_ex in zip(re_exported["items"], exported["items"]):
+                    self.assertEqual(item_re["pdf_path"], item_ex["pdf_path"])
+                    self.assertEqual(item_re["title"], item_ex["title"])
+                    self.assertEqual(item_re["pages"], item_ex["pages"])
+                    self.assertEqual(item_re["collapsed"], item_ex["collapsed"])
+                    self.assertEqual(item_re["addedAt"], item_ex["addedAt"])
+                    self.assertEqual(item_re["position"], item_ex["position"])
+
+                # 15. v2データをインポートし、v3として再エクスポートできる
+                v2_payload = {
+                    "version": 2,
+                    "books": {
+                        "v2_book.pdf": {"title": "v2本", "pages": "10-20", "collapsed": True, "addedAt": "2026-07-11T05:00:00Z"}
+                    }
+                }
+                v2_imported = self._payload(api_import_pack(v2_payload))
+                v2_export_resp = api_export_pack(v2_imported["id"], format="json")
+                v2_exported = json.loads(v2_export_resp.body.decode("utf-8"))
+                
+                self.assertEqual(v2_exported["version"], 3)
+                self.assertEqual(v2_exported["items"][0]["pdf_path"], "v2_book.pdf")
+                self.assertEqual(v2_exported["items"][0]["title"], "v2本")
+                self.assertEqual(v2_exported["items"][0]["pages"], "10-20")
+                self.assertEqual(v2_exported["items"][0]["collapsed"], True)
+                self.assertEqual(v2_exported["items"][0]["addedAt"], "2026-07-11T05:00:00Z")
+
+                # 16. 不正なv3データでは部分インポートされない
+                invalid_payload = {
+                    "version": 3,
+                    "name": "不正資料",
+                    "items": [
+                        {
+                            "pdf_path": "valid.pdf",
+                            "title": "有効項目",
+                            "pages": "1-5",
+                            "collapsed": False,
+                            "position": 0
+                        },
+                        {
+                            "pdf_path": "invalid.pdf",
+                            "title": "無効項目",
+                            "pages": "99-10", # 不正範囲 (start > end)
+                            "collapsed": False,
+                            "position": 1
+                        }
+                    ]
+                }
+                pack_count_before = len(self._payload(api_list_packs())["packs"])
+                
+                with self.assertRaises(HTTPException) as ctx:
+                    api_import_pack(invalid_payload)
+                self.assertEqual(ctx.exception.status_code, 400)
+                
+                pack_count_after = len(self._payload(api_list_packs())["packs"])
+                self.assertEqual(pack_count_before, pack_count_after)
+
+                # 17. 様々な position パターンの検証
+                # (1) position = [0, 1, 2] （正常）
+                p1_payload = {
+                    "version": 3,
+                    "name": "pos1",
+                    "items": [
+                        {"pdf_path": "a.pdf", "title": "A", "pages": "1", "collapsed": False, "position": 0},
+                        {"pdf_path": "b.pdf", "title": "B", "pages": "1", "collapsed": False, "position": 1},
+                        {"pdf_path": "c.pdf", "title": "C", "pages": "1", "collapsed": False, "position": 2},
+                    ]
+                }
+                res1 = self._payload(api_import_pack(p1_payload))
+                self.assertEqual([item["position"] for item in res1["items"]], [0, 1, 2])
+                self.assertEqual([item["title"] for item in res1["items"]], ["A", "B", "C"])
+
+                # (2) position = [0, 2, 5] （隙間・欠番あり。順序関係を維持して 0, 1, 2 に正規化される）
+                p2_payload = {
+                    "version": 3,
+                    "name": "pos2",
+                    "items": [
+                        {"pdf_path": "a.pdf", "title": "A", "pages": "1", "collapsed": False, "position": 0},
+                        {"pdf_path": "b.pdf", "title": "B", "pages": "1", "collapsed": False, "position": 2},
+                        {"pdf_path": "c.pdf", "title": "C", "pages": "1", "collapsed": False, "position": 5},
+                    ]
+                }
+                res2 = self._payload(api_import_pack(p2_payload))
+                self.assertEqual([item["position"] for item in res2["items"]], [0, 1, 2])
+                self.assertEqual([item["title"] for item in res2["items"]], ["A", "B", "C"])
+
+                # (3) position = [2, 0, 1] （配列順とposition指定が不一致。position値の昇順に並べ替えられて [0, 1, 2] に再採番）
+                p3_payload = {
+                    "version": 3,
+                    "name": "pos3",
+                    "items": [
+                        {"pdf_path": "c.pdf", "title": "C", "pages": "1", "collapsed": False, "position": 2},
+                        {"pdf_path": "a.pdf", "title": "A", "pages": "1", "collapsed": False, "position": 0},
+                        {"pdf_path": "b.pdf", "title": "B", "pages": "1", "collapsed": False, "position": 1},
+                    ]
+                }
+                res3 = self._payload(api_import_pack(p3_payload))
+                self.assertEqual([item["position"] for item in res3["items"]], [0, 1, 2])
+                self.assertEqual([item["title"] for item in res3["items"]], ["A", "B", "C"])
+
+                # (4) position 重複 (例: [1, 1, 0] -> 不正扱いとなり配列内の順序 A -> B -> C を基準に [0, 1, 2] に再採番)
+                p4_payload = {
+                    "version": 3,
+                    "name": "pos4",
+                    "items": [
+                        {"pdf_path": "a.pdf", "title": "A", "pages": "1", "collapsed": False, "position": 1},
+                        {"pdf_path": "b.pdf", "title": "B", "pages": "1", "collapsed": False, "position": 1},
+                        {"pdf_path": "c.pdf", "title": "C", "pages": "1", "collapsed": False, "position": 0},
+                    ]
+                }
+                res4 = self._payload(api_import_pack(p4_payload))
+                self.assertEqual([item["position"] for item in res4["items"]], [0, 1, 2])
+                self.assertEqual([item["title"] for item in res4["items"]], ["A", "B", "C"])
+
+                # (5) position 負数 (例: [-1, 0, 2] -> 配列順を基準に [0, 1, 2] に再採番)
+                p5_payload = {
+                    "version": 3,
+                    "name": "pos5",
+                    "items": [
+                        {"pdf_path": "a.pdf", "title": "A", "pages": "1", "collapsed": False, "position": -1},
+                        {"pdf_path": "b.pdf", "title": "B", "pages": "1", "collapsed": False, "position": 0},
+                        {"pdf_path": "c.pdf", "title": "C", "pages": "1", "collapsed": False, "position": 2},
+                    ]
+                }
+                res5 = self._payload(api_import_pack(p5_payload))
+                self.assertEqual([item["position"] for item in res5["items"]], [0, 1, 2])
+                self.assertEqual([item["title"] for item in res5["items"]], ["A", "B", "C"])
+
+                # (6) position 欠落 (positionキーなし -> 配列順を基準に [0, 1, 2] に再採番)
+                p6_payload = {
+                    "version": 3,
+                    "name": "pos6",
+                    "items": [
+                        {"pdf_path": "a.pdf", "title": "A", "pages": "1", "collapsed": False},
+                        {"pdf_path": "b.pdf", "title": "B", "pages": "1", "collapsed": False},
+                        {"pdf_path": "c.pdf", "title": "C", "pages": "1", "collapsed": False},
+                    ]
+                }
+                res6 = self._payload(api_import_pack(p6_payload))
+                self.assertEqual([item["position"] for item in res6["items"]], [0, 1, 2])
+                self.assertEqual([item["title"] for item in res6["items"]], ["A", "B", "C"])
+
+                # 18. 各種エラー時の例外およびHTTPステータスコード検証 (不正JSON, pages形式エラー, version不正, SQLite例外, RuntimeError)
+                import sqlite3
+
+                # (1) 不正JSON (dictでない型、例: 文字列) -> HTTPException(400) を期待
+                with self.assertRaises(HTTPException) as ctx:
+                    api_import_pack("invalid_json") # type: ignore
+                self.assertEqual(ctx.exception.status_code, 400)
+
+                # (2) pages形式エラー -> HTTPException(400)
+                p_pages_err = {
+                    "version": 3,
+                    "name": "pages_err",
+                    "items": [{"pdf_path": "a.pdf", "title": "A", "pages": "99-10", "collapsed": False}]
+                }
+                with self.assertRaises(HTTPException) as ctx:
+                    api_import_pack(p_pages_err)
+                self.assertEqual(ctx.exception.status_code, 400)
+
+                # (3) version不正 -> HTTPException(400)
+                p_version_err = {
+                    "version": 99,
+                    "name": "version_err",
+                    "items": [{"pdf_path": "a.pdf", "title": "A", "pages": "1", "collapsed": False}]
+                }
+                with self.assertRaises(HTTPException) as ctx:
+                    api_import_pack(p_version_err)
+                self.assertEqual(ctx.exception.status_code, 400)
+
+                # (4) SQLite例外 -> HTTPExceptionに変換されず sqlite3.Error がそのままスローされること (FastAPI既定の500になることを意味する)
+                from unittest.mock import patch as mock_patch
+                with mock_patch("tsundokensaku.database.replace_pack_item_entries", side_effect=sqlite3.Error("Mock DB Error")):
+                    pack_count_before_db_err = len(self._payload(api_list_packs())["packs"])
+                    
+                    with self.assertRaises(sqlite3.Error):
+                        api_import_pack(p6_payload)
+                    
+                    pack_count_after_db_err = len(self._payload(api_list_packs())["packs"])
+                    self.assertEqual(pack_count_before_db_err, pack_count_after_db_err)
+
+                # (5) RuntimeError -> HTTPExceptionに変換されず RuntimeError がそのままスローされること (FastAPI既定の500になることを意味する)
+                with mock_patch("tsundokensaku.database.replace_pack_item_entries", side_effect=RuntimeError("Runtime Error")):
+                    pack_count_before_rt_err = len(self._payload(api_list_packs())["packs"])
+                    
+                    with self.assertRaises(RuntimeError):
+                        api_import_pack(p6_payload)
+                    
+                    pack_count_after_rt_err = len(self._payload(api_list_packs())["packs"])
+                    self.assertEqual(pack_count_before_rt_err, pack_count_after_rt_err)
+
     def test_pack_api_export_zip_contains_manifest_and_ordered_entries(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -1056,6 +1342,96 @@ class PackApiTest(unittest.TestCase):
                     "a.pdf": {"title": "本A", "pages": "", "collapsed": False, "addedAt": "2026-01-01T00:00:00Z"},
                 }
                 self._payload(api_replace_pack_books(created["id"], {"books": books}))
+
+                with self.assertRaises(HTTPException) as ctx:
+                    api_export_pack(created["id"], format="pdf")
+                self.assertEqual(ctx.exception.status_code, 400)
+
+    def test_pack_api_export_zip_supports_duplicate_items(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            db_path = root / "index.db"
+            books_dir = root / "books"
+            books_dir.mkdir(parents=True)
+
+            # 10ページのPDFを作成
+            writer = PdfWriter()
+            for _ in range(10):
+                writer.add_blank_page(width=72, height=72)
+            with (books_dir / "a.pdf").open("wb") as handle:
+                writer.write(handle)
+
+            with patch("tsundokensaku.web.get_db_path", return_value=db_path), \
+                    patch("tsundokensaku.web.get_books_dir", return_value=books_dir):
+                created = self._payload(api_create_pack({"name": "重複資料"}))
+                
+                # 同一 pdf_path (a.pdf) を2件、異なるページ範囲で追加
+                items = [
+                    {"pdf_path": "a.pdf", "title": "本Aのパート1", "pages": "1-3", "collapsed": False, "position": 0},
+                    {"pdf_path": "a.pdf", "title": "本Aのパート2", "pages": "5-8", "collapsed": False, "position": 1},
+                ]
+                from tsundokensaku.web import api_replace_pack_items
+                self._payload(api_replace_pack_items(created["id"], {"items": items}))
+
+                # エクスポートAPI呼び出し
+                response = api_export_pack(created["id"], format="pdf")
+
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.media_type, "application/zip")
+
+                with zipfile.ZipFile(BytesIO(response.body)) as archive:
+                    names = archive.namelist()
+                    # 2件が別ファイルとしてZIPに含まれ、衝突せずに出力順 (position順) になっている
+                    self.assertEqual(names[0], "manifest.md")
+                    self.assertEqual(names[1], "01_本Aのパート1_p1-3.pdf")
+                    self.assertEqual(names[2], "02_本Aのパート2_p5-8.pdf")
+
+                    # manifest の内容検証
+                    manifest = archive.read("manifest.md").decode("utf-8")
+                    self.assertIn("重複資料", manifest)
+                    self.assertIn("本Aのパート1", manifest)
+                    self.assertIn("本Aのパート2", manifest)
+
+                    # 1件目のPDF（p.1-3 = 3ページ）
+                    reader1 = PdfReader(BytesIO(archive.read(names[1])))
+                    self.assertEqual(len(reader1.pages), 3)
+
+                    # 2件目のPDF（p.5-8 = 4ページ）
+                    reader2 = PdfReader(BytesIO(archive.read(names[2])))
+                    self.assertEqual(len(reader2.pages), 4)
+
+    def test_pack_api_export_zip_handles_missing_file_and_invalid_pages(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            db_path = root / "index.db"
+            books_dir = root / "books"
+            books_dir.mkdir(parents=True)
+
+            with patch("tsundokensaku.web.get_db_path", return_value=db_path), \
+                    patch("tsundokensaku.web.get_books_dir", return_value=books_dir):
+                created = self._payload(api_create_pack({"name": "エラー資料"}))
+                
+                # 1. 存在しない PDF
+                items_missing = [
+                    {"pdf_path": "non_existent.pdf", "title": "消えた本", "pages": "1-3", "collapsed": False, "position": 0},
+                ]
+                from tsundokensaku.web import api_replace_pack_items
+                self._payload(api_replace_pack_items(created["id"], {"items": items_missing}))
+
+                with self.assertRaises(HTTPException) as ctx:
+                    api_export_pack(created["id"], format="pdf")
+                self.assertEqual(ctx.exception.status_code, 404)
+
+                # 2. 存在するPDFだがページ範囲が不正
+                writer = PdfWriter()
+                writer.add_blank_page(width=72, height=72)
+                with (books_dir / "valid.pdf").open("wb") as handle:
+                    writer.write(handle)
+
+                items_invalid_pages = [
+                    {"pdf_path": "valid.pdf", "title": "本A", "pages": "99-100", "collapsed": False, "position": 0},
+                ]
+                self._payload(api_replace_pack_items(created["id"], {"items": items_invalid_pages}))
 
                 with self.assertRaises(HTTPException) as ctx:
                     api_export_pack(created["id"], format="pdf")

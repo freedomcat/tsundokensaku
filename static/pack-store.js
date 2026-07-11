@@ -1,6 +1,6 @@
 // パックのサーバ同期ストア。旧 export-cart.js（sessionStorage）の置き換え。
 // TsundokuCart と同じ同期 API（load/save/...）を保ち、実体はサーバの
-// アクティブパック（/api/packs）に永続化する。
+// アクティブパック（/api/packs）に永永永化する。
 // - load() はメモリキャッシュを返す（同期）
 // - save() は楽観更新 + デバウンス PUT
 // - 初回ロード時に sessionStorage の旧カートがあれば自動でパックへ移行する
@@ -16,11 +16,92 @@ window.TsundokuCart = (() => {
   let initialized = false;
 
   function emptyCart() {
-    return { version: 2, books: {} };
+    return { version: 3, items: [] };
   }
 
   function clone(value) {
     return JSON.parse(JSON.stringify(value));
+  }
+
+  function entryToItem(path, entry) {
+    return {
+      pdf_path: path,
+      title: typeof entry.title === 'string' && entry.title ? entry.title : path,
+      pages: typeof entry.pages === 'string'
+        ? entry.pages
+        : (Array.isArray(entry.pages) ? window.TsundokuPages.pagesToSpec(entry.pages) : ''),
+      collapsed: Boolean(entry.collapsed),
+      addedAt: typeof entry.addedAt === 'string' && entry.addedAt ? entry.addedAt : new Date().toISOString(),
+    };
+  }
+
+  function booksToCart(books) {
+    const cart = emptyCart();
+    for (const [path, entry] of Object.entries(books || {})) {
+      if (!entry || typeof entry !== 'object') {
+        continue;
+      }
+      const item = entryToItem(path, entry);
+      if (item.pages) {
+        cart.items.push(item);
+      }
+    }
+    return cart;
+  }
+
+  function normalizeCart(value) {
+    if (!value || typeof value !== 'object') {
+      return emptyCart();
+    }
+    if (value.version === 3 && Array.isArray(value.items)) {
+      return {
+        version: 3,
+        items: value.items
+          .filter((item) => item && typeof item === 'object' && typeof item.pdf_path === 'string' && item.pdf_path)
+          .map((item) => ({
+            id: Number.isInteger(item.id) ? item.id : undefined,
+            clientId: typeof item.clientId === 'string' && item.clientId
+              ? item.clientId
+              : (Number.isInteger(item.id) ? undefined : createClientId()),
+            pdf_path: item.pdf_path,
+            title: typeof item.title === 'string' && item.title ? item.title : item.pdf_path,
+            pages: typeof item.pages === 'string' ? item.pages : '',
+            collapsed: Boolean(item.collapsed),
+            addedAt: typeof item.addedAt === 'string' && item.addedAt ? item.addedAt : new Date().toISOString(),
+          })),
+      };
+    }
+    if (value.books && typeof value.books === 'object') {
+      return booksToCart(value.books);
+    }
+    return emptyCart();
+  }
+
+  function createClientId() {
+    return `new:${Date.now()}:${Math.random().toString(36).slice(2)}`;
+  }
+
+  function itemKey(item) {
+    if (Number.isInteger(item.id)) {
+      return `id:${item.id}`;
+    }
+    if (!item.clientId) {
+      item.clientId = createClientId();
+    }
+    return item.clientId;
+  }
+
+  function cartForSave(cart) {
+    return {
+      items: cart.items.map((item) => ({
+        ...(Number.isInteger(item.id) ? { id: item.id } : {}),
+        pdf_path: item.pdf_path,
+        title: item.title,
+        pages: item.pages,
+        collapsed: Boolean(item.collapsed),
+        addedAt: item.addedAt,
+      })),
+    };
   }
 
   // 旧形式: { "<pdf_path>": { title, pages: [番号...] } }（versionなし）
@@ -35,12 +116,7 @@ window.TsundokuCart = (() => {
       if (!spec) {
         continue;
       }
-      cart.books[path] = {
-        title: typeof entry.title === 'string' && entry.title ? entry.title : path,
-        pages: spec,
-        collapsed: false,
-        addedAt: new Date().toISOString(),
-      };
+      cart.items.push({ pdf_path: path, title: typeof entry.title === 'string' && entry.title ? entry.title : path, pages: spec, collapsed: false, addedAt: new Date().toISOString() });
       migrated = true;
     }
     return migrated ? cart : null;
@@ -52,8 +128,11 @@ window.TsundokuCart = (() => {
       if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
         return null;
       }
+      if (parsed.version === 3 && Array.isArray(parsed.items)) {
+        return parsed.items.length > 0 ? normalizeCart(parsed) : null;
+      }
       if (parsed.version === 2 && parsed.books && typeof parsed.books === 'object') {
-        return Object.keys(parsed.books).length > 0 ? parsed : null;
+        return Object.keys(parsed.books).length > 0 ? booksToCart(parsed.books) : null;
       }
       if (parsed.version === undefined) {
         return migrateLegacy(parsed);
@@ -105,10 +184,17 @@ window.TsundokuCart = (() => {
     const pack = await fetchJson(`/api/packs/${listing.active_pack_id}`);
     const previousId = activePack ? activePack.id : null;
     activePack = { id: pack.id, name: pack.name };
-    const serverCart = pack.cart && typeof pack.cart === 'object' ? pack.cart : emptyCart();
+    const serverCart = normalizeCart(pack.version === 3 && Array.isArray(pack.items) ? pack : pack.cart);
     if (dirty && (previousId === null || previousId === pack.id)) {
       // 初回取得前・同一資料の再取得では、ローカル編集を失わないよう上に重ねる
-      serverCart.books = { ...serverCart.books, ...cache.books };
+      const byKey = new Map();
+      for (const item of serverCart.items) {
+        byKey.set(itemKey(item), item);
+      }
+      for (const item of cache.items) {
+        byKey.set(itemKey(item), item);
+      }
+      serverCart.items = [...byKey.values()];
     } else if (dirty) {
       // 資料が切り替わった。前の資料向けの未送信編集を新しい資料へ持ち込まない
       dirty = false;
@@ -181,14 +267,44 @@ window.TsundokuCart = (() => {
       dirty = false;
       return;
     }
+    const currentSavingPackId = activePack.id;
+    const currentSavingItems = clone(cache.items);
     dirty = false;
     try {
-      await fetch(`/api/packs/${activePack.id}/books`, {
+      const response = await fetch(`/api/packs/${currentSavingPackId}/items`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ books: cache.books }),
+        body: JSON.stringify(cartForSave(cache)),
         keepalive,
       });
+      if (response.ok) {
+        const payload = await response.json();
+        if (!activePack || activePack.id !== currentSavingPackId) {
+          return;
+        }
+        const serverCart = normalizeCart(payload);
+        if (dirty) {
+          const idMap = new Map();
+          for (let i = 0; i < currentSavingItems.length; i++) {
+            const originalItem = currentSavingItems[i];
+            const serverItem = serverCart.items[i];
+            if (serverItem && !Number.isInteger(originalItem.id) && Number.isInteger(serverItem.id)) {
+              idMap.set(itemKey(originalItem), serverItem.id);
+            }
+          }
+          for (const item of cache.items) {
+            const key = itemKey(item);
+            if (idMap.has(key)) {
+              item.id = idMap.get(key);
+            }
+          }
+        } else {
+          cache = serverCart;
+        }
+        notifyUpdated();
+      } else {
+        throw new Error(`PUT /api/packs/${activePack.id}/items -> ${response.status}`);
+      }
     } catch (error) {
       dirty = true; // 次の save / focus 時にリトライ
       console.warn('Failed to save pack', error);
@@ -220,10 +336,10 @@ window.TsundokuCart = (() => {
   }
 
   function save(cart) {
-    if (!cart || typeof cart !== 'object' || !cart.books || typeof cart.books !== 'object') {
+    if (!cart || typeof cart !== 'object') {
       return;
     }
-    cache = clone(cart);
+    cache = normalizeCart(cart);
     dirty = true;
     saveTargetPackId = activePack ? activePack.id : null;
     updateBadge();
@@ -233,12 +349,12 @@ window.TsundokuCart = (() => {
   }
 
   function bookCount(cart) {
-    return Object.keys(cart.books).length;
+    return normalizeCart(cart).items.length;
   }
 
   function totalPages(cart) {
     let total = 0;
-    for (const entry of Object.values(cart.books)) {
+    for (const entry of normalizeCart(cart).items) {
       const count = window.TsundokuPages.countPages(entry.pages);
       if (count === null) {
         return null;
@@ -251,7 +367,7 @@ window.TsundokuCart = (() => {
   function summaryLabel(cart) {
     const books = bookCount(cart);
     const pages = totalPages(cart);
-    return pages === null ? `${books}冊` : `${books}冊 / ${pages}ページ`;
+    return pages === null ? `${books}件` : `${books}件 / ${pages}ページ`;
   }
 
   function updateBadge() {
@@ -260,7 +376,7 @@ window.TsundokuCart = (() => {
       return;
     }
     const count = bookCount(cache);
-    badge.textContent = `${count}冊`;
+    badge.textContent = `${count}件`;
     badge.hidden = count === 0;
   }
 
@@ -283,14 +399,22 @@ window.TsundokuCart = (() => {
   }
 
   async function activatePack(packId) {
-    await flushPendingSave();
+    try {
+      await flushPendingSave();
+    } catch (err) {
+      console.warn('Failed to flush pending save before activating pack', err);
+    }
     await fetchJson(`/api/packs/${packId}/activate`, { method: 'POST' });
     await fetchActivePack();
   }
 
   // 現在の資料を意図的に未選択にする（資料自体・中身は削除しない）
   async function deactivatePack() {
-    await flushPendingSave();
+    try {
+      await flushPendingSave();
+    } catch (err) {
+      console.warn('Failed to flush pending save before deactivating pack', err);
+    }
     await fetchJson('/api/packs/deactivate', { method: 'POST' });
     await fetchActivePack();
   }
@@ -331,6 +455,8 @@ window.TsundokuCart = (() => {
   return {
     load,
     save,
+    itemKey,
+    createClientId,
     bookCount,
     totalPages,
     summaryLabel,
