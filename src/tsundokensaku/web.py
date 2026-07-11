@@ -454,6 +454,10 @@ def _run_index_job(force_paths: set[str] | None = None) -> None:
         )
 
 
+# TODO(phase3b-path-resolution-dedup): export_stats._resolve_pdf_path が本関数と
+# CONTAINER_BOOKS_DIRS を意図的に複製している（循環import回避のため。詳細は
+# export_stats.py 冒頭のコメントと docs/ai-export-optimization-design.md 5.9）。
+# Phase 3B で共通モジュールへ統合する想定。
 def resolve_pdf_path(pdf_path: str | Path, books_dir: Path) -> Path | None:
     candidate = Path(pdf_path)
     books_root = books_dir.resolve()
