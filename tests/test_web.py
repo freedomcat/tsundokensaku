@@ -253,6 +253,45 @@ class HighlightQueryTest(unittest.TestCase):
                 decoded = base64.b64decode(item["data"])
                 self.assertTrue(decoded.startswith(b"\xff\xd8"))
 
+    def test_pdf_thumbnails_allows_sixty_thumbnail_pages(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            books_dir = Path(temp_dir) / "books"
+            books_dir.mkdir()
+            pdf_path = books_dir / "sample.pdf"
+            writer = PdfWriter()
+            writer.add_blank_page(width=72, height=72)
+            with pdf_path.open("wb") as handle:
+                writer.write(handle)
+
+            rendered = [(page, b"\xff\xd8thumb") for page in range(1, 61)]
+            with (
+                patch("tsundokensaku.web.get_books_dir", return_value=books_dir),
+                patch("tsundokensaku.web.render_thumbnails", return_value=rendered) as render,
+            ):
+                response = pdf_thumbnails(pdf_path="sample.pdf", pages="1-60")
+
+            self.assertEqual(response.status_code, 200)
+            render.assert_called_once()
+
+    def test_pdf_thumbnails_uses_thumbnail_preset(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            books_dir = Path(temp_dir) / "books"
+            books_dir.mkdir()
+            pdf_path = books_dir / "sample.pdf"
+            writer = PdfWriter()
+            writer.add_blank_page(width=72, height=72)
+            with pdf_path.open("wb") as handle:
+                writer.write(handle)
+
+            with (
+                patch("tsundokensaku.web.get_books_dir", return_value=books_dir),
+                patch("tsundokensaku.web.render_thumbnails", return_value=[(1, b"\xff\xd8thumb")]) as render,
+            ):
+                response = pdf_thumbnails(pdf_path="sample.pdf", pages="1", size="thumbnail")
+
+            self.assertEqual(response.status_code, 200)
+            render.assert_called_once_with(pdf_path, [1], zoom=0.3, quality=70)
+
     def test_pdf_thumbnails_uses_detail_preset_for_single_page(self) -> None:
         import base64
 
@@ -267,14 +306,32 @@ class HighlightQueryTest(unittest.TestCase):
 
             with (
                 patch("tsundokensaku.web.get_books_dir", return_value=books_dir),
-                patch("tsundokensaku.web.render_thumbnails", return_value=[(1, b"\xff\xd8detail")]) as render,
+                patch("tsundokensaku.web.render_thumbnail_detail", return_value=(1, b"\xff\xd8detail")) as render,
             ):
                 response = pdf_thumbnails(pdf_path="sample.pdf", pages="1", size="detail")
 
             self.assertEqual(response.status_code, 200)
             payload = json.loads(response.body)
             self.assertEqual(payload["pages"], [{"page": 1, "data": base64.b64encode(b"\xff\xd8detail").decode("ascii")}])
-            render.assert_called_once_with(pdf_path, [1], zoom=1.0, quality=85)
+            render.assert_called_once_with(pdf_path, 1, zoom=1.0, quality=85)
+
+    def test_pdf_thumbnails_detail_allows_first_and_last_pages(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            books_dir = Path(temp_dir) / "books"
+            books_dir.mkdir()
+            pdf_path = books_dir / "sample.pdf"
+            writer = PdfWriter()
+            for _ in range(3):
+                writer.add_blank_page(width=72, height=72)
+            with pdf_path.open("wb") as handle:
+                writer.write(handle)
+
+            with patch("tsundokensaku.web.get_books_dir", return_value=books_dir):
+                first = pdf_thumbnails(pdf_path="sample.pdf", pages="1", size="detail")
+                last = pdf_thumbnails(pdf_path="sample.pdf", pages="3", size="detail")
+
+            self.assertEqual(first.status_code, 200)
+            self.assertEqual(last.status_code, 200)
 
     def test_pdf_thumbnails_rejects_multiple_detail_pages(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -322,13 +379,13 @@ class HighlightQueryTest(unittest.TestCase):
 
             with (
                 patch("tsundokensaku.web.get_books_dir", return_value=books_dir),
-                patch("tsundokensaku.web.render_thumbnails") as render,
+                patch("tsundokensaku.web.render_thumbnail_detail", return_value=None) as render,
             ):
                 with self.assertRaises(HTTPException) as ctx:
                     pdf_thumbnails(pdf_path="sample.pdf", pages="2", size="detail")
 
             self.assertEqual(ctx.exception.status_code, 404)
-            render.assert_not_called()
+            render.assert_called_once_with(pdf_path, 2, zoom=1.0, quality=85)
 
     def test_pdf_thumbnails_rejects_unknown_size(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

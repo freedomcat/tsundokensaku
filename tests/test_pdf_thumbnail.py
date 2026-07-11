@@ -4,7 +4,7 @@ from pathlib import Path
 
 import fitz
 
-from tsundokensaku.pdf_thumbnail import render_thumbnails
+from tsundokensaku.pdf_thumbnail import render_thumbnail_detail, render_thumbnails
 
 
 def _make_pdf(path: Path, page_count: int) -> None:
@@ -46,6 +46,29 @@ class RenderThumbnailsTest(unittest.TestCase):
             large = render_thumbnails(pdf_path, [1], zoom=1.0)
 
             self.assertLess(len(small[0][1]), len(large[0][1]))
+
+    def test_detail_returns_jpeg_for_first_and_last_pages(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            pdf_path = Path(temp_dir) / "book.pdf"
+            _make_pdf(pdf_path, 3)
+
+            first = render_thumbnail_detail(pdf_path, 1)
+            last = render_thumbnail_detail(pdf_path, 3)
+
+            self.assertIsNotNone(first)
+            self.assertIsNotNone(last)
+            self.assertEqual(first[0], 1)
+            self.assertEqual(last[0], 3)
+            self.assertTrue(first[1].startswith(b"\xff\xd8"))
+            self.assertTrue(last[1].startswith(b"\xff\xd8"))
+
+    def test_detail_returns_none_for_out_of_range_page(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            pdf_path = Path(temp_dir) / "book.pdf"
+            _make_pdf(pdf_path, 1)
+
+            self.assertIsNone(render_thumbnail_detail(pdf_path, 0))
+            self.assertIsNone(render_thumbnail_detail(pdf_path, 2))
 
 
 if __name__ == "__main__":
