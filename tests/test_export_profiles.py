@@ -11,6 +11,7 @@ from tsundokensaku.export_profiles import (
     ExportWarning,
     RenderContext,
     StandardProfile,
+    resolve_profile,
 )
 from tsundokensaku.export_stats import ItemStats
 from tsundokensaku.token_estimate import TextStats, estimate_tokens
@@ -310,6 +311,19 @@ class ProfilesRegistryTest(unittest.TestCase):
         profile = PROFILES["standard"]
         self.assertIsInstance(profile, StandardProfile)
         self.assertEqual(profile.name, "standard")
+
+
+class ResolveProfileTest(unittest.TestCase):
+    def test_none_resolves_to_standard(self) -> None:
+        self.assertIsInstance(resolve_profile(None), StandardProfile)
+
+    def test_standard_name_resolves_to_standard(self) -> None:
+        self.assertIsInstance(resolve_profile("standard"), StandardProfile)
+
+    def test_unknown_name_raises_value_error_with_name_as_message(self) -> None:
+        with self.assertRaises(ValueError) as ctx:
+            resolve_profile("unknown")
+        self.assertEqual(str(ctx.exception), "unknown")
 
 
 if __name__ == "__main__":

@@ -220,3 +220,17 @@ class StandardProfile(ExportProfile):
 
 
 PROFILES: dict[str, ExportProfile] = {profile.name: profile for profile in (StandardProfile(),)}
+
+
+def resolve_profile(name: str | None) -> ExportProfile:
+    """profile名からプロファイルを解決する。未指定（None）は standard を返す。
+
+    FastAPI非依存の純粋ロジック。不明な名前は ValueError（指定名そのものを
+    メッセージに持つ）を送出する。HTTPException への変換は呼び出し側
+    （web.py）の責務とし、ここでは行わない（設計書13.1: web.pyの責務は配線のみ）。
+    """
+    profile_name = name if name is not None else "standard"
+    profile = PROFILES.get(profile_name)
+    if profile is None:
+        raise ValueError(profile_name)
+    return profile

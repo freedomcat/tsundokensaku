@@ -48,7 +48,7 @@ from tsundokensaku.database import (
     update_pack,
 )
 from tsundokensaku.database import initialize
-from tsundokensaku.export_profiles import PROFILES, RenderContext
+from tsundokensaku.export_profiles import PROFILES, ExportProfile, RenderContext, resolve_profile
 from tsundokensaku.export_stats import ItemStats, collect_item_stats
 from tsundokensaku.indexer import find_pdfs, index_books
 from tsundokensaku.metadata import (
@@ -1344,7 +1344,7 @@ def _placeholder_item_stats_for_export(item) -> ItemStats:
     )
 
 
-def _export_pack_archive(pack, items: list, *, format: str) -> Response:
+def _export_pack_archive(pack, items: list, *, format: str, profile: ExportProfile) -> Response:
     if not items:
         raise HTTPException(status_code=400, detail="資料が空です")
 
@@ -1352,7 +1352,6 @@ def _export_pack_archive(pack, items: list, *, format: str) -> Response:
     db_path = get_db_path()
     exported_at = _now_jst()
 
-    profile = PROFILES["standard"]
     plan = profile.plan([_placeholder_item_stats_for_export(item) for item in items])
     ctx = RenderContext(
         pack_name=pack.name,
@@ -1389,10 +1388,28 @@ def _export_pack_archive(pack, items: list, *, format: str) -> Response:
     )
 
 
+def _resolve_export_profile_or_400(name: str | None) -> ExportProfile:
+    try:
+        return resolve_profile(name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"不明なエクスポートプロファイルです: {exc}") from exc
+
+
 @app.get("/api/packs/{pack_id}/export")
-def api_export_pack(pack_id: int, format: str = Query("pdf")) -> Response:
+def api_export_pack(pack_id: int, profile: str | None = None, format: str = Query("pdf")) -> Response:
+    resolved_profile = _resolve_export_profile_or_400(profile)
+
     if format not in ("pdf", "md", "json"):
         raise HTTPException(status_code=400, detail="format は pdf, md, または json を指定してください")
+
+    # standard は primary_format=None（format を実行時に選べる）ため、この時点では
+    # 常にスキップされる。chat/notebooklm 追加時に固定形式との矛盾を弾く構造だけ
+    # 用意しておく（B-3では仮実装や分岐を追加しない）
+    if resolved_profile.primary_format is not None and format != resolved_profile.primary_format:
+        raise HTTPException(
+            status_code=400,
+            detail=f"profile={resolved_profile.name} では format={resolved_profile.primary_format} のみ指定できます",
+        )
 
     connection = _pack_connection()
     try:
@@ -1406,7 +1423,7 @@ def api_export_pack(pack_id: int, format: str = Query("pdf")) -> Response:
     if format == "json":
         return _export_pack_json(pack, items)
 
-    return _export_pack_archive(pack, items, format=format)
+    return _export_pack_archive(pack, items, format=format, profile=resolved_profile)
 
 
 @app.post("/api/packs/import")

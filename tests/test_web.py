@@ -1677,6 +1677,225 @@ class ExportArchiveBackwardCompatibilityTest(unittest.TestCase):
                 self.assertIn("out of range", ctx.exception.detail)
 
 
+class ExportProfileParameterTest(unittest.TestCase):
+    """B-3: /api/packs/{id}/export への profile クエリパラメータ対応。
+
+    profile 未指定は standard と完全互換であることが目的のため、多くの
+    テストは「未指定」と「profile=standard」の2通りを同一資料に対して
+    実行し、結果が一致することを検証する形にしている。
+    """
+
+    def _payload(self, response) -> dict:
+        return json.loads(response.body)
+
+    def _make_pdf(self, path: Path, page_count: int) -> None:
+        writer = PdfWriter()
+        for _ in range(page_count):
+            writer.add_blank_page(width=72, height=72)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("wb") as handle:
+            writer.write(handle)
+
+    def _setup_pack_with_one_item(self, books_dir: Path) -> dict:
+        self._make_pdf(books_dir / "a.pdf", 5)
+        created = self._payload(api_create_pack({"name": "資料"}))
+        items = [{"pdf_path": "a.pdf", "title": "本A", "pages": "1-3", "collapsed": False, "position": 0}]
+        self._payload(api_replace_pack_items(created["id"], {"items": items}))
+        return created
+
+    def test_default_profile_is_none_and_default_format_is_pdf(self) -> None:
+        import inspect
+
+        parameters = inspect.signature(api_export_pack).parameters
+        self.assertIsNone(parameters["profile"].default)
+        self.assertEqual(parameters["format"].default.default, "pdf")
+
+    def test_profile_unspecified_and_all_formats_succeed(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            db_path = root / "index.db"
+            books_dir = root / "books"
+
+            with (
+                patch("tsundokensaku.web.get_db_path", return_value=db_path),
+                patch("tsundokensaku.web.get_books_dir", return_value=books_dir),
+            ):
+                created = self._setup_pack_with_one_item(books_dir)
+
+                for fmt, media_type in (("pdf", "application/zip"), ("md", "application/zip"), ("json", "application/json")):
+                    response = api_export_pack(created["id"], format=fmt)
+                    self.assertEqual(response.status_code, 200, msg=f"format={fmt}")
+                    self.assertEqual(response.media_type, media_type, msg=f"format={fmt}")
+
+    def test_profile_standard_and_all_formats_succeed(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            db_path = root / "index.db"
+            books_dir = root / "books"
+
+            with (
+                patch("tsundokensaku.web.get_db_path", return_value=db_path),
+                patch("tsundokensaku.web.get_books_dir", return_value=books_dir),
+            ):
+                created = self._setup_pack_with_one_item(books_dir)
+
+                for fmt, media_type in (("pdf", "application/zip"), ("md", "application/zip"), ("json", "application/json")):
+                    response = api_export_pack(created["id"], profile="standard", format=fmt)
+                    self.assertEqual(response.status_code, 200, msg=f"format={fmt}")
+                    self.assertEqual(response.media_type, media_type, msg=f"format={fmt}")
+
+    def test_profile_unspecified_and_standard_use_same_default_format(self) -> None:
+        import inspect
+
+        default_format = inspect.signature(api_export_pack).parameters["format"].default.default
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            db_path = root / "index.db"
+            books_dir = root / "books"
+
+            with (
+                patch("tsundokensaku.web.get_db_path", return_value=db_path),
+                patch("tsundokensaku.web.get_books_dir", return_value=books_dir),
+            ):
+                created = self._setup_pack_with_one_item(books_dir)
+
+                unspecified = api_export_pack(created["id"], format=default_format)
+                standard = api_export_pack(created["id"], profile="standard", format=default_format)
+
+                self.assertEqual(unspecified.status_code, 200)
+                self.assertEqual(standard.status_code, 200)
+                self.assertEqual(unspecified.media_type, standard.media_type)
+                with zipfile.ZipFile(BytesIO(unspecified.body)) as archive:
+                    self.assertEqual(archive.namelist(), ["manifest.md", "01_本A_p1-3.pdf"])
+
+    def _assert_responses_are_identical(self, a, b) -> None:
+        self.assertEqual(a.status_code, b.status_code)
+        self.assertEqual(a.media_type, b.media_type)
+        self.assertEqual(a.headers["content-disposition"], b.headers["content-disposition"])
+
+    def test_profile_unspecified_matches_standard_for_pdf(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            db_path = root / "index.db"
+            books_dir = root / "books"
+
+            with (
+                patch("tsundokensaku.web.get_db_path", return_value=db_path),
+                patch("tsundokensaku.web.get_books_dir", return_value=books_dir),
+            ):
+                created = self._setup_pack_with_one_item(books_dir)
+
+                unspecified = api_export_pack(created["id"], format="pdf")
+                standard = api_export_pack(created["id"], profile="standard", format="pdf")
+
+                self._assert_responses_are_identical(unspecified, standard)
+                with (
+                    zipfile.ZipFile(BytesIO(unspecified.body)) as archive_a,
+                    zipfile.ZipFile(BytesIO(standard.body)) as archive_b,
+                ):
+                    self.assertEqual(archive_a.namelist(), archive_b.namelist())
+                    for name in archive_a.namelist():
+                        self.assertEqual(archive_a.read(name), archive_b.read(name), msg=name)
+
+    def test_profile_unspecified_matches_standard_for_markdown(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            db_path = root / "index.db"
+            books_dir = root / "books"
+
+            with (
+                patch("tsundokensaku.web.get_db_path", return_value=db_path),
+                patch("tsundokensaku.web.get_books_dir", return_value=books_dir),
+            ):
+                created = self._setup_pack_with_one_item(books_dir)
+
+                unspecified = api_export_pack(created["id"], format="md")
+                standard = api_export_pack(created["id"], profile="standard", format="md")
+
+                self._assert_responses_are_identical(unspecified, standard)
+                with (
+                    zipfile.ZipFile(BytesIO(unspecified.body)) as archive_a,
+                    zipfile.ZipFile(BytesIO(standard.body)) as archive_b,
+                ):
+                    self.assertEqual(archive_a.namelist(), archive_b.namelist())
+                    for name in archive_a.namelist():
+                        self.assertEqual(archive_a.read(name), archive_b.read(name), msg=name)
+
+    def test_profile_unspecified_matches_standard_for_json(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            db_path = root / "index.db"
+            books_dir = root / "books"
+
+            with (
+                patch("tsundokensaku.web.get_db_path", return_value=db_path),
+                patch("tsundokensaku.web.get_books_dir", return_value=books_dir),
+            ):
+                created = self._setup_pack_with_one_item(books_dir)
+
+                unspecified = api_export_pack(created["id"], format="json")
+                standard = api_export_pack(created["id"], profile="standard", format="json")
+
+                self._assert_responses_are_identical(unspecified, standard)
+                self.assertEqual(unspecified.body, standard.body)
+
+    def test_profile_standard_zip_filename_matches_unspecified(self) -> None:
+        # profile=standard を付けても現行のZIP名（{資料名}_{YYYYMMDD}.zip）を維持する
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            db_path = root / "index.db"
+            books_dir = root / "books"
+
+            with (
+                patch("tsundokensaku.web.get_db_path", return_value=db_path),
+                patch("tsundokensaku.web.get_books_dir", return_value=books_dir),
+            ):
+                created = self._setup_pack_with_one_item(books_dir)
+
+                standard = api_export_pack(created["id"], profile="standard", format="pdf")
+                disposition = standard.headers["content-disposition"]
+                self.assertIn(quote(f"資料_{_now_jst():%Y%m%d}.zip"), disposition)
+                self.assertNotIn("standard", disposition)
+
+    def test_unknown_profile_returns_400_with_available_values_hint(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "index.db"
+            with patch("tsundokensaku.web.get_db_path", return_value=db_path):
+                created = self._payload(api_create_pack({"name": "資料"}))
+                with self.assertRaises(HTTPException) as ctx:
+                    api_export_pack(created["id"], profile="unknown", format="pdf")
+                self.assertEqual(ctx.exception.status_code, 400)
+                self.assertEqual(ctx.exception.detail, "不明なエクスポートプロファイルです: unknown")
+
+    def test_invalid_format_still_returns_400_with_standard_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "index.db"
+            with patch("tsundokensaku.web.get_db_path", return_value=db_path):
+                created = self._payload(api_create_pack({"name": "資料"}))
+                with self.assertRaises(HTTPException) as ctx:
+                    api_export_pack(created["id"], profile="standard", format="epub")
+                self.assertEqual(ctx.exception.status_code, 400)
+                self.assertEqual(ctx.exception.detail, "format は pdf, md, または json を指定してください")
+
+    def test_unknown_profile_takes_priority_over_invalid_format(self) -> None:
+        # 検証順序: 1.profile解決 2.format検証 3.profile/format整合性 4.pack取得
+        # 不明profile・不正format・存在しないpackが同時に揃っても、最初に
+        # 検出されるのは不明profileであることを固定する
+        with self.assertRaises(HTTPException) as ctx:
+            api_export_pack(9999, profile="unknown", format="epub")
+        self.assertEqual(ctx.exception.status_code, 400)
+        self.assertEqual(ctx.exception.detail, "不明なエクスポートプロファイルです: unknown")
+
+    def test_missing_pack_returns_404_after_profile_and_format_pass(self) -> None:
+        # 既存のpack不存在時の挙動（404）は、profile解決・format検証の後段で
+        # そのまま維持されることを確認する
+        with self.assertRaises(HTTPException) as ctx:
+            api_export_pack(9999, profile="standard", format="pdf")
+        self.assertEqual(ctx.exception.status_code, 404)
+        self.assertEqual(ctx.exception.detail, "資料が見つかりません")
+
+
 class BuildExportPreviewPayloadTest(unittest.TestCase):
     """collect_item_stats の結果からプレビューJSONを組み立てる純粋関数のテスト。
 
