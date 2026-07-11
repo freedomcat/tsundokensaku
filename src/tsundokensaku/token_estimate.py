@@ -9,6 +9,10 @@ from dataclasses import dataclass
 CJK_TOKENS_PER_CHAR = 1.0
 OTHER_TOKENS_PER_CHAR = 0.25
 
+# 概算方式のバージョン名。API応答の "estimator" フィールドに載せ、将来モデル別
+# トークナイザーへ差し替えた際に概算の出所を区別できるようにする（設計書 8.5）。
+ESTIMATOR_NAME = "char-class-v1"
+
 # ひらがな・カタカナ（぀-ヿ）、CJK統合漢字拡張A（㐀-䶿）、
 # CJK統合漢字（一-鿿）、CJK記号・約物（　-〿）、
 # 全角英数・半角カナ等の半角/全角形ブロック（＀-￯）。

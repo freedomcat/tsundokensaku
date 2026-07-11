@@ -48,6 +48,7 @@ from tsundokensaku.database import (
     update_pack,
 )
 from tsundokensaku.database import initialize
+from tsundokensaku.export_stats import ItemStats, collect_item_stats
 from tsundokensaku.indexer import find_pdfs, index_books
 from tsundokensaku.metadata import (
     BookMetadata,
@@ -61,6 +62,7 @@ from tsundokensaku.markdown_export import default_markdown_output_name, render_m
 from tsundokensaku.pdf_export import default_output_path, parse_page_selection, render_selected_pages
 from tsundokensaku.pdf_outline import get_page_count, list_chapters
 from tsundokensaku.pdf_thumbnail import render_thumbnail_detail, render_thumbnails
+from tsundokensaku.token_estimate import ESTIMATOR_NAME, TextStats, estimate_tokens
 from tsundokensaku.tokenizer import query_highlight_terms
 from tsundokensaku.zip_export import (
     PackExportEntry,
@@ -1209,6 +1211,90 @@ def api_replace_pack_items(pack_id: int, payload: dict = Body(default={})) -> JS
     finally:
         connection.close()
     return JSONResponse({"pack_id": pack_id, "cart": cart, **items_payload})
+
+
+# エクスポート前の概算（トークンバジェット）。実行系エクスポートと異なり、
+# 空資料・PDF欠損・不正なページ範囲・未インデックスのいずれも例外にせず、
+# warnings として列挙して返す（設計書 14章「プレビューは寛容、実行は厳格」）。
+# Phase 3A では profile パラメータを受け付けず、常に standard 相当の概算を返す。
+# profile 追加時（Phase 3C）も、省略時はこの挙動を後方互換として維持する
+# （設計書 12.1）。
+def _export_preview_warning(code: str, *, item_id: int | None, message: str) -> dict[str, object]:
+    return {"code": code, "item_id": item_id, "message": message}
+
+
+def build_export_preview_warnings(item_stats: list[ItemStats]) -> list[dict[str, object]]:
+    if not item_stats:
+        return [_export_preview_warning("empty_pack", item_id=None, message="この資料には資料項目がありません")]
+
+    warnings: list[dict[str, object]] = []
+    for entry in item_stats:
+        item = entry.item
+        if entry.missing_pdf:
+            warnings.append(
+                _export_preview_warning(
+                    "missing_pdf", item_id=item.id, message=f"「{item.title}」はPDFファイルが見つかりません"
+                )
+            )
+            continue
+        if not item.pages.strip():
+            warnings.append(
+                _export_preview_warning(
+                    "missing_pages", item_id=item.id, message=f"「{item.title}」はページが指定されていません"
+                )
+            )
+            continue
+        if not entry.page_numbers:
+            warnings.append(
+                _export_preview_warning(
+                    "invalid_pages", item_id=item.id, message=f"「{item.title}」のページ指定を解釈できませんでした"
+                )
+            )
+            continue
+        if entry.unindexed_pages > 0:
+            warnings.append(
+                _export_preview_warning(
+                    "unindexed_pages",
+                    item_id=item.id,
+                    message=f"「{item.title}」は未インデックスのため{entry.unindexed_pages}ページ分を概算に含めていません",
+                )
+            )
+    return warnings
+
+
+def build_export_preview_payload(item_stats: list[ItemStats]) -> dict[str, object]:
+    book_count = len({entry.item.pdf_path for entry in item_stats})
+    total_pages = sum(len(entry.page_numbers) for entry in item_stats)
+    total_stats = TextStats(
+        cjk_chars=sum(entry.stats.cjk_chars for entry in item_stats),
+        other_chars=sum(entry.stats.other_chars for entry in item_stats),
+    )
+
+    return {
+        "estimation": "approximate",
+        "estimator": ESTIMATOR_NAME,
+        "book_count": book_count,
+        "item_count": len(item_stats),
+        "total_pages": total_pages,
+        "estimated_chars": total_stats.cjk_chars + total_stats.other_chars,
+        "estimated_tokens": estimate_tokens(total_stats),
+        "warnings": build_export_preview_warnings(item_stats),
+    }
+
+
+@app.get("/api/packs/{pack_id}/export/preview")
+def api_preview_pack_export(pack_id: int) -> JSONResponse:
+    connection = _pack_connection()
+    try:
+        pack = get_pack(connection, pack_id)
+        if pack is None:
+            raise HTTPException(status_code=404, detail="資料が見つかりません")
+        items = get_pack_items(connection, pack_id)
+        item_stats = collect_item_stats(connection, items, books_dir=get_books_dir())
+    finally:
+        connection.close()
+
+    return JSONResponse(build_export_preview_payload(item_stats))
 
 
 @app.get("/api/packs/{pack_id}/export")
