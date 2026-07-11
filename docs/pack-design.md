@@ -127,6 +127,7 @@ PDFプレビューモーダル（検索起点・資料棚起点の両方）
 ## 7. 既知の注意点
 
 - **pdf_path の正規化**: `books.path` には `/data/books/...` と旧 `/books/tech/...` が混在し得る。資料のキーは追加時点の books.path をそのまま使う。再インデックスでパスが変わった項目の「本が見つかりません」表示は未実装（残TODO）
+- **同一PDFの複数項目化**: 現状は `UNIQUE(pack_id, pdf_path)` と `cart.books[pdf_path]` により、同じ資料内に同じPDFを複数項目として追加できない。分冊して別々のページ範囲・位置・折りたたみ状態で扱う設計案は [pack-item-identity-design.md](pack-item-identity-design.md) に分離
 - **複数タブ**: last-write-wins + フォーカス時再取得。デバウンス中のタブ切替で数秒の巻き戻りがあり得るが許容
 - **エクスポート経路は資料と独立**: `/export-pdf` / `/export-md` は従来どおり `pdf_path` + `pages` を都度受ける。資料は「何をどの順で渡すかの記憶」に徹する
 
