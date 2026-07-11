@@ -17,6 +17,7 @@
     <span class="pill" id="ws-count"></span>
     <span class="pill" id="ws-export-preview" hidden></span>
     <button type="button" id="ws-add-open">ページを追加</button>
+    <button type="button" class="primary" id="ws-export-ai">AI向けに書き出す</button>
     <button type="button" class="primary" id="ws-export-pdf">PDF一式を書き出す</button>
     <button type="button" id="ws-export-md">MD一式を書き出す</button>
     <button type="button" id="ws-export-json" title="PDF本体ではなく、資料の構成・ページ範囲・並び順をJSONで保存します">資料データを書き出す</button>
@@ -51,6 +52,53 @@
   </div>
 </div>
 
+<div class="modal" id="ws-export-modal" aria-hidden="true">
+  <div class="modal-panel ws-export-panel" role="dialog" aria-modal="true" aria-labelledby="ws-export-title">
+    <div class="modal-bar">
+      <div class="modal-title" id="ws-export-title">AI向けに書き出す</div>
+      <div class="modal-actions">
+        <button type="button" id="ws-export-close">閉じる</button>
+      </div>
+    </div>
+    <div class="ws-export-content">
+      <fieldset class="ws-export-destinations">
+        <legend>渡す先</legend>
+        <div id="ws-export-destination-list"></div>
+      </fieldset>
+      <section aria-labelledby="ws-export-preview-title">
+        <h3 id="ws-export-preview-title">この資料の概算</h3>
+        <div id="ws-export-detail"><p class="muted">プレビューを取得中...</p></div>
+      </section>
+      <section id="ws-export-warnings-section" aria-labelledby="ws-export-warnings-title" hidden>
+        <h3 id="ws-export-warnings-title">警告</h3>
+        <ul id="ws-export-warnings" aria-live="polite"></ul>
+      </section>
+    </div>
+    <div class="ws-add-footer">
+      <button type="button" id="ws-export-cancel">キャンセル</button>
+      <button type="button" class="primary" id="ws-export-submit" disabled>書き出す</button>
+      <span class="ws-status" id="ws-export-status" aria-live="polite"></span>
+    </div>
+  </div>
+</div>
+
+<style>
+  .modal-panel.ws-export-panel {
+    width: min(680px, 100%);
+    height: auto;
+    max-height: min(85vh, 900px);
+    grid-template-rows: auto minmax(0, 1fr) auto;
+  }
+  .ws-export-content { overflow-y: auto; padding: 16px; display: grid; gap: 18px; }
+  .ws-export-content h3 { margin: 0 0 8px; font-size: 1rem; }
+  .ws-export-destinations { margin: 0; padding: 12px; border: 1px solid var(--border); border-radius: 8px; }
+  .ws-export-destinations label { display: flex; align-items: center; gap: 8px; }
+  .ws-export-summary { margin: 0 0 10px; }
+  .ws-export-chunks { margin: 0; padding-left: 1.5rem; display: grid; gap: 8px; }
+  .ws-export-chunks strong { overflow-wrap: anywhere; }
+  #ws-export-warnings { margin: 0; padding-left: 1.5rem; }
+</style>
+
 <section class="card">
   <div id="ws-books"></div>
   <p class="muted" id="ws-empty" hidden>この資料は空です。検索結果の「資料に追加」からページを追加してください。</p>
@@ -69,6 +117,7 @@
     const emptyMessage = document.getElementById('ws-empty');
     const countBadge = document.getElementById('ws-count');
     const exportPreviewBadge = document.getElementById('ws-export-preview');
+    const exportAiButton = document.getElementById('ws-export-ai');
     const exportPdfButton = document.getElementById('ws-export-pdf');
     const exportMdButton = document.getElementById('ws-export-md');
     const exportJsonButton = document.getElementById('ws-export-json');
@@ -84,7 +133,23 @@
     const addResults = document.getElementById('ws-add-results');
     const addSubmitButton = document.getElementById('ws-add-submit');
     const addStatus = document.getElementById('ws-add-status');
+    const exportModal = document.getElementById('ws-export-modal');
+    const exportDestinationList = document.getElementById('ws-export-destination-list');
+    const exportDetail = document.getElementById('ws-export-detail');
+    const exportWarningsSection = document.getElementById('ws-export-warnings-section');
+    const exportWarnings = document.getElementById('ws-export-warnings');
+    const exportSubmitButton = document.getElementById('ws-export-submit');
+    const exportCancelButton = document.getElementById('ws-export-cancel');
+    const exportCloseButton = document.getElementById('ws-export-close');
+    const exportStatus = document.getElementById('ws-export-status');
     const outlineCache = new Map();
+    const EXPORT_DESTINATIONS = [
+      { profile: 'chat', label: 'ChatGPT / Claude' }
+    ];
+    const BLOCKING_EXPORT_WARNINGS = new Set(['empty_pack', 'missing_pdf', 'missing_pages', 'invalid_pages']);
+    let exportPreviewRequestToken = 0;
+    let exportModalPackId = null;
+    let exportInProgress = false;
 
     function setStatus(message, isError = false) {
       statusLine.textContent = message || '';
@@ -99,6 +164,7 @@
       countBadge.hidden = !hasPack;
       emptyMessage.hidden = !hasPack || count > 0;
       // noPackSection / noActivePackSection の表示は資料一覧の有無が絡むため refreshPackBar 側で判定する
+      exportAiButton.disabled = !hasPack;
       for (const button of [exportPdfButton, exportMdButton, exportJsonButton, clearButton, addOpenButton]) {
         button.disabled = !hasPack || count === 0;
       }
@@ -135,6 +201,21 @@
       exportPreviewBadge.hidden = false;
     }
 
+    async function fetchExportPreview(profile) {
+      const pack = TsundokuCart.getActivePack();
+      if (!pack) {
+        throw new Error('資料が選択されていません');
+      }
+      const params = profile ? `?${new URLSearchParams({ profile })}` : '';
+      const response = await fetch(`/api/packs/${pack.id}/export/preview${params}`);
+      if (!response.ok) {
+        throw new Error(await errorMessageFromResponse(response));
+      }
+      const preview = await response.json();
+      const stillActive = TsundokuCart.getActivePack();
+      return stillActive && stillActive.id === pack.id ? { packId: pack.id, preview } : null;
+    }
+
     async function refreshExportPreview() {
       const pack = TsundokuCart.getActivePack();
       if (!pack) {
@@ -142,23 +223,14 @@
         return;
       }
       try {
-        const response = await fetch(`/api/packs/${pack.id}/export/preview`);
-        if (!response.ok) {
-          throw new Error(`GET /api/packs/${pack.id}/export/preview -> ${response.status}`);
+        const result = await fetchExportPreview();
+        if (result) {
+          renderExportPreview(result.preview);
         }
-        const preview = await response.json();
-        // 取得中に資料が切り替わっていたら、古い資料の結果を表示しない
-        const stillActive = TsundokuCart.getActivePack();
-        if (!stillActive || stillActive.id !== pack.id) {
-          return;
-        }
-        renderExportPreview(preview);
       } catch (error) {
         console.warn('Failed to load export preview', error);
         const stillActive = TsundokuCart.getActivePack();
-        if (!stillActive || stillActive.id !== pack.id) {
-          return;
-        }
+        if (!stillActive || stillActive.id !== pack.id) return;
         showExportPreviewError();
       }
     }
@@ -559,15 +631,15 @@
       return text || 'エクスポートに失敗しました';
     }
 
-    async function exportPackZip(format) {
+    async function exportPack({ format, profile, reportStatus = setStatus }) {
       const pack = TsundokuCart.getActivePack();
       if (!pack) {
-        return;
+        return false;
       }
       const cart = TsundokuCart.load();
       const items = Array.isArray(cart.items) ? cart.items : [];
       if (format !== 'json' && items.length === 0) {
-        return;
+        return false;
       }
       for (const entry of items) {
         const path = entry.pdf_path;
@@ -577,19 +649,26 @@
           ? (format === 'json' ? '' : TsundokuPages.validatePageSpec(entry.pages, outline ? outline.pageCount : null))
           : 'ページを指定してください';
         if (error) {
-          setStatus(`${entry.title}: ${error}`, true);
-          return;
+          reportStatus(`${entry.title}: ${error}`, true);
+          return false;
         }
       }
-      const buttons = [exportPdfButton, exportMdButton, exportJsonButton, clearButton];
+      const buttons = [exportAiButton, exportPdfButton, exportMdButton, exportJsonButton, clearButton];
       for (const button of buttons) {
         button.disabled = true;
       }
       try {
-        setStatus(format === 'json' ? '資料データを書き出し中...' : '資料一式を書き出し中...');
+        reportStatus(format === 'json' ? '資料データを書き出し中...' : '資料一式を書き出し中...');
         // サーバの最新内容でエクスポートするため、デバウンス中の未送信編集を先に反映させる
         await TsundokuCart.flushPendingSave();
-        const response = await fetch(`/api/packs/${pack.id}/export?${new URLSearchParams({ format })}`);
+        const stillActive = TsundokuCart.getActivePack();
+        if (!stillActive || stillActive.id !== pack.id) {
+          throw new Error('資料が切り替わったため、書き出しを中止しました');
+        }
+        const params = new URLSearchParams();
+        if (format) params.set('format', format);
+        if (profile) params.set('profile', profile);
+        const response = await fetch(`/api/packs/${pack.id}/export?${params}`);
         if (!response.ok) {
           throw new Error(await errorMessageFromResponse(response));
         }
@@ -597,14 +676,135 @@
         const defaultFilename = format === 'json' ? 'export.json' : 'export.zip';
         const filename = filenameFromContentDisposition(response.headers.get('Content-Disposition')) || defaultFilename;
         downloadBlob(blob, filename);
-        setStatus(format === 'json' ? '資料データ（JSON）をダウンロードしました' : '資料一式（ZIP）をダウンロードしました');
+        reportStatus(format === 'json' ? '資料データ（JSON）をダウンロードしました' : '資料一式（ZIP）をダウンロードしました');
+        return true;
       } catch (error) {
-        setStatus(error instanceof Error ? error.message : 'エクスポートに失敗しました', true);
+        reportStatus(error instanceof Error ? error.message : 'エクスポートに失敗しました', true);
+        return false;
       } finally {
         for (const button of buttons) {
           button.disabled = false;
         }
         refreshSummary();
+      }
+    }
+
+    function setExportStatus(message, isError = false) {
+      exportStatus.textContent = message || '';
+      exportStatus.classList.toggle('is-error', Boolean(isError && message));
+    }
+
+    function selectedExportProfile() {
+      return exportDestinationList.querySelector('input[name="ws-export-destination"]:checked')?.value || '';
+    }
+
+    function renderExportDestinations() {
+      exportDestinationList.innerHTML = '';
+      for (const [index, destination] of EXPORT_DESTINATIONS.entries()) {
+        const label = document.createElement('label');
+        const input = document.createElement('input');
+        input.type = 'radio';
+        input.name = 'ws-export-destination';
+        input.value = destination.profile;
+        input.checked = index === 0;
+        label.append(input, document.createTextNode(destination.label));
+        exportDestinationList.appendChild(label);
+      }
+    }
+
+    function renderModalExportPreview(preview) {
+      exportDetail.innerHTML = '';
+      const summary = document.createElement('p');
+      summary.className = 'ws-export-summary';
+      summary.textContent = `推定トークン数: ${preview.estimated_tokens.toLocaleString('ja-JP')} / ファイル数: ${preview.file_count}`;
+      exportDetail.appendChild(summary);
+
+      const chunks = document.createElement('ol');
+      chunks.className = 'ws-export-chunks';
+      for (const chunk of preview.chunks || []) {
+        const item = document.createElement('li');
+        const filename = document.createElement('strong');
+        filename.textContent = chunk.filename;
+        item.append(filename, document.createTextNode(` / 推定トークン数: ${chunk.estimated_tokens.toLocaleString('ja-JP')}`));
+        chunks.appendChild(item);
+      }
+      exportDetail.appendChild(chunks);
+
+      const warnings = preview.warnings || [];
+      exportWarnings.innerHTML = '';
+      for (const warning of warnings) {
+        const item = document.createElement('li');
+        item.textContent = warning.message;
+        exportWarnings.appendChild(item);
+      }
+      exportWarningsSection.hidden = warnings.length === 0;
+      exportSubmitButton.disabled = warnings.some((warning) => BLOCKING_EXPORT_WARNINGS.has(warning.code));
+    }
+
+    async function refreshModalExportPreview() {
+      const requestToken = ++exportPreviewRequestToken;
+      const requestedPackId = exportModalPackId;
+      exportDetail.innerHTML = '<p class="muted">プレビューを取得中...</p>';
+      exportWarnings.innerHTML = '';
+      exportWarningsSection.hidden = true;
+      exportSubmitButton.disabled = true;
+      setExportStatus('');
+      try {
+        const result = await fetchExportPreview(selectedExportProfile());
+        if (requestToken !== exportPreviewRequestToken || !exportModal.classList.contains('open') || !result) {
+          return;
+        }
+        if (result.packId !== exportModalPackId) {
+          closeExportModal();
+          return;
+        }
+        renderModalExportPreview(result.preview);
+      } catch (error) {
+        if (requestToken !== exportPreviewRequestToken || !exportModal.classList.contains('open') || exportModalPackId !== requestedPackId) {
+          return;
+        }
+        exportDetail.innerHTML = '';
+        setExportStatus(error instanceof Error ? error.message : 'プレビューの取得に失敗しました', true);
+      }
+    }
+
+    function openExportModal() {
+      const pack = TsundokuCart.getActivePack();
+      if (!pack || exportInProgress) return;
+      exportModalPackId = pack.id;
+      renderExportDestinations();
+      exportModal.classList.add('open');
+      exportModal.setAttribute('aria-hidden', 'false');
+      exportDestinationList.querySelector('input')?.focus();
+      void refreshModalExportPreview();
+    }
+
+    function closeExportModal() {
+      if (!exportModal.classList.contains('open') || exportInProgress) return;
+      exportPreviewRequestToken += 1;
+      exportModalPackId = null;
+      exportModal.classList.remove('open');
+      exportModal.setAttribute('aria-hidden', 'true');
+      exportAiButton.focus();
+    }
+
+    async function runProfileExport() {
+      if (exportInProgress || exportSubmitButton.disabled) return;
+      exportInProgress = true;
+      exportSubmitButton.disabled = true;
+      exportCancelButton.disabled = true;
+      exportCloseButton.disabled = true;
+      for (const input of exportDestinationList.querySelectorAll('input')) input.disabled = true;
+      const succeeded = await exportPack({ profile: selectedExportProfile(), reportStatus: setExportStatus });
+      exportInProgress = false;
+      exportCancelButton.disabled = false;
+      exportCloseButton.disabled = false;
+      for (const input of exportDestinationList.querySelectorAll('input')) input.disabled = false;
+      if (succeeded) {
+        closeExportModal();
+        setStatus('AI向け資料（ZIP）をダウンロードしました');
+      } else if (exportModal.classList.contains('open')) {
+        void refreshModalExportPreview();
       }
     }
 
@@ -802,16 +1002,44 @@
     addResults.addEventListener('change', updateAddSubmitState);
     addSubmitButton.addEventListener('click', addSelectedPages);
 
+    exportAiButton.addEventListener('click', openExportModal);
+    exportCloseButton.addEventListener('click', closeExportModal);
+    exportCancelButton.addEventListener('click', closeExportModal);
+    exportSubmitButton.addEventListener('click', () => void runProfileExport());
+    exportDestinationList.addEventListener('change', () => void refreshModalExportPreview());
+    exportModal.addEventListener('click', (event) => {
+      if (event.target === exportModal) closeExportModal();
+    });
+    document.addEventListener('keydown', (event) => {
+      if (!exportModal.classList.contains('open')) return;
+      if (event.key === 'Escape') {
+        closeExportModal();
+        return;
+      }
+      if (event.key !== 'Tab') return;
+      const focusable = [...exportModal.querySelectorAll('button:not(:disabled), input:not(:disabled)')];
+      if (focusable.length === 0) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    });
+
     exportPdfButton.addEventListener('click', () => {
-      void exportPackZip('pdf');
+      void exportPack({ format: 'pdf' });
     });
 
     exportMdButton.addEventListener('click', () => {
-      void exportPackZip('md');
+      void exportPack({ format: 'md' });
     });
 
     exportJsonButton.addEventListener('click', () => {
-      void exportPackZip('json');
+      void exportPack({ format: 'json' });
     });
 
     importJsonButton.addEventListener('click', () => {
@@ -984,6 +1212,14 @@
       renderAll();
       void refreshPackBar();
       void refreshExportPreview();
+      if (exportModal.classList.contains('open')) {
+        const activePack = TsundokuCart.getActivePack();
+        if (!activePack || activePack.id !== exportModalPackId) {
+          closeExportModal();
+        } else if (!exportInProgress) {
+          void refreshModalExportPreview();
+        }
+      }
     });
 
     renderAll();
