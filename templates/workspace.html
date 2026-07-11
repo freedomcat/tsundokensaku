@@ -253,7 +253,7 @@
       openPdfButton.dataset.pdfModalUrl = `/pdf/${encodeURIComponent(path)}`;
       openPdfButton.dataset.pdfModalTitle = entry.title;
       openPdfButton.dataset.pdfModalPath = path;
-      openPdfButton.dataset.pdfModalPages = '';
+      openPdfButton.dataset.pdfModalPages = entry.pages;
       openPdfButton.dataset.pdfModalItemKey = key;
       const addPagesButton = document.createElement('button');
       addPagesButton.type = 'button';

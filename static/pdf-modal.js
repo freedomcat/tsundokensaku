@@ -989,6 +989,7 @@
     modal.classList.add('open');
     modal.setAttribute('aria-hidden', 'false');
     updateFullscreenButton();
+    updateAddWorkspaceButtonLabel();
   }
 
   document.addEventListener('click', (event) => {
@@ -1016,7 +1017,11 @@
       return;
     }
     const pack = TsundokuCart.getActivePack();
-    addWorkspaceButton.textContent = pack ? `「${shortPackName(pack.name)}」に追加` : '資料に追加';
+    if (currentPackItemKey) {
+      addWorkspaceButton.textContent = 'ページ範囲を更新';
+    } else {
+      addWorkspaceButton.textContent = pack ? `「${shortPackName(pack.name)}」に追加` : '資料に追加';
+    }
   }
 
   document.addEventListener('tsundoku-cart-updated', updateAddWorkspaceButtonLabel);
@@ -1047,20 +1052,27 @@
       ? cart.items.find((item) => TsundokuCart.itemKey(item) === currentPackItemKey)
       : null;
     if (entry) {
-      entry.pages = TsundokuPages.mergeSpecs([entry.pages, pages]);
+      entry.pages = pages;
     } else {
       cart.items.push({
         clientId: TsundokuCart.createClientId(),
         pdf_path: currentPdfPath,
         title: title.textContent || currentPdfPath,
-        pages: TsundokuPages.mergeSpecs([pages]),
+        pages: pages,
         collapsed: false,
         addedAt: new Date().toISOString(),
       });
     }
     TsundokuCart.save(cart);
     const pack = TsundokuCart.getActivePack();
-    setExportStatus(pack ? `「${shortPackName(pack.name)}」に追加しました` : '資料に追加しました');
+    const packName = pack ? pack.name : '資料';
+    const displayPages = pages ? `p.${pages}` : '全ページ';
+    const bookTitle = title.textContent || currentPdfPath;
+    if (entry) {
+      setExportStatus(`「${shortPackName(packName)}」の「${bookTitle}」のページ範囲を ${displayPages} に更新しました`);
+    } else {
+      setExportStatus(`「${shortPackName(packName)}」に「${bookTitle}」の ${displayPages} を追加しました`);
+    }
     document.dispatchEvent(new CustomEvent('tsundoku-cart-updated'));
   });
 
