@@ -98,9 +98,10 @@
       packDeleteButton.disabled = !hasPack;
     }
 
-    function updateBook(path, updater) {
+    function updateItem(key, updater) {
       const cart = TsundokuCart.load();
-      const entry = cart.books[path];
+      const items = Array.isArray(cart.items) ? cart.items : [];
+      const entry = items.find((item) => TsundokuCart.itemKey(item) === key);
       if (!entry) {
         return;
       }
@@ -109,30 +110,27 @@
       refreshSummary();
     }
 
-    function removeBook(path) {
+    function removeItem(key) {
       const cart = TsundokuCart.load();
-      delete cart.books[path];
+      if (Array.isArray(cart.items)) {
+        cart.items = cart.items.filter((item) => TsundokuCart.itemKey(item) !== key);
+      }
       TsundokuCart.save(cart);
       refreshSummary();
       void refreshPackBar();
     }
 
-    // books オブジェクトのキー順が資料内の並び順。入れ替えて保存すると
-    // サーバ側で position が振り直され、エクスポート順にも反映される
-    function moveBook(path, delta) {
+    function moveItem(key, delta) {
       const cart = TsundokuCart.load();
-      const keys = Object.keys(cart.books);
-      const index = keys.indexOf(path);
-      const target = index + delta;
-      if (index === -1 || target < 0 || target >= keys.length) {
+      if (!Array.isArray(cart.items)) {
         return;
       }
-      [keys[index], keys[target]] = [keys[target], keys[index]];
-      const reordered = {};
-      for (const key of keys) {
-        reordered[key] = cart.books[key];
+      const index = cart.items.findIndex((item) => TsundokuCart.itemKey(item) === key);
+      const target = index + delta;
+      if (index === -1 || target < 0 || target >= cart.items.length) {
+        return;
       }
-      cart.books = reordered;
+      [cart.items[index], cart.items[target]] = [cart.items[target], cart.items[index]];
       TsundokuCart.save(cart);
       renderAll();
       setStatus('');
@@ -197,7 +195,9 @@
       holder.appendChild(list);
     }
 
-    function buildCard(path, entry, index, total) {
+    function buildCard(entry, index, total) {
+      const path = entry.pdf_path;
+      const key = TsundokuCart.itemKey(entry);
       const card = document.createElement('details');
       card.className = 'ws-book';
       card.open = !entry.collapsed;
@@ -228,7 +228,7 @@
       moveUpButton.addEventListener('click', (event) => {
         event.preventDefault();
         event.stopPropagation();
-        moveBook(path, -1);
+        moveItem(key, -1);
       });
       const moveDownButton = document.createElement('button');
       moveDownButton.type = 'button';
@@ -238,7 +238,7 @@
       moveDownButton.addEventListener('click', (event) => {
         event.preventDefault();
         event.stopPropagation();
-        moveBook(path, 1);
+        moveItem(key, 1);
       });
       const openPdfButton = document.createElement('button');
       openPdfButton.type = 'button';
@@ -248,6 +248,7 @@
       openPdfButton.dataset.pdfModalTitle = entry.title;
       openPdfButton.dataset.pdfModalPath = path;
       openPdfButton.dataset.pdfModalPages = '';
+      openPdfButton.dataset.pdfModalItemKey = key;
       const addPagesButton = document.createElement('button');
       addPagesButton.type = 'button';
       addPagesButton.className = 'ws-remove';
@@ -264,7 +265,7 @@
       removeButton.addEventListener('click', (event) => {
         event.preventDefault();
         event.stopPropagation();
-        removeBook(path);
+        removeItem(key);
         card.remove();
         setStatus('');
       });
@@ -392,8 +393,8 @@
         errorLine.textContent = error;
         errorLine.hidden = !error;
         rangePill.textContent = pageCountLabel(value);
-        updateBook(path, (book) => {
-          book.pages = value;
+        updateItem(key, (item) => {
+          item.pages = value;
         });
         setStatus('');
         renderChips();
@@ -404,10 +405,11 @@
       card.addEventListener('toggle', () => {
         // 再描画由来の toggle で collapsed が同値のときは保存しない
         const currentCart = TsundokuCart.load();
-        const currentBook = currentCart.books[path];
-        if (currentBook && currentBook.collapsed !== !card.open) {
-          updateBook(path, (book) => {
-            book.collapsed = !card.open;
+        const items = Array.isArray(currentCart.items) ? currentCart.items : [];
+        const currentItem = items.find((item) => TsundokuCart.itemKey(item) === key);
+        if (currentItem && currentItem.collapsed !== !card.open) {
+          updateItem(key, (item) => {
+            item.collapsed = !card.open;
           });
         }
         if (card.open && !chaptersHolder.dataset.loaded) {
@@ -442,9 +444,9 @@
     function renderAll() {
       const cart = TsundokuCart.load();
       booksContainer.innerHTML = '';
-      const entries = Object.entries(cart.books);
-      entries.forEach(([path, entry], index) => {
-        booksContainer.appendChild(buildCard(path, entry, index, entries.length));
+      const items = Array.isArray(cart.items) ? cart.items : [];
+      items.forEach((entry, index) => {
+        booksContainer.appendChild(buildCard(entry, index, items.length));
       });
       refreshSummary();
     }
@@ -549,13 +551,14 @@
       allOption.textContent = 'すべての本';
       addScope.appendChild(allOption);
       const cart = TsundokuCart.load();
-      for (const [path, entry] of Object.entries(cart.books)) {
+      const items = Array.isArray(cart.items) ? cart.items : [];
+      for (const item of items) {
         const option = document.createElement('option');
-        option.value = path;
-        option.textContent = entry.title;
+        option.value = item.pdf_path;
+        option.textContent = item.title;
         addScope.appendChild(option);
       }
-      addScope.value = scopePath && cart.books[scopePath] ? scopePath : '';
+      addScope.value = scopePath && items.some((item) => item.pdf_path === scopePath) ? scopePath : '';
       const activePack = TsundokuCart.getActivePack();
       const guide = document.createElement('p');
       guide.className = 'muted';
@@ -627,23 +630,22 @@
         return;
       }
       const cart = TsundokuCart.load();
+      const items = Array.isArray(cart.items) ? cart.items : [];
       const scopePath = addScope.value;
-      const entries = Object.entries(cart.books).filter(
-        ([path]) => !scopePath || path === scopePath
-      );
+      const entries = items.filter((item) => !scopePath || item.pdf_path === scopePath);
       addResults.innerHTML = '<p class="muted" style="margin: 0;">検索中...</p>';
       setAddStatus('');
       const groups = [];
-      for (const [path, entry] of entries) {
+      for (const entry of entries) {
         try {
           const response = await fetch(
-            `/search-pages?${new URLSearchParams({ pdf_path: path, q: query })}`
+            `/search-pages?${new URLSearchParams({ pdf_path: entry.pdf_path, q: query })}`
           );
           if (!response.ok) {
             throw new Error(await errorMessageFromResponse(response));
           }
           const payload = await response.json();
-          groups.push(renderSearchGroup({ path, title: entry.title, pages: entry.pages }, payload, query));
+          groups.push(renderSearchGroup({ path: entry.pdf_path, title: entry.title, pages: entry.pages }, payload, query));
         } catch (error) {
           const group = document.createElement('div');
           const heading = document.createElement('div');
@@ -681,9 +683,10 @@
         return;
       }
       const cart = TsundokuCart.load();
+      const items = Array.isArray(cart.items) ? cart.items : [];
       let addedCount = 0;
       for (const [path, pages] of selectedByPath) {
-        const entry = cart.books[path];
+        const entry = items.find((item) => item.pdf_path === path);
         if (!entry) {
           continue;
         }

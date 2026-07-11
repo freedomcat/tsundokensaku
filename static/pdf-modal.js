@@ -167,6 +167,7 @@
   }
 
   let chaptersRequestToken = 0;
+  let currentPackItemKey = null;
   let currentPageCount = null;
 
   // --- ページを選ぶ（現在ページ周辺のサムネイル） ---
@@ -452,14 +453,16 @@
     }
   }
 
-  // 現在開いている本が既に資料内にあるかどうかで「反映」の意味が変わる
-  // （資料内: 即保存の置き換え / 資料外: ページ欄への反映のみ）。
+  // 資料棚の特定カードから開いた場合だけ item_key を持ち、既存項目を更新する。
+  // 検索結果など item_key なしの文脈では新規追加として扱う。
   // 呼び出し側は事前に TsundokuCart.ready を await しておくこと
   function currentCartEntry() {
-    if (!currentPdfPath) {
+    if (!currentPackItemKey) {
       return null;
     }
-    return TsundokuCart.load().books[currentPdfPath] || null;
+    const cart = TsundokuCart.load();
+    const items = Array.isArray(cart.items) ? cart.items : [];
+    return items.find((item) => TsundokuCart.itemKey(item) === currentPackItemKey) || null;
   }
 
   function updateThumbApplyButton() {
@@ -777,7 +780,12 @@
     // save() は load() で得た同一の cart オブジェクトをミューテートしてから
     // 渡す必要があるため、判定用の currentCartEntry() ではなくここで直接取得する
     const cart = TsundokuCart.load();
-    const entry = currentPdfPath ? cart.books[currentPdfPath] : null;
+    if (!Array.isArray(cart.items)) {
+      cart.items = [];
+    }
+    const entry = currentPackItemKey
+      ? cart.items.find((item) => TsundokuCart.itemKey(item) === currentPackItemKey)
+      : null;
     if (entry) {
       // 資料棚起点（既にこの本が資料内にある）: そのページ範囲を直接置き換えて即保存
       entry.pages = newSpec;
@@ -958,13 +966,14 @@
     }
   }
 
-  function openModal(url, label, scrapboxUrl, pdfPath, pages) {
+  function openModal(url, label, scrapboxUrl, pdfPath, pages, itemKey = null) {
     resetThumbPanel();
     frame.src = url;
     openLink.href = url;
     title.textContent = label || 'PDF';
     setScrapboxLink(scrapboxUrl);
     currentPdfPath = pdfPath || '';
+    currentPackItemKey = typeof itemKey === 'string' && itemKey ? itemKey : null;
     pagesInput.value = pages || '';
     if (addWorkspaceButton) {
       // 検索・資料棚どちらの起点でも、PDFパスが分かるモーダルなら資料へ追加できる
@@ -994,6 +1003,7 @@
       trigger.dataset.pdfModalScrapboxUrl,
       trigger.dataset.pdfModalPath,
       trigger.dataset.pdfModalPages,
+      trigger.dataset.pdfModalItemKey || null,
     );
   });
 
@@ -1030,16 +1040,23 @@
       }
     }
     const cart = TsundokuCart.load();
-    const entry = cart.books[currentPdfPath];
+    if (!Array.isArray(cart.items)) {
+      cart.items = [];
+    }
+    const entry = currentPackItemKey
+      ? cart.items.find((item) => TsundokuCart.itemKey(item) === currentPackItemKey)
+      : null;
     if (entry) {
       entry.pages = TsundokuPages.mergeSpecs([entry.pages, pages]);
     } else {
-      cart.books[currentPdfPath] = {
+      cart.items.push({
+        clientId: TsundokuCart.createClientId(),
+        pdf_path: currentPdfPath,
         title: title.textContent || currentPdfPath,
         pages: TsundokuPages.mergeSpecs([pages]),
         collapsed: false,
         addedAt: new Date().toISOString(),
-      };
+      });
     }
     TsundokuCart.save(cart);
     const pack = TsundokuCart.getActivePack();

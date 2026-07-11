@@ -232,8 +232,9 @@
     }
 
     function syncCheckboxes(cart) {
+      const items = Array.isArray(cart.items) ? cart.items : [];
       for (const checkbox of document.querySelectorAll('.cart-checkbox')) {
-        const entry = cart.books[checkbox.dataset.cartPath];
+        const entry = items.find((item) => item.pdf_path === checkbox.dataset.cartPath);
         const pages = parsePages(checkbox.dataset.cartPages);
         checkbox.checked =
           Boolean(entry) && pages.length > 0 && TsundokuPages.specContainsPages(entry.pages, pages);
@@ -258,21 +259,28 @@
         }
       }
       const cart = TsundokuCart.load();
-      const entry = cart.books[path];
+      const items = Array.isArray(cart.items) ? cart.items : [];
+      const entry = items.find((item) => item.pdf_path === path);
       if (wantsAdd) {
         const merged = TsundokuPages.mergeSpecs([entry ? entry.pages : '', TsundokuPages.pagesToSpec(pages)]);
-        cart.books[path] = {
-          title,
-          pages: merged,
-          collapsed: entry ? entry.collapsed : false,
-          addedAt: entry ? entry.addedAt : new Date().toISOString(),
-        };
+        if (entry) {
+          entry.pages = merged;
+        } else {
+          cart.items.push({
+            clientId: TsundokuCart.createClientId(),
+            pdf_path: path,
+            title,
+            pages: merged,
+            collapsed: false,
+            addedAt: new Date().toISOString(),
+          });
+        }
       } else if (entry) {
         const remaining = TsundokuPages.subtractPages(entry.pages, pages);
         if (remaining) {
           entry.pages = remaining;
         } else {
-          delete cart.books[path];
+          cart.items = items.filter((item) => item.pdf_path !== path);
         }
       }
       TsundokuCart.save(cart);

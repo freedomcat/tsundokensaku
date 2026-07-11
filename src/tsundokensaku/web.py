@@ -36,7 +36,9 @@ from tsundokensaku.database import (
     list_books,
     list_packs,
     pack_items_as_cart,
+    pack_items_as_items,
     parse_query,
+    replace_pack_item_entries,
     replace_pack_items,
     resolve_active_pack_id,
     search,
@@ -1115,9 +1117,10 @@ def api_get_pack(pack_id: int) -> JSONResponse:
         if pack is None:
             raise HTTPException(status_code=404, detail="資料が見つかりません")
         cart = pack_items_as_cart(connection, pack_id)
+        items = pack_items_as_items(connection, pack_id)
     finally:
         connection.close()
-    return JSONResponse({**_pack_to_json(pack), "cart": cart})
+    return JSONResponse({**_pack_to_json(pack), "cart": cart, **items})
 
 
 @app.patch("/api/packs/{pack_id}")
@@ -1177,9 +1180,30 @@ def api_replace_pack_books(pack_id: int, payload: dict = Body(default={})) -> JS
         if not replace_pack_items(connection, pack_id, books):
             raise HTTPException(status_code=404, detail="資料が見つかりません")
         cart = pack_items_as_cart(connection, pack_id)
+        items_payload = pack_items_as_items(connection, pack_id)
     finally:
         connection.close()
-    return JSONResponse({"pack_id": pack_id, "cart": cart})
+    return JSONResponse({"pack_id": pack_id, "cart": cart, **items_payload})
+
+
+@app.put("/api/packs/{pack_id}/items")
+def api_replace_pack_items(pack_id: int, payload: dict = Body(default={})) -> JSONResponse:
+    items = payload.get("items")
+    if not isinstance(items, list):
+        raise HTTPException(status_code=400, detail="items 配列が必要です")
+    connection = _pack_connection()
+    try:
+        try:
+            saved_items = replace_pack_item_entries(connection, pack_id, items)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if saved_items is None:
+            raise HTTPException(status_code=404, detail="資料が見つかりません")
+        items_payload = pack_items_as_items(connection, pack_id)
+        cart = pack_items_as_cart(connection, pack_id)
+    finally:
+        connection.close()
+    return JSONResponse({"pack_id": pack_id, "cart": cart, **items_payload})
 
 
 @app.get("/api/packs/{pack_id}/export")
@@ -1244,9 +1268,10 @@ def api_import_pack(payload: dict = Body(default={})) -> JSONResponse:
         set_active_pack(connection, pack_id)
         pack = get_pack(connection, pack_id)
         imported_cart = pack_items_as_cart(connection, pack_id)
+        imported_items = pack_items_as_items(connection, pack_id)
     finally:
         connection.close()
-    return JSONResponse({**_pack_to_json(pack), "cart": imported_cart}, status_code=201)
+    return JSONResponse({**_pack_to_json(pack), "cart": imported_cart, **imported_items}, status_code=201)
 
 
 @app.get("/settings", response_class=HTMLResponse)

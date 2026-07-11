@@ -17,6 +17,7 @@ from tsundokensaku.database import (
     list_packs,
     pack_items_as_cart,
     parse_query,
+    replace_pack_item_entries,
     replace_pack_items,
     resolve_active_pack_id,
     set_active_pack,
@@ -1030,6 +1031,63 @@ class PackTest(unittest.TestCase):
             self.assertEqual([item.id for item in items], [10, 11])
             self.assertEqual([item.position for item in items], [7, 8])
             self.assertEqual([item.pages for item in items], ["1", "2"])
+            connection.close()
+
+    def test_phase2_item_id_operations(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            connection = self._make_connection(temp_dir)
+            pack_id = create_pack(connection, name="テストパック")
+            
+            # 1. 同一資料内に同じ pdf_path の項目を2件登録できる
+            # 2. 2件が異なる id を持つ
+            items_payload = [
+                {"pdf_path": "books/a.pdf", "title": "本A-1", "pages": "1-5", "collapsed": False},
+                {"pdf_path": "books/a.pdf", "title": "本A-2", "pages": "10-15", "collapsed": True},
+            ]
+            saved_items = replace_pack_item_entries(connection, pack_id, items_payload)
+            self.assertEqual(len(saved_items), 2)
+            id1 = saved_items[0].id
+            id2 = saved_items[1].id
+            self.assertNotEqual(id1, id2)
+            self.assertEqual(saved_items[0].pdf_path, "books/a.pdf")
+            self.assertEqual(saved_items[1].pdf_path, "books/a.pdf")
+
+            # 3. 一方のページ範囲だけ更新できる
+            # 6. 操作対象でない同一PDF項目の内容が変わらない
+            update_payload = [
+                {"id": id1, "pdf_path": "books/a.pdf", "title": "本A-1", "pages": "1-10", "collapsed": False},
+                {"id": id2, "pdf_path": "books/a.pdf", "title": "本A-2", "pages": "10-15", "collapsed": True},
+            ]
+            saved_items = replace_pack_item_entries(connection, pack_id, update_payload)
+            self.assertEqual(saved_items[0].pages, "1-10")
+            self.assertEqual(saved_items[1].pages, "10-15")
+
+            # 5. 一方だけ並び替えできる
+            reorder_payload = [
+                {"id": id2, "pdf_path": "books/a.pdf", "title": "本A-2", "pages": "10-15", "collapsed": True},
+                {"id": id1, "pdf_path": "books/a.pdf", "title": "本A-1", "pages": "1-10", "collapsed": False},
+            ]
+            saved_items = replace_pack_item_entries(connection, pack_id, reorder_payload)
+            self.assertEqual(saved_items[0].id, id2)
+            self.assertEqual(saved_items[1].id, id1)
+            self.assertEqual(saved_items[0].position, 0)
+            self.assertEqual(saved_items[1].position, 1)
+
+            # 4. 一方だけ削除できる
+            delete_payload = [
+                {"id": id2, "pdf_path": "books/a.pdf", "title": "本A-2", "pages": "10-15", "collapsed": True},
+            ]
+            saved_items = replace_pack_item_entries(connection, pack_id, delete_payload)
+            self.assertEqual(len(saved_items), 1)
+            self.assertEqual(saved_items[0].id, id2)
+
+            # 7. 存在しない item.id を指定した場合に適切な結果になる
+            invalid_payload = [
+                {"id": 9999, "pdf_path": "books/a.pdf", "title": "無効", "pages": "1", "collapsed": False}
+            ]
+            with self.assertRaises(ValueError):
+                replace_pack_item_entries(connection, pack_id, invalid_payload)
+
             connection.close()
 
 

@@ -1095,6 +1095,110 @@ def get_pack_items(connection: sqlite3.Connection, pack_id: int) -> list[PackIte
     ]
 
 
+def _item_to_json(item: PackItemRecord, *, include_id: bool = True) -> dict[str, object]:
+    data: dict[str, object] = {
+        "pdf_path": item.pdf_path,
+        "title": item.title,
+        "pages": item.pages,
+        "collapsed": item.collapsed,
+        "position": item.position,
+        "addedAt": item.added_at,
+        "updatedAt": item.updated_at,
+    }
+    if include_id:
+        data["id"] = item.id
+    return data
+
+
+def pack_items_as_items(connection: sqlite3.Connection, pack_id: int) -> dict:
+    """パック内容を正規の version 3 items 形式で返す。"""
+    return {"version": 3, "items": [_item_to_json(item) for item in get_pack_items(connection, pack_id)]}
+
+
+def _books_to_item_entries(books: dict) -> list[dict[str, object]]:
+    entries: list[dict[str, object]] = []
+    for pdf_path, entry in books.items():
+        if not isinstance(pdf_path, str) or not pdf_path or not isinstance(entry, dict):
+            continue
+        entries.append(
+            {
+                "pdf_path": pdf_path,
+                "title": entry.get("title") if isinstance(entry.get("title"), str) and entry.get("title") else pdf_path,
+                "pages": entry.get("pages") if isinstance(entry.get("pages"), str) else "",
+                "collapsed": bool(entry.get("collapsed")),
+                "addedAt": entry.get("addedAt") if isinstance(entry.get("addedAt"), str) and entry.get("addedAt") else "",
+            }
+        )
+    return entries
+
+
+def replace_pack_item_entries(connection: sqlite3.Connection, pack_id: int, items: list[dict]) -> list[PackItemRecord] | None:
+    """パックの内容を version 3 items 配列で丸ごと置き換える。
+
+    id がある項目は同じ pack_id に属する既存項目として更新し、id がない項目は
+    新規作成する。リクエストから消えた既存項目は削除する。
+    """
+    if get_pack(connection, pack_id) is None:
+        return None
+    if not isinstance(items, list):
+        return None
+
+    now = _pack_now()
+    existing_rows = connection.execute(
+        """
+        SELECT id, pack_id, pdf_path, title, pages, collapsed, position, added_at, updated_at
+        FROM pack_items
+        WHERE pack_id = ?
+        """,
+        (pack_id,),
+    ).fetchall()
+    existing_ids = {int(row["id"]) for row in existing_rows}
+    seen_ids: set[int] = set()
+
+    position = 0
+    for raw in items:
+        if not isinstance(raw, dict):
+            continue
+        pdf_path = raw.get("pdf_path")
+        if not isinstance(pdf_path, str) or not pdf_path:
+            continue
+        title = raw.get("title") if isinstance(raw.get("title"), str) and raw.get("title") else pdf_path
+        pages = raw.get("pages") if isinstance(raw.get("pages"), str) else ""
+        collapsed = 1 if raw.get("collapsed") else 0
+        added_at = raw.get("addedAt") if isinstance(raw.get("addedAt"), str) and raw.get("addedAt") else now
+        raw_id = raw.get("id")
+        item_id = raw_id if isinstance(raw_id, int) else None
+        
+        if item_id is not None:
+            if item_id not in existing_ids:
+                raise ValueError("item id does not belong to this pack")
+            seen_ids.add(item_id)
+            connection.execute(
+                """
+                UPDATE pack_items SET pdf_path = ?, title = ?, pages = ?, collapsed = ?, position = ?, updated_at = ?
+                WHERE pack_id = ? AND id = ?
+                """,
+                (pdf_path, title, pages, collapsed, position, now, pack_id, item_id),
+            )
+        else:
+            cursor = connection.execute(
+                """
+                INSERT INTO pack_items(pack_id, pdf_path, title, pages, collapsed, position, added_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (pack_id, pdf_path, title, pages, collapsed, position, added_at, now),
+            )
+            seen_ids.add(int(cursor.lastrowid))
+        position += 1
+
+    for item_id in existing_ids - seen_ids:
+        connection.execute("DELETE FROM pack_items WHERE pack_id = ? AND id = ?", (pack_id, item_id))
+
+    connection.execute("UPDATE packs SET updated_at = ? WHERE id = ?", (now, pack_id))
+    connection.commit()
+    return get_pack_items(connection, pack_id)
+
+
 def replace_pack_items(connection: sqlite3.Connection, pack_id: int, books: dict) -> bool:
     """パックの内容をカート形式の books 辞書で丸ごと置き換える。
 
@@ -1106,42 +1210,17 @@ def replace_pack_items(connection: sqlite3.Connection, pack_id: int, books: dict
         return False
     if not isinstance(books, dict):
         return False
-    now = _pack_now()
-    existing = {item.pdf_path: item for item in get_pack_items(connection, pack_id)}
-
-    for pdf_path in set(existing) - set(books):
-        connection.execute("DELETE FROM pack_items WHERE pack_id = ? AND pdf_path = ?", (pack_id, pdf_path))
-
-    position = 0
-    for pdf_path, entry in books.items():
-        if not isinstance(pdf_path, str) or not pdf_path or not isinstance(entry, dict):
+    entries = _books_to_item_entries(books)
+    existing_by_path: dict[str, PackItemRecord] = {}
+    for item in get_pack_items(connection, pack_id):
+        existing_by_path.setdefault(item.pdf_path, item)
+    for entry in entries:
+        current = existing_by_path.get(str(entry["pdf_path"]))
+        if current is None:
             continue
-        title = entry.get("title") if isinstance(entry.get("title"), str) and entry.get("title") else pdf_path
-        pages = entry.get("pages") if isinstance(entry.get("pages"), str) else ""
-        collapsed = 1 if entry.get("collapsed") else 0
-        current = existing.get(pdf_path)
-        if current is not None:
-            connection.execute(
-                """
-                UPDATE pack_items SET title = ?, pages = ?, collapsed = ?, position = ?, updated_at = ?
-                WHERE pack_id = ? AND pdf_path = ?
-                """,
-                (title, pages, collapsed, position, now, pack_id, pdf_path),
-            )
-        else:
-            added_at = entry.get("addedAt") if isinstance(entry.get("addedAt"), str) and entry.get("addedAt") else now
-            connection.execute(
-                """
-                INSERT INTO pack_items(pack_id, pdf_path, title, pages, collapsed, position, added_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (pack_id, pdf_path, title, pages, collapsed, position, added_at, now),
-            )
-        position += 1
-
-    connection.execute("UPDATE packs SET updated_at = ? WHERE id = ?", (now, pack_id))
-    connection.commit()
-    return True
+        entry["id"] = current.id
+        entry["addedAt"] = current.added_at
+    return replace_pack_item_entries(connection, pack_id, entries) is not None
 
 
 def pack_items_as_cart(connection: sqlite3.Connection, pack_id: int) -> dict:
@@ -1157,15 +1236,23 @@ def pack_items_as_cart(connection: sqlite3.Connection, pack_id: int) -> dict:
     return {"version": 2, "books": books}
 
 
-def import_cart_as_pack(connection: sqlite3.Connection, cart: dict, *, name: str) -> int | None:
-    """sessionStorage のカート（version 2）を新規パックとして取り込む。"""
-    if not isinstance(cart, dict) or cart.get("version") != 2:
+def normalize_pack_payload_to_items(payload: dict) -> list[dict[str, object]] | None:
+    if not isinstance(payload, dict):
         return None
-    books = cart.get("books")
-    if not isinstance(books, dict) or not books:
+    if payload.get("version") == 3 and isinstance(payload.get("items"), list):
+        return [item for item in payload["items"] if isinstance(item, dict)]
+    if payload.get("version") == 2 and isinstance(payload.get("books"), dict):
+        return _books_to_item_entries(payload["books"])
+    return None
+
+
+def import_cart_as_pack(connection: sqlite3.Connection, cart: dict, *, name: str) -> int | None:
+    """sessionStorage のカート（version 2）または items（version 3）を新規パックとして取り込む。"""
+    items = normalize_pack_payload_to_items(cart)
+    if not items:
         return None
     pack_id = create_pack(connection, name=name)
-    replace_pack_items(connection, pack_id, books)
+    replace_pack_item_entries(connection, pack_id, items)
     return pack_id
 
 
