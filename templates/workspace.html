@@ -15,6 +15,7 @@
   </div>
   <div class="ws-toolbar">
     <span class="pill" id="ws-count"></span>
+    <span class="pill" id="ws-export-preview" hidden></span>
     <button type="button" id="ws-add-open">ページを追加</button>
     <button type="button" class="primary" id="ws-export-pdf">PDF一式を書き出す</button>
     <button type="button" id="ws-export-md">MD一式を書き出す</button>
@@ -67,6 +68,7 @@
     const booksContainer = document.getElementById('ws-books');
     const emptyMessage = document.getElementById('ws-empty');
     const countBadge = document.getElementById('ws-count');
+    const exportPreviewBadge = document.getElementById('ws-export-preview');
     const exportPdfButton = document.getElementById('ws-export-pdf');
     const exportMdButton = document.getElementById('ws-export-md');
     const exportJsonButton = document.getElementById('ws-export-json');
@@ -103,6 +105,62 @@
       importJsonButton.disabled = !hasPack;
       packRenameButton.disabled = !hasPack;
       packDeleteButton.disabled = !hasPack;
+    }
+
+    // トークン数は概算（設計書 docs/ai-export-optimization-design.md 8.1）なので
+    // 常に「約」を付ける。1万以上は万単位に丸めて桁を読みやすくする
+    function formatApproxTokenCount(tokens) {
+      if (tokens >= 10000) {
+        const man = Math.round((tokens / 10000) * 10) / 10;
+        return `約${man}万トークン`;
+      }
+      return `約${tokens.toLocaleString('ja-JP')}トークン`;
+    }
+
+    function renderExportPreview(preview) {
+      const summary = `${preview.book_count}冊・${preview.item_count}項目・${preview.total_pages}ページ・${formatApproxTokenCount(preview.estimated_tokens)}`;
+      // empty_pack は「0件」を表すだけで未集計の欠落ではないので、一部未集計扱いにしない
+      const gapWarnings = (preview.warnings || []).filter((warning) => warning.code !== 'empty_pack');
+      exportPreviewBadge.textContent = gapWarnings.length > 0 ? `${summary}（一部未集計）` : summary;
+      exportPreviewBadge.title = gapWarnings.map((warning) => warning.message).join('\n');
+      exportPreviewBadge.classList.remove('muted');
+      exportPreviewBadge.hidden = false;
+    }
+
+    function showExportPreviewError() {
+      // 画面全体のエラーにはせず、この要約表示だけ控えめな状態にする
+      exportPreviewBadge.textContent = '概算を取得できませんでした';
+      exportPreviewBadge.title = '';
+      exportPreviewBadge.classList.add('muted');
+      exportPreviewBadge.hidden = false;
+    }
+
+    async function refreshExportPreview() {
+      const pack = TsundokuCart.getActivePack();
+      if (!pack) {
+        exportPreviewBadge.hidden = true;
+        return;
+      }
+      try {
+        const response = await fetch(`/api/packs/${pack.id}/export/preview`);
+        if (!response.ok) {
+          throw new Error(`GET /api/packs/${pack.id}/export/preview -> ${response.status}`);
+        }
+        const preview = await response.json();
+        // 取得中に資料が切り替わっていたら、古い資料の結果を表示しない
+        const stillActive = TsundokuCart.getActivePack();
+        if (!stillActive || stillActive.id !== pack.id) {
+          return;
+        }
+        renderExportPreview(preview);
+      } catch (error) {
+        console.warn('Failed to load export preview', error);
+        const stillActive = TsundokuCart.getActivePack();
+        if (!stillActive || stillActive.id !== pack.id) {
+          return;
+        }
+        showExportPreviewError();
+      }
     }
 
     function updateItem(key, updater) {
@@ -918,10 +976,14 @@
     });
 
     // PDFプレビューモーダルの「資料に追加」、およびサーバからの
-    // パック取得完了・切替時に発火。セレクトの冊数表示も追随させる
+    // パック取得完了・切替時に発火。セレクトの冊数表示も追随させる。
+    // 資料項目の追加・削除・並び替え・ページ範囲変更・資料を空にする、のいずれも
+    // デバウンス保存が完了した後にこのイベントが発火するため、概算表示の更新も
+    // ここに一本化する（保存済みの最新値を参照できる。個別箇所への複製はしない）
     document.addEventListener('tsundoku-cart-updated', () => {
       renderAll();
       void refreshPackBar();
+      void refreshExportPreview();
     });
 
     renderAll();

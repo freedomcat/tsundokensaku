@@ -499,6 +499,8 @@ class HighlightQueryTest(unittest.TestCase):
         self.assertIn("資料棚", body)
         self.assertIn("ws-export-pdf", body)
         self.assertIn("ws-export-md", body)
+        self.assertIn("ws-export-preview", body)
+        self.assertIn("/api/packs/${pack.id}/export/preview", body)
 
     def test_search_pages_returns_matching_pages_with_snippets(self) -> None:
         from tsundokensaku.database import PageRecord, replace_pages
