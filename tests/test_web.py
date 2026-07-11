@@ -26,6 +26,7 @@ from tsundokensaku.web import (
     api_replace_pack_items,
     api_update_pack,
     build_export_preview_payload,
+    build_export_preview_payload_for_profile,
     build_export_preview_warnings,
     build_scrapbox_page_url,
     build_search_scrapbox_body,
@@ -2105,6 +2106,108 @@ class BuildExportPreviewPayloadTest(unittest.TestCase):
         self.assertEqual(warnings[0]["code"], "missing_pdf")
 
 
+class BuildExportPreviewPayloadForProfileTest(unittest.TestCase):
+    """C-4: standard以外（chat等）向け拡張プレビューを組み立てる純粋関数のテスト。
+
+    DB/PDFを介さず ItemStats を直接組み立てるため、chunks構造・警告の合流
+    ロジックだけを高速に検証できる（B-2以降のテスト方針を踏襲）。
+    """
+
+    def _item(self, item_id: int, *, pdf_path: str = "a.pdf", pages: str = "1-2", title: str = "本") -> PackItemRecord:
+        return PackItemRecord(
+            id=item_id,
+            pdf_path=pdf_path,
+            title=title,
+            pages=pages,
+            collapsed=False,
+            position=item_id,
+            added_at="2026-07-11T00:00:00.000Z",
+            updated_at="2026-07-11T00:00:00.000Z",
+        )
+
+    def test_empty_list_returns_profile_name_and_zero_counts(self) -> None:
+        from tsundokensaku.export_profiles import ChatProfile
+
+        payload = build_export_preview_payload_for_profile([], ChatProfile(), pack_name="資料")
+
+        self.assertEqual(payload["profile"], "chat")
+        self.assertEqual(payload["book_count"], 0)
+        self.assertEqual(payload["item_count"], 0)
+        self.assertEqual(payload["file_count"], 0)
+        self.assertEqual(payload["archive"], "zip")
+        self.assertEqual(payload["chunks"], [])
+        self.assertEqual(
+            payload["warnings"],
+            [{"code": "empty_pack", "item_id": None, "message": "この資料には資料項目がありません"}],
+        )
+
+    def test_single_chunk_lists_items_with_per_item_token_estimates(self) -> None:
+        from tsundokensaku.export_profiles import ChatProfile
+
+        item_stats = [
+            ItemStats(
+                item=self._item(1, pdf_path="a.pdf", pages="1-2", title="本A"),
+                page_numbers=[1, 2], stats=TextStats(cjk_chars=10, other_chars=0),
+                unindexed_pages=0, missing_pdf=False,
+            ),
+            ItemStats(
+                item=self._item(2, pdf_path="b.pdf", pages="5", title="本B"),
+                page_numbers=[5], stats=TextStats(cjk_chars=20, other_chars=0),
+                unindexed_pages=0, missing_pdf=False,
+            ),
+        ]
+        payload = build_export_preview_payload_for_profile(item_stats, ChatProfile(), pack_name="資料")
+
+        self.assertEqual(payload["profile"], "chat")
+        self.assertEqual(payload["file_count"], 1)
+        self.assertEqual(len(payload["chunks"]), 1)
+        chunk = payload["chunks"][0]
+        self.assertEqual(chunk["filename"], "資料_chat_01.md")
+        self.assertEqual(chunk["pages"], 3)
+        self.assertEqual(
+            chunk["items"],
+            [
+                {"item_id": 1, "title": "本A", "pdf_path": "a.pdf", "pages": "1-2", "estimated_tokens": 10},
+                {"item_id": 2, "title": "本B", "pdf_path": "b.pdf", "pages": "5", "estimated_tokens": 20},
+            ],
+        )
+        self.assertEqual(payload["warnings"], [])
+
+    def test_item_exceeding_limit_produces_plan_warning(self) -> None:
+        from tsundokensaku.export_profiles import ChatProfile
+
+        item_stats = [
+            ItemStats(
+                item=self._item(1, title="巨大本"),
+                page_numbers=[1], stats=TextStats(cjk_chars=90_000, other_chars=0),
+                unindexed_pages=0, missing_pdf=False,
+            ),
+        ]
+        payload = build_export_preview_payload_for_profile(item_stats, ChatProfile(), pack_name="資料")
+
+        # 切り捨てず単独チャンクとして残る
+        self.assertEqual(len(payload["chunks"]), 1)
+        self.assertEqual(
+            payload["warnings"],
+            [{"code": "item_exceeds_limit", "item_id": 1, "message": "「巨大本」は1ファイルの上限を超えるため単独で出力します"}],
+        )
+
+    def test_combines_item_warnings_and_plan_warnings(self) -> None:
+        from tsundokensaku.export_profiles import ChatProfile
+
+        item_stats = [
+            ItemStats(
+                item=self._item(1, title="未インデックス本"),
+                page_numbers=[1, 2], stats=TextStats(cjk_chars=0, other_chars=0),
+                unindexed_pages=2, missing_pdf=False,
+            ),
+        ]
+        payload = build_export_preview_payload_for_profile(item_stats, ChatProfile(), pack_name="資料")
+
+        codes = [warning["code"] for warning in payload["warnings"]]
+        self.assertIn("unindexed_pages", codes)
+
+
 class PackExportPreviewTest(unittest.TestCase):
     def _payload(self, response) -> dict:
         return json.loads(response.body)
@@ -2294,6 +2397,135 @@ class PackExportPreviewTest(unittest.TestCase):
                 self.assertEqual(preview["item_count"], 2)
                 self.assertEqual(preview["book_count"], 1)
                 self.assertEqual(preview["total_pages"], 6)
+
+    def test_preview_profile_unspecified_and_standard_are_byte_identical(self) -> None:
+        # C-4完了条件: profile未指定 と profile=standard は完全に同一レスポンス
+        # （chunks/file_count/archive/profile 等の拡張フィールドを含まない）
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "index.db"
+            with patch("tsundokensaku.web.get_db_path", return_value=db_path):
+                created = self._payload(api_create_pack({"name": "資料"}))
+
+                unspecified = self._payload(api_preview_pack_export(created["id"]))
+                standard = self._payload(api_preview_pack_export(created["id"], profile="standard"))
+
+                self.assertEqual(unspecified, standard)
+                for key in ("profile", "chunks", "file_count", "archive"):
+                    self.assertNotIn(key, unspecified)
+
+    def test_preview_unknown_profile_returns_400_matching_export_api(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "index.db"
+            with patch("tsundokensaku.web.get_db_path", return_value=db_path):
+                created = self._payload(api_create_pack({"name": "資料"}))
+                with self.assertRaises(HTTPException) as ctx:
+                    api_preview_pack_export(created["id"], profile="unknown")
+                self.assertEqual(ctx.exception.status_code, 400)
+                self.assertEqual(ctx.exception.detail, "不明なエクスポートプロファイルです: unknown")
+
+    def test_preview_unknown_profile_checked_before_pack_lookup(self) -> None:
+        # エクスポートAPIと同じ検証順序（profile解決が先）。存在しないpack_idでも
+        # 先にprofile不明の400が返る
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "index.db"
+            with patch("tsundokensaku.web.get_db_path", return_value=db_path):
+                with self.assertRaises(HTTPException) as ctx:
+                    api_preview_pack_export(9999, profile="unknown")
+                self.assertEqual(ctx.exception.status_code, 400)
+                self.assertEqual(ctx.exception.detail, "不明なエクスポートプロファイルです: unknown")
+
+    def test_preview_missing_pack_returns_404_with_profile_specified(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "index.db"
+            with patch("tsundokensaku.web.get_db_path", return_value=db_path):
+                with self.assertRaises(HTTPException) as ctx:
+                    api_preview_pack_export(9999, profile="chat")
+                self.assertEqual(ctx.exception.status_code, 404)
+
+    def test_preview_profile_chat_returns_empty_pack_with_extended_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "index.db"
+            with patch("tsundokensaku.web.get_db_path", return_value=db_path):
+                created = self._payload(api_create_pack({"name": "空の資料"}))
+                preview = self._payload(api_preview_pack_export(created["id"], profile="chat"))
+
+                self.assertEqual(preview["profile"], "chat")
+                self.assertEqual(preview["file_count"], 0)
+                self.assertEqual(preview["archive"], "zip")
+                self.assertEqual(preview["chunks"], [])
+                self.assertEqual(
+                    preview["warnings"],
+                    [{"code": "empty_pack", "item_id": None, "message": "この資料には資料項目がありません"}],
+                )
+
+    def test_preview_profile_chat_combines_items_into_chunks(self) -> None:
+        from tsundokensaku.database import PageRecord, replace_pages
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            db_path = root / "index.db"
+            books_dir = root / "books"
+            books_dir.mkdir(parents=True)
+            pdf_path_a = books_dir / "a.pdf"
+            pdf_path_b = books_dir / "b.pdf"
+            for path in (pdf_path_a, pdf_path_b):
+                writer = PdfWriter()
+                for _ in range(2):
+                    writer.add_blank_page(width=72, height=72)
+                with path.open("wb") as handle:
+                    writer.write(handle)
+
+            with (
+                patch("tsundokensaku.web.get_db_path", return_value=db_path),
+                patch("tsundokensaku.web.get_books_dir", return_value=books_dir),
+            ):
+                connection = connect(db_path)
+                initialize(connection)
+                book_id_a = upsert_book(
+                    connection, path=pdf_path_a, title="本A",
+                    size_bytes=pdf_path_a.stat().st_size, modified_at=pdf_path_a.stat().st_mtime,
+                )
+                book_id_b = upsert_book(
+                    connection, path=pdf_path_b, title="本B",
+                    size_bytes=pdf_path_b.stat().st_size, modified_at=pdf_path_b.stat().st_mtime,
+                )
+                replace_pages(connection, book_id=book_id_a, title="本A", pages=[
+                    PageRecord(page_number=1, text="本Aの1ページ目"),
+                    PageRecord(page_number=2, text="本Aの2ページ目"),
+                ])
+                replace_pages(connection, book_id=book_id_b, title="本B", pages=[
+                    PageRecord(page_number=1, text="本Bの1ページ目"),
+                    PageRecord(page_number=2, text="本Bの2ページ目"),
+                ])
+                connection.commit()
+                connection.close()
+
+                created = self._payload(api_create_pack({"name": "対比資料"}))
+                items = [
+                    {"pdf_path": "a.pdf", "title": "本A", "pages": "1-2", "collapsed": False, "position": 0},
+                    {"pdf_path": "b.pdf", "title": "本B", "pages": "1-2", "collapsed": False, "position": 1},
+                ]
+                self._payload(api_replace_pack_items(created["id"], {"items": items}))
+
+                preview = self._payload(api_preview_pack_export(created["id"], profile="chat"))
+
+                self.assertEqual(preview["profile"], "chat")
+                self.assertEqual(preview["file_count"], 1)
+                self.assertEqual(len(preview["chunks"]), 1)
+                chunk = preview["chunks"][0]
+                self.assertEqual(chunk["filename"], "対比資料_chat_01.md")
+                self.assertEqual(len(chunk["items"]), 2)
+                self.assertEqual(chunk["items"][0]["title"], "本A")
+                self.assertEqual(chunk["items"][1]["title"], "本B")
+                self.assertEqual(preview["warnings"], [])
+
+                # プレビューが示した分冊結果は実エクスポートと一致する
+                export_response = api_export_pack(created["id"], profile="chat")
+                with zipfile.ZipFile(BytesIO(export_response.body)) as archive:
+                    self.assertEqual(
+                        [name for name in archive.namelist() if name != "manifest.md"],
+                        [chunk["filename"]],
+                    )
 
 
 class _FakeUploadRequest:

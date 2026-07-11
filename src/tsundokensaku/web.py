@@ -1265,7 +1265,7 @@ def build_export_preview_warnings(item_stats: list[ItemStats]) -> list[dict[str,
     return warnings
 
 
-def build_export_preview_payload(item_stats: list[ItemStats]) -> dict[str, object]:
+def _preview_base_stats(item_stats: list[ItemStats]) -> dict[str, object]:
     book_count = len({entry.item.pdf_path for entry in item_stats})
     total_pages = sum(len(entry.page_numbers) for entry in item_stats)
     total_stats = TextStats(
@@ -1281,12 +1281,80 @@ def build_export_preview_payload(item_stats: list[ItemStats]) -> dict[str, objec
         "total_pages": total_pages,
         "estimated_chars": total_stats.cjk_chars + total_stats.other_chars,
         "estimated_tokens": estimate_tokens(total_stats),
+    }
+
+
+def build_export_preview_payload(item_stats: list[ItemStats]) -> dict[str, object]:
+    # Phase 3A からの既存レスポンス形式（profile未指定・profile=standard用）。
+    # フィールド集合・値とも Phase 3C 導入前から不変（設計書12.1の後方互換方針）
+    return {
+        **_preview_base_stats(item_stats),
         "warnings": build_export_preview_warnings(item_stats),
     }
 
 
+def build_export_preview_payload_for_profile(
+    item_stats: list[ItemStats], profile: ExportProfile, *, pack_name: str
+) -> dict[str, object]:
+    """standard以外（chat等）向けの拡張プレビュー。設計書12.1のchunks付きレスポンス。
+
+    実エクスポート（_export_pack_archive）と同じ plan() / chunk_filename() を
+    呼ぶことで、分冊結果・ファイル名・警告をエクスポート実行前に一致させる。
+    """
+    item_warnings = build_export_preview_warnings(item_stats)
+
+    if not item_stats:
+        return {
+            "profile": profile.name,
+            **_preview_base_stats(item_stats),
+            "file_count": 0,
+            "archive": "zip",
+            "chunks": [],
+            "warnings": item_warnings,
+        }
+
+    plan = profile.plan(item_stats)
+    # primary_format を持たないプロファイル（standardのみ）はこの関数の対象外のため
+    # 実際には使われないが、chunk_filename の型契約上フォーマット文字列が必要
+    format_for_naming = profile.primary_format or "pdf"
+
+    chunks_payload = [
+        {
+            "filename": profile.chunk_filename(chunk, pack_name=pack_name, format=format_for_naming),
+            "estimated_tokens": chunk.estimated_tokens,
+            "pages": chunk.total_pages,
+            "items": [
+                {
+                    "item_id": entry.item.id,
+                    "title": entry.item.title,
+                    "pdf_path": entry.item.pdf_path,
+                    "pages": entry.item.pages,
+                    "estimated_tokens": estimate_tokens(entry.stats),
+                }
+                for entry in chunk.items
+            ],
+        }
+        for chunk in plan.chunks
+    ]
+    plan_warnings = [
+        {"code": warning.code, "item_id": warning.item_id, "message": warning.message}
+        for warning in plan.warnings
+    ]
+
+    return {
+        "profile": profile.name,
+        **_preview_base_stats(item_stats),
+        "file_count": len(plan.chunks),
+        "archive": "zip",
+        "chunks": chunks_payload,
+        "warnings": item_warnings + plan_warnings,
+    }
+
+
 @app.get("/api/packs/{pack_id}/export/preview")
-def api_preview_pack_export(pack_id: int) -> JSONResponse:
+def api_preview_pack_export(pack_id: int, profile: str | None = None) -> JSONResponse:
+    resolved_profile = _resolve_export_profile_or_400(profile)
+
     connection = _pack_connection()
     try:
         pack = get_pack(connection, pack_id)
@@ -1297,7 +1365,12 @@ def api_preview_pack_export(pack_id: int) -> JSONResponse:
     finally:
         connection.close()
 
-    return JSONResponse(build_export_preview_payload(item_stats))
+    if resolved_profile.name == "standard":
+        return JSONResponse(build_export_preview_payload(item_stats))
+
+    return JSONResponse(
+        build_export_preview_payload_for_profile(item_stats, resolved_profile, pack_name=pack.name)
+    )
 
 
 def _export_pack_json(pack, items: list) -> Response:
