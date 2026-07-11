@@ -1465,18 +1465,28 @@ def pdf_outline(pdf_path: str) -> JSONResponse:
 
 
 MAX_THUMBNAIL_PAGES_PER_REQUEST = 60
+THUMBNAIL_SIZE_PRESETS = {
+    "thumbnail": {"zoom": 0.3, "quality": 70},
+    "detail": {"zoom": 1.0, "quality": 85},
+}
 # spec の展開上限。実際のページ数を知るには fitz.open() が必要（コストが
 # 支配的なため二重に開きたくない）ので、蔵書の実ページ数を十分に超える
 # 仮の上限を渡し、範囲外ページは render_thumbnails 側で無視させる
 _THUMBNAIL_SPEC_PAGE_COUNT_GUARD = 10_000
+_DETAIL_THUMBNAIL_PAGE_PATTERN = re.compile(r"^[1-9][0-9]*$")
 
 
 @app.get("/pdf-thumbnails")
-def pdf_thumbnails(pdf_path: str, pages: str) -> JSONResponse:
+def pdf_thumbnails(pdf_path: str, pages: str, size: str = "thumbnail") -> JSONResponse:
     candidate = _resolve_pdf_file_or_404(pdf_path, get_books_dir())
     page_spec = pages.strip()
     if not page_spec:
         raise HTTPException(status_code=400, detail="pages is required")
+    preset = THUMBNAIL_SIZE_PRESETS.get(size)
+    if preset is None:
+        raise HTTPException(status_code=400, detail="size must be thumbnail or detail")
+    if size == "detail" and not _DETAIL_THUMBNAIL_PAGE_PATTERN.fullmatch(page_spec):
+        raise HTTPException(status_code=400, detail="detail size requires a single page number")
 
     try:
         page_numbers = parse_page_selection(page_spec, _THUMBNAIL_SPEC_PAGE_COUNT_GUARD)
@@ -1488,8 +1498,12 @@ def pdf_thumbnails(pdf_path: str, pages: str) -> JSONResponse:
             status_code=400,
             detail=f"一度に取得できるページ数は{MAX_THUMBNAIL_PAGES_PER_REQUEST}件までです",
         )
+    if size == "detail" and len(page_numbers) != 1:
+        raise HTTPException(status_code=400, detail="detail size requires a single page number")
+    if size == "detail" and page_numbers[0] > get_page_count(candidate):
+        raise HTTPException(status_code=404, detail="page not found")
 
-    rendered = render_thumbnails(candidate, page_numbers)
+    rendered = render_thumbnails(candidate, page_numbers, zoom=preset["zoom"], quality=preset["quality"])
     return JSONResponse(
         {
             "pages": [
