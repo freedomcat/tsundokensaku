@@ -21,8 +21,12 @@ from tsundokensaku.web import (
     api_get_pack,
     api_import_pack,
     api_list_packs,
+    api_preview_pack_export,
     api_replace_pack_books,
+    api_replace_pack_items,
     api_update_pack,
+    build_export_preview_payload,
+    build_export_preview_warnings,
     build_scrapbox_page_url,
     build_search_scrapbox_body,
     export_markdown,
@@ -48,7 +52,9 @@ from tsundokensaku.web import (
     upload_scrapbox_json,
     workspace_page,
 )
-from tsundokensaku.database import connect, initialize, upsert_book
+from tsundokensaku.database import PackItemRecord, connect, initialize, upsert_book
+from tsundokensaku.export_stats import ItemStats
+from tsundokensaku.token_estimate import TextStats
 
 
 class HighlightQueryTest(unittest.TestCase):
@@ -493,6 +499,8 @@ class HighlightQueryTest(unittest.TestCase):
         self.assertIn("資料棚", body)
         self.assertIn("ws-export-pdf", body)
         self.assertIn("ws-export-md", body)
+        self.assertIn("ws-export-preview", body)
+        self.assertIn("/api/packs/${pack.id}/export/preview", body)
 
     def test_search_pages_returns_matching_pages_with_snippets(self) -> None:
         from tsundokensaku.database import PageRecord, replace_pages
@@ -1436,6 +1444,257 @@ class PackApiTest(unittest.TestCase):
                 with self.assertRaises(HTTPException) as ctx:
                     api_export_pack(created["id"], format="pdf")
                 self.assertEqual(ctx.exception.status_code, 400)
+
+
+class BuildExportPreviewPayloadTest(unittest.TestCase):
+    """collect_item_stats の結果からプレビューJSONを組み立てる純粋関数のテスト。
+
+    DB/PDFを介さず ItemStats を直接組み立てるため、集計ロジックの境界値
+    （トークン数の丸め方・警告の優先順位）だけを高速に検証できる。
+    """
+
+    def _item(self, item_id: int, *, pdf_path: str = "a.pdf", pages: str = "1-2", title: str = "本") -> PackItemRecord:
+        return PackItemRecord(
+            id=item_id,
+            pdf_path=pdf_path,
+            title=title,
+            pages=pages,
+            collapsed=False,
+            position=item_id,
+            added_at="2026-07-11T00:00:00.000Z",
+            updated_at="2026-07-11T00:00:00.000Z",
+        )
+
+    def test_aggregates_token_estimate_instead_of_summing_per_item_ceils(self) -> None:
+        # other_chars=1 は単独だと ceil で 1トークンだが、集約してから丸めるため
+        # 0.25+0.25=0.5 -> 1トークンになる（個別ceilの合計=2とは異なる）
+        stats = [
+            ItemStats(item=self._item(1), page_numbers=[1], stats=TextStats(cjk_chars=0, other_chars=1), unindexed_pages=0, missing_pdf=False),
+            ItemStats(item=self._item(2), page_numbers=[1], stats=TextStats(cjk_chars=0, other_chars=1), unindexed_pages=0, missing_pdf=False),
+        ]
+        payload = build_export_preview_payload(stats)
+        self.assertEqual(payload["estimated_tokens"], 1)
+        self.assertEqual(payload["estimated_chars"], 2)
+        self.assertEqual(payload["estimation"], "approximate")
+        self.assertEqual(payload["estimator"], "char-class-v1")
+
+    def test_empty_list_returns_empty_pack_warning(self) -> None:
+        payload = build_export_preview_payload([])
+        self.assertEqual(
+            payload["warnings"],
+            [{"code": "empty_pack", "item_id": None, "message": "この資料には資料項目がありません"}],
+        )
+        self.assertEqual(payload["book_count"], 0)
+        self.assertEqual(payload["item_count"], 0)
+
+    def test_duplicate_pdf_path_counts_as_one_book(self) -> None:
+        stats = [
+            ItemStats(item=self._item(1, pages="1-3"), page_numbers=[1, 2, 3], stats=TextStats(0, 0), unindexed_pages=0, missing_pdf=False),
+            ItemStats(item=self._item(2, pages="8-10"), page_numbers=[8, 9, 10], stats=TextStats(0, 0), unindexed_pages=0, missing_pdf=False),
+        ]
+        payload = build_export_preview_payload(stats)
+        self.assertEqual(payload["item_count"], 2)
+        self.assertEqual(payload["book_count"], 1)
+        self.assertEqual(payload["total_pages"], 6)
+
+    def test_missing_pdf_takes_priority_over_missing_pages_warning(self) -> None:
+        stats = [
+            ItemStats(item=self._item(1, pages=""), page_numbers=[], stats=TextStats(0, 0), unindexed_pages=0, missing_pdf=True),
+        ]
+        warnings = build_export_preview_warnings(stats)
+        self.assertEqual(len(warnings), 1)
+        self.assertEqual(warnings[0]["code"], "missing_pdf")
+
+
+class PackExportPreviewTest(unittest.TestCase):
+    def _payload(self, response) -> dict:
+        return json.loads(response.body)
+
+    def test_preview_returns_404_for_missing_pack(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "index.db"
+            with patch("tsundokensaku.web.get_db_path", return_value=db_path):
+                with self.assertRaises(HTTPException) as ctx:
+                    api_preview_pack_export(9999)
+                self.assertEqual(ctx.exception.status_code, 404)
+
+    def test_preview_returns_empty_pack_warning_for_pack_with_no_items(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "index.db"
+            with patch("tsundokensaku.web.get_db_path", return_value=db_path):
+                created = self._payload(api_create_pack({"name": "空の資料"}))
+                preview = self._payload(api_preview_pack_export(created["id"]))
+
+                self.assertEqual(preview["book_count"], 0)
+                self.assertEqual(preview["item_count"], 0)
+                self.assertEqual(preview["total_pages"], 0)
+                self.assertEqual(preview["estimated_chars"], 0)
+                self.assertEqual(preview["estimated_tokens"], 0)
+                self.assertEqual(
+                    preview["warnings"],
+                    [{"code": "empty_pack", "item_id": None, "message": "この資料には資料項目がありません"}],
+                )
+
+    def test_preview_returns_estimation_for_indexed_pack(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            db_path = root / "index.db"
+            books_dir = root / "books"
+            books_dir.mkdir(parents=True)
+            pdf_path = books_dir / "a.pdf"
+
+            writer = PdfWriter()
+            for _ in range(3):
+                writer.add_blank_page(width=72, height=72)
+            with pdf_path.open("wb") as handle:
+                writer.write(handle)
+
+            with (
+                patch("tsundokensaku.web.get_db_path", return_value=db_path),
+                patch("tsundokensaku.web.get_books_dir", return_value=books_dir),
+            ):
+                from tsundokensaku.database import PageRecord, replace_pages
+
+                connection = connect(db_path)
+                initialize(connection)
+                book_id = upsert_book(
+                    connection,
+                    path=pdf_path,
+                    title="本A",
+                    size_bytes=pdf_path.stat().st_size,
+                    modified_at=pdf_path.stat().st_mtime,
+                )
+                replace_pages(
+                    connection,
+                    book_id=book_id,
+                    title="本A",
+                    pages=[
+                        PageRecord(page_number=1, text="はじめに"),
+                        PageRecord(page_number=2, text="Chapter 1"),
+                        PageRecord(page_number=3, text="おわりに"),
+                    ],
+                )
+                connection.commit()
+                connection.close()
+
+                created = self._payload(api_create_pack({"name": "資料"}))
+                items = [{"pdf_path": "a.pdf", "title": "本A", "pages": "1-3", "collapsed": False, "position": 0}]
+                self._payload(api_replace_pack_items(created["id"], {"items": items}))
+
+                preview = self._payload(api_preview_pack_export(created["id"]))
+
+                self.assertEqual(preview["book_count"], 1)
+                self.assertEqual(preview["item_count"], 1)
+                self.assertEqual(preview["total_pages"], 3)
+                self.assertGreater(preview["estimated_chars"], 0)
+                self.assertGreater(preview["estimated_tokens"], 0)
+                self.assertEqual(preview["warnings"], [])
+
+    def test_preview_flags_missing_pdf(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            db_path = root / "index.db"
+            books_dir = root / "books"
+            books_dir.mkdir(parents=True)
+
+            with (
+                patch("tsundokensaku.web.get_db_path", return_value=db_path),
+                patch("tsundokensaku.web.get_books_dir", return_value=books_dir),
+            ):
+                created = self._payload(api_create_pack({"name": "資料"}))
+                items = [{"pdf_path": "missing.pdf", "title": "消えた本", "pages": "1-3", "collapsed": False, "position": 0}]
+                self._payload(api_replace_pack_items(created["id"], {"items": items}))
+
+                preview = self._payload(api_preview_pack_export(created["id"]))
+
+                self.assertEqual(preview["total_pages"], 0)
+                self.assertEqual(len(preview["warnings"]), 1)
+                warning = preview["warnings"][0]
+                self.assertEqual(warning["code"], "missing_pdf")
+                self.assertIn("消えた本", warning["message"])
+                self.assertIsInstance(warning["item_id"], int)
+
+    def test_preview_flags_missing_pages(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            db_path = root / "index.db"
+            books_dir = root / "books"
+            books_dir.mkdir(parents=True)
+            writer = PdfWriter()
+            writer.add_blank_page(width=72, height=72)
+            with (books_dir / "a.pdf").open("wb") as handle:
+                writer.write(handle)
+
+            with (
+                patch("tsundokensaku.web.get_db_path", return_value=db_path),
+                patch("tsundokensaku.web.get_books_dir", return_value=books_dir),
+            ):
+                created = self._payload(api_create_pack({"name": "資料"}))
+                items = [{"pdf_path": "a.pdf", "title": "本A", "pages": "", "collapsed": False, "position": 0}]
+                self._payload(api_replace_pack_items(created["id"], {"items": items}))
+
+                preview = self._payload(api_preview_pack_export(created["id"]))
+
+                self.assertEqual(len(preview["warnings"]), 1)
+                self.assertEqual(preview["warnings"][0]["code"], "missing_pages")
+
+    def test_preview_flags_unindexed_pages_and_still_counts_pages(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            db_path = root / "index.db"
+            books_dir = root / "books"
+            books_dir.mkdir(parents=True)
+            writer = PdfWriter()
+            for _ in range(3):
+                writer.add_blank_page(width=72, height=72)
+            with (books_dir / "a.pdf").open("wb") as handle:
+                writer.write(handle)
+
+            with (
+                patch("tsundokensaku.web.get_db_path", return_value=db_path),
+                patch("tsundokensaku.web.get_books_dir", return_value=books_dir),
+            ):
+                created = self._payload(api_create_pack({"name": "資料"}))
+                items = [{"pdf_path": "a.pdf", "title": "本A", "pages": "1-3", "collapsed": False, "position": 0}]
+                self._payload(api_replace_pack_items(created["id"], {"items": items}))
+
+                # books テーブルに未登録（一度もインデックスしていない）ケース
+                preview = self._payload(api_preview_pack_export(created["id"]))
+
+                self.assertEqual(preview["total_pages"], 3)
+                self.assertEqual(preview["estimated_chars"], 0)
+                self.assertEqual(len(preview["warnings"]), 1)
+                self.assertEqual(preview["warnings"][0]["code"], "unindexed_pages")
+                self.assertIn("3ページ分", preview["warnings"][0]["message"])
+
+    def test_preview_counts_duplicate_pdf_items_as_one_book(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            db_path = root / "index.db"
+            books_dir = root / "books"
+            books_dir.mkdir(parents=True)
+            writer = PdfWriter()
+            for _ in range(10):
+                writer.add_blank_page(width=72, height=72)
+            with (books_dir / "a.pdf").open("wb") as handle:
+                writer.write(handle)
+
+            with (
+                patch("tsundokensaku.web.get_db_path", return_value=db_path),
+                patch("tsundokensaku.web.get_books_dir", return_value=books_dir),
+            ):
+                created = self._payload(api_create_pack({"name": "資料"}))
+                items = [
+                    {"pdf_path": "a.pdf", "title": "本A前半", "pages": "1-3", "collapsed": False, "position": 0},
+                    {"pdf_path": "a.pdf", "title": "本A後半", "pages": "8-10", "collapsed": False, "position": 1},
+                ]
+                self._payload(api_replace_pack_items(created["id"], {"items": items}))
+
+                preview = self._payload(api_preview_pack_export(created["id"]))
+
+                self.assertEqual(preview["item_count"], 2)
+                self.assertEqual(preview["book_count"], 1)
+                self.assertEqual(preview["total_pages"], 6)
 
 
 class _FakeUploadRequest:

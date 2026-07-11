@@ -1,9 +1,12 @@
 # Repository Instructions
 
 When creating commits in this repository, keep the human user as the Git author.
-Add Codex as a co-author using the standard Git trailer:
+Add the AI tool that actually performed the work as a co-author using the standard
+Git trailer, matching the tool/model in use for that session. Do not default to a
+fixed tool name regardless of which one did the work. Examples:
 
 Co-authored-by: Codex <codex@openai.com>
+Co-authored-by: Claude Sonnet 5 <noreply@anthropic.com>
 
 ## コミットメッセージ
 
