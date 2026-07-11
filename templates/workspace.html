@@ -18,6 +18,7 @@
     <button type="button" id="ws-add-open">ページを追加</button>
     <button type="button" class="primary" id="ws-export-pdf">PDF一式を書き出す</button>
     <button type="button" id="ws-export-md">MD一式を書き出す</button>
+    <button type="button" id="ws-export-json">資料データを書き出す</button>
     <button type="button" id="ws-clear">この資料を空にする</button>
     <span class="ws-status" id="ws-status"></span>
   </div>
@@ -66,6 +67,7 @@
     const countBadge = document.getElementById('ws-count');
     const exportPdfButton = document.getElementById('ws-export-pdf');
     const exportMdButton = document.getElementById('ws-export-md');
+    const exportJsonButton = document.getElementById('ws-export-json');
     const clearButton = document.getElementById('ws-clear');
     const statusLine = document.getElementById('ws-status');
     const addOpenButton = document.getElementById('ws-add-open');
@@ -91,7 +93,7 @@
       countBadge.hidden = !hasPack;
       emptyMessage.hidden = !hasPack || count > 0;
       // noPackSection / noActivePackSection の表示は資料一覧の有無が絡むため refreshPackBar 側で判定する
-      for (const button of [exportPdfButton, exportMdButton, clearButton, addOpenButton]) {
+      for (const button of [exportPdfButton, exportMdButton, exportJsonButton, clearButton, addOpenButton]) {
         button.disabled = !hasPack || count === 0;
       }
       packRenameButton.disabled = !hasPack;
@@ -501,36 +503,38 @@
       }
       const cart = TsundokuCart.load();
       const items = Array.isArray(cart.items) ? cart.items : [];
-      if (items.length === 0) {
+      if (format !== 'json' && items.length === 0) {
         return;
       }
       for (const entry of items) {
         const path = entry.pdf_path;
         const outline = outlineCache.get(path);
+        // json フォーマットのときは実ファイルのロードや validatePageSpec での実ページ数検証は省略する（構文のみチェック）
         const error = entry.pages.trim()
-          ? TsundokuPages.validatePageSpec(entry.pages, outline ? outline.pageCount : null)
+          ? (format === 'json' ? '' : TsundokuPages.validatePageSpec(entry.pages, outline ? outline.pageCount : null))
           : 'ページを指定してください';
         if (error) {
           setStatus(`${entry.title}: ${error}`, true);
           return;
         }
       }
-      const buttons = [exportPdfButton, exportMdButton, clearButton];
+      const buttons = [exportPdfButton, exportMdButton, exportJsonButton, clearButton];
       for (const button of buttons) {
         button.disabled = true;
       }
       try {
-        setStatus('資料一式を書き出し中...');
-        // サーバの最新内容でZIPを作るため、デバウンス中の未送信編集を先に反映させる
+        setStatus(format === 'json' ? '資料データを書き出し中...' : '資料一式を書き出し中...');
+        // サーバの最新内容でエクスポートするため、デバウンス中の未送信編集を先に反映させる
         await TsundokuCart.flushPendingSave();
         const response = await fetch(`/api/packs/${pack.id}/export?${new URLSearchParams({ format })}`);
         if (!response.ok) {
           throw new Error(await errorMessageFromResponse(response));
         }
         const blob = await response.blob();
-        const filename = filenameFromContentDisposition(response.headers.get('Content-Disposition')) || 'export.zip';
+        const defaultFilename = format === 'json' ? 'export.json' : 'export.zip';
+        const filename = filenameFromContentDisposition(response.headers.get('Content-Disposition')) || defaultFilename;
         downloadBlob(blob, filename);
-        setStatus('資料一式（ZIP）をダウンロードしました');
+        setStatus(format === 'json' ? '資料データ（JSON）をダウンロードしました' : '資料一式（ZIP）をダウンロードしました');
       } catch (error) {
         setStatus(error instanceof Error ? error.message : 'エクスポートに失敗しました', true);
       } finally {
@@ -741,6 +745,10 @@
 
     exportMdButton.addEventListener('click', () => {
       void exportPackZip('md');
+    });
+
+    exportJsonButton.addEventListener('click', () => {
+      void exportPackZip('json');
     });
 
     clearButton.addEventListener('click', () => {

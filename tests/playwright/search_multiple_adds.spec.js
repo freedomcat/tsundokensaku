@@ -204,6 +204,32 @@ test.describe('Search multiple additions (Phase 3A E2E)', () => {
     expect(await cards.nth(0).locator('.ws-book-range').textContent()).toContain('3ページ');
     expect(await cards.nth(1).locator('.ws-book-range').textContent()).toContain('6ページ');
 
+    // 8.5 資料データを書き出す (JSONエクスポート)
+    const jsonDownloadPromise = page.waitForEvent('download');
+    await page.locator('#ws-export-json').click();
+    const jsonDownload = await jsonDownloadPromise;
+    const jsonDownloadPath = await jsonDownload.path();
+    expect(jsonDownloadPath).not.toBeNull();
+    
+    // JSONファイルの内容をパースして検証
+    const fs = require('fs');
+    const path = require('path');
+    const jsonText = fs.readFileSync(jsonDownloadPath, 'utf-8');
+    const jsonPayload = JSON.parse(jsonText);
+    
+    expect(jsonPayload.version).toBe(3);
+    expect(jsonPayload.items).toHaveLength(2);
+    expect(jsonPayload.items[0].pdf_path).toContain('cathedral.pdf');
+    expect(jsonPayload.items[0].title).toContain('1 伽藍方式とバザール方式');
+    expect(jsonPayload.items[0].pages).toBe('2-4');
+    expect(jsonPayload.items[0].collapsed).toBe(false);
+    expect(jsonPayload.items[0].position).toBe(0);
+    expect(jsonPayload.items[1].pdf_path).toContain('cathedral.pdf');
+    expect(jsonPayload.items[1].title).toContain('1 伽藍方式とバザール方式');
+    expect(jsonPayload.items[1].pages).toBe('10-15');
+    expect(jsonPayload.items[1].collapsed).toBe(false);
+    expect(jsonPayload.items[1].position).toBe(1);
+
     // 9. PDF一式を書き出すボタンをクリックしてダウンロードする
     const downloadPromise = page.waitForEvent('download');
     await page.locator('#ws-export-pdf').click();
@@ -215,8 +241,6 @@ test.describe('Search multiple additions (Phase 3A E2E)', () => {
 
     // Node.js の child_process を使って ZIP 内のファイル名と各PDFのページ数を検証する
     const { execSync } = require('child_process');
-    const fs = require('fs');
-    const path = require('path');
 
     // unzip -l でファイル名一覧を取得
     const fileList = execSync(`unzip -l "${downloadPath}"`).toString();

@@ -1157,8 +1157,7 @@ def replace_pack_item_entries(connection: sqlite3.Connection, pack_id: int, item
 
     connection.execute("BEGIN TRANSACTION")
     try:
-        position = 0
-        for raw in items:
+        for index, raw in enumerate(items):
             if not isinstance(raw, dict):
                 continue
             pdf_path = raw.get("pdf_path")
@@ -1168,6 +1167,10 @@ def replace_pack_item_entries(connection: sqlite3.Connection, pack_id: int, item
             pages = raw.get("pages") if isinstance(raw.get("pages"), str) else ""
             collapsed = 1 if raw.get("collapsed") else 0
             added_at = raw.get("addedAt") if isinstance(raw.get("addedAt"), str) and raw.get("addedAt") else now
+            
+            raw_pos = raw.get("position")
+            position = raw_pos if isinstance(raw_pos, int) else index
+
             raw_id = raw.get("id")
             item_id = raw_id if isinstance(raw_id, int) else None
             
@@ -1193,7 +1196,6 @@ def replace_pack_item_entries(connection: sqlite3.Connection, pack_id: int, item
                     (pack_id, pdf_path, title, pages, collapsed, position, added_at, now),
                 )
                 seen_ids.add(int(cursor.lastrowid))
-            position += 1
 
         for item_id in existing_ids - seen_ids:
             connection.execute("DELETE FROM pack_items WHERE pack_id = ? AND id = ?", (pack_id, item_id))
@@ -1250,13 +1252,141 @@ def pack_items_as_cart(connection: sqlite3.Connection, pack_id: int) -> dict:
     return {"version": 2, "books": books}
 
 
+def validate_pages_syntax(spec: str) -> None:
+    page_spec = spec.strip()
+    if not page_spec:
+        return
+    for part in page_spec.split(","):
+        chunk = part.strip()
+        if not chunk:
+            continue
+        if "-" in chunk:
+            parts = chunk.split("-")
+            if len(parts) != 2:
+                raise ValueError(f"Invalid page spec chunk: {chunk}")
+            start_text, end_text = parts
+            start_text = start_text.strip()
+            end_text = end_text.strip()
+            start = 1
+            if start_text:
+                if not start_text.isdigit():
+                    raise ValueError(f"Invalid start page: {start_text}")
+                start = int(start_text)
+                if start <= 0:
+                    raise ValueError(f"Page number must be positive: {start}")
+            
+            if end_text:
+                if not end_text.isdigit():
+                    raise ValueError(f"Invalid end page: {end_text}")
+                end = int(end_text)
+                if end <= 0:
+                    raise ValueError(f"Page number must be positive: {end}")
+                if start_text and start > end:
+                    raise ValueError(f"Start page {start} cannot be greater than end page {end}")
+        else:
+            if not chunk.isdigit():
+                raise ValueError(f"Invalid page number: {chunk}")
+            val = int(chunk)
+            if val <= 0:
+                raise ValueError(f"Page number must be positive: {val}")
+
+
 def normalize_pack_payload_to_items(payload: dict) -> list[dict[str, object]] | None:
     if not isinstance(payload, dict):
         return None
-    if payload.get("version") == 3 and isinstance(payload.get("items"), list):
-        return [item for item in payload["items"] if isinstance(item, dict)]
-    if payload.get("version") == 2 and isinstance(payload.get("books"), dict):
-        return _books_to_item_entries(payload["books"])
+
+    version = payload.get("version")
+    if version not in (2, 3):
+        return None
+
+    if version == 3:
+        items = payload.get("items")
+        if not isinstance(items, list) or not items:
+            return None
+        
+        normalized: list[dict[str, object]] = []
+        positions = [item.get("position") for item in items if isinstance(item, dict)]
+        is_pos_valid = all(isinstance(p, int) and p >= 0 for p in positions) and len(set(positions)) == len(positions)
+
+        for index, raw in enumerate(items):
+            if not isinstance(raw, dict):
+                raise ValueError(f"item at index {index} must be a dictionary")
+            
+            pdf_path = raw.get("pdf_path")
+            if not isinstance(pdf_path, str) or not pdf_path:
+                raise ValueError(f"item at index {index} has invalid pdf_path: {pdf_path}")
+            
+            title = raw.get("title")
+            if title is not None and not isinstance(title, str):
+                raise ValueError(f"item at index {index} has invalid title: {title}")
+            
+            pages = raw.get("pages")
+            if not isinstance(pages, str):
+                raise ValueError(f"item at index {index} has invalid pages: {pages}")
+            validate_pages_syntax(pages)
+            
+            collapsed = raw.get("collapsed")
+            if not isinstance(collapsed, bool):
+                raise ValueError(f"item at index {index} has invalid collapsed: {collapsed}")
+            
+            added_at = raw.get("addedAt")
+            if added_at is not None and not isinstance(added_at, str):
+                raise ValueError(f"item at index {index} has invalid addedAt: {added_at}")
+            
+            pos_val = raw.get("position")
+            position = pos_val if (is_pos_valid and isinstance(pos_val, int)) else index
+            
+            normalized.append({
+                "pdf_path": pdf_path,
+                "title": title or pdf_path,
+                "pages": pages,
+                "collapsed": collapsed,
+                "addedAt": added_at or "",
+                "position": position,
+            })
+        
+        normalized.sort(key=lambda x: x["position"]) # type: ignore
+        return normalized
+
+    if version == 2:
+        books = payload.get("books")
+        if not isinstance(books, dict) or not books:
+            return None
+        
+        normalized = []
+        for pdf_path, entry in books.items():
+            if not isinstance(pdf_path, str) or not pdf_path:
+                raise ValueError("v2 books dict has empty/invalid key")
+            if not isinstance(entry, dict):
+                raise ValueError(f"v2 book entry for {pdf_path} must be a dictionary")
+            
+            title = entry.get("title") or pdf_path
+            if not isinstance(title, str):
+                raise ValueError(f"v2 book {pdf_path} has invalid title: {title}")
+            
+            pages = entry.get("pages") or ""
+            if not isinstance(pages, str):
+                raise ValueError(f"v2 book {pdf_path} has invalid pages: {pages}")
+            validate_pages_syntax(pages)
+            
+            collapsed = entry.get("collapsed")
+            if not isinstance(collapsed, bool):
+                collapsed = bool(collapsed)
+            
+            added_at = entry.get("addedAt") or ""
+            if not isinstance(added_at, str):
+                raise ValueError(f"v2 book {pdf_path} has invalid addedAt: {added_at}")
+            
+            normalized.append({
+                "pdf_path": pdf_path,
+                "title": title,
+                "pages": pages,
+                "collapsed": collapsed,
+                "addedAt": added_at,
+                "position": len(normalized),
+            })
+        return normalized
+
     return None
 
 
@@ -1266,7 +1396,11 @@ def import_cart_as_pack(connection: sqlite3.Connection, cart: dict, *, name: str
     if not items:
         return None
     pack_id = create_pack(connection, name=name)
-    replace_pack_item_entries(connection, pack_id, items)
+    try:
+        replace_pack_item_entries(connection, pack_id, items)
+    except Exception as exc:
+        delete_pack(connection, pack_id)
+        raise exc
     return pack_id
 
 
