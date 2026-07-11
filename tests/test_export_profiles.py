@@ -5,6 +5,7 @@ from pathlib import Path
 from tsundokensaku.database import PackItemRecord
 from tsundokensaku.export_profiles import (
     PROFILES,
+    ChatProfile,
     ExportChunk,
     ExportPlan,
     ExportProfile,
@@ -312,6 +313,86 @@ class ProfilesRegistryTest(unittest.TestCase):
         self.assertIsInstance(profile, StandardProfile)
         self.assertEqual(profile.name, "standard")
 
+    def test_chat_is_registered(self) -> None:
+        profile = PROFILES["chat"]
+        self.assertIsInstance(profile, ChatProfile)
+        self.assertEqual(profile.name, "chat")
+        self.assertEqual(profile.primary_format, "md")
+
+
+class ChatProfileTest(unittest.TestCase):
+    def test_item_weight_is_token_count(self) -> None:
+        # CJK: 10文字 (10.0), Other: 8文字 (2.0) -> ceil(12.0) = 12
+        stats = _item_stats(1, page_count=1, cjk_chars=10, other_chars=8)
+        self.assertEqual(ChatProfile().item_weight(stats), 12)
+
+    def test_chunk_limit_is_80000(self) -> None:
+        self.assertEqual(ChatProfile().chunk_limit(), 80000)
+
+    def test_chunk_filename(self) -> None:
+        items = [_item_stats(1, page_count=1)]
+        plan = ChatProfile().plan(items)
+        filename = ChatProfile().chunk_filename(plan.chunks[0], pack_name="MyPack")
+        self.assertEqual(filename, "MyPack_chat_01.md")
+
+    def test_greedy_split_by_tokens(self) -> None:
+        # limit を 100 としたテスト用 ChatProfile を使うこともできるが、
+        # ChatProfile の chunk_limit() は 80000 固定なので、
+        # 80000 を超えるかどうかの構成でテストする。
+        # 1項目目: 50,000トークン (cjk=50000)
+        # 2項目目: 40,000トークン (cjk=40000)
+        # 合計 90,000トークン > 80,000 なので分割されるはず
+        items = [
+            _item_stats(1, page_count=1, cjk_chars=50000, title="本A", position=0),
+            _item_stats(2, page_count=1, cjk_chars=40000, title="本B", position=1),
+        ]
+        plan = ChatProfile().plan(items)
+        self.assertEqual(len(plan.chunks), 2)
+        self.assertEqual(len(plan.chunks[0].items), 1)
+        self.assertEqual(plan.chunks[0].items[0].item.title, "本A")
+        self.assertEqual(len(plan.chunks[1].items), 1)
+        self.assertEqual(plan.chunks[1].items[0].item.title, "本B")
+
+    def test_single_item_exceeds_limit(self) -> None:
+        # 1項目だけで上限 (80000) を超える場合
+        items = [
+            _item_stats(1, page_count=1, cjk_chars=90000, title="巨大本", position=0),
+        ]
+        plan = ChatProfile().plan(items)
+        self.assertEqual(len(plan.chunks), 1)
+        self.assertEqual(len(plan.warnings), 1)
+        self.assertEqual(plan.warnings[0].code, "item_exceeds_limit")
+        self.assertEqual(plan.warnings[0].item_id, 1)
+        self.assertIn("巨大本", plan.warnings[0].message)
+
+    def test_render_chunk_combines_markdown_with_header(self) -> None:
+        items = [
+            _item_stats(1, page_count=1, pdf_path="book-a.pdf", title="本A", position=0),
+            _item_stats(2, page_count=1, pdf_path="book-b.pdf", title="本B", position=1),
+        ]
+        plan = ChatProfile().plan(items)
+        chunk = plan.chunks[0]
+
+        ctx = RenderContext(
+            pack_name="テスト資料",
+            exported_at=datetime(2026, 7, 12, 1, 0),
+            format="md",
+            resolve_pdf=lambda path: Path(path),
+            render_pdf=lambda path, pages: (b"pdf", "file.pdf"),
+            render_markdown=lambda path, pages: (f"# {path.name} pages={pages}", "file.md"),
+            total_chunks=1,
+        )
+
+        content = ChatProfile().render_chunk(chunk, ctx).decode("utf-8")
+        self.assertIn("# テスト資料（分冊 1/1）", content)
+        self.assertIn("## 収録項目", content)
+        self.assertIn("- 本A (1-1)", content)
+        self.assertIn("- 本B (1-1)", content)
+        self.assertIn("# book-a.pdf pages=1-1", content)
+        self.assertIn("# book-b.pdf pages=1-1", content)
+        # 項目間が --- で区切られていること
+        self.assertIn("\n\n---\n\n", content)
+
 
 class ResolveProfileTest(unittest.TestCase):
     def test_none_resolves_to_standard(self) -> None:
@@ -319,6 +400,9 @@ class ResolveProfileTest(unittest.TestCase):
 
     def test_standard_name_resolves_to_standard(self) -> None:
         self.assertIsInstance(resolve_profile("standard"), StandardProfile)
+
+    def test_chat_name_resolves_to_chat(self) -> None:
+        self.assertIsInstance(resolve_profile("chat"), ChatProfile)
 
     def test_unknown_name_raises_value_error_with_name_as_message(self) -> None:
         with self.assertRaises(ValueError) as ctx:

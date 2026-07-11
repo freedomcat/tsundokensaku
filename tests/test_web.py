@@ -1481,17 +1481,14 @@ class ExportArchiveBackwardCompatibilityTest(unittest.TestCase):
         return [int(page.mediabox.height) - 100 for page in reader.pages]
 
     def test_export_default_format_is_pdf(self) -> None:
-        # 既存テストは全て format を明示的に渡す直接関数呼び出しパターンのため
-        # （このリポジトリは TestClient を使わない）、Query("pdf") 経由のデフォルト値
-        # 解決は実際のHTTPリクエストでしか再現できない。シグネチャ上の既定値が
-        # "pdf" のままであることを確認し、既定値を変えていないことを担保する
+        # format のシグネチャ既定値は素の None（Query(...) ではない）にしたため、
+        # 直接関数呼び出しで format を省略しても正しく解決される
+        # （profile 未指定 → standard.primary_format は None → 既定 "pdf"）
         import inspect
 
         default = inspect.signature(api_export_pack).parameters["format"].default
-        self.assertEqual(default.default, "pdf")
+        self.assertIsNone(default)
 
-        # 明示的に "pdf" を渡した場合の出力そのものは他のテストで確認済みのため、
-        # ここでは既定値と実際の出力が一致することの確認に留める
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             db_path = root / "index.db"
@@ -1506,7 +1503,7 @@ class ExportArchiveBackwardCompatibilityTest(unittest.TestCase):
                 items = [{"pdf_path": "a.pdf", "title": "本A", "pages": "1-2", "collapsed": False, "position": 0}]
                 self._payload(api_replace_pack_items(created["id"], {"items": items}))
 
-                response = api_export_pack(created["id"], format=default.default)
+                response = api_export_pack(created["id"])  # profile・format とも省略
 
                 self.assertEqual(response.status_code, 200)
                 self.assertEqual(response.media_type, "application/zip")
@@ -1703,12 +1700,15 @@ class ExportProfileParameterTest(unittest.TestCase):
         self._payload(api_replace_pack_items(created["id"], {"items": items}))
         return created
 
-    def test_default_profile_is_none_and_default_format_is_pdf(self) -> None:
+    def test_default_profile_is_none_and_default_format_is_none(self) -> None:
+        # format は「省略された」ことを判別できるよう素の None を既定値にする
+        # （resolve_profile(None) が standard に解決した後、primary_format が
+        # None なら "pdf" にフォールバックする。§12.2）
         import inspect
 
         parameters = inspect.signature(api_export_pack).parameters
         self.assertIsNone(parameters["profile"].default)
-        self.assertEqual(parameters["format"].default.default, "pdf")
+        self.assertIsNone(parameters["format"].default)
 
     def test_profile_unspecified_and_all_formats_succeed(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1745,10 +1745,6 @@ class ExportProfileParameterTest(unittest.TestCase):
                     self.assertEqual(response.media_type, media_type, msg=f"format={fmt}")
 
     def test_profile_unspecified_and_standard_use_same_default_format(self) -> None:
-        import inspect
-
-        default_format = inspect.signature(api_export_pack).parameters["format"].default.default
-
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             db_path = root / "index.db"
@@ -1760,8 +1756,8 @@ class ExportProfileParameterTest(unittest.TestCase):
             ):
                 created = self._setup_pack_with_one_item(books_dir)
 
-                unspecified = api_export_pack(created["id"], format=default_format)
-                standard = api_export_pack(created["id"], profile="standard", format=default_format)
+                unspecified = api_export_pack(created["id"])
+                standard = api_export_pack(created["id"], profile="standard")
 
                 self.assertEqual(unspecified.status_code, 200)
                 self.assertEqual(standard.status_code, 200)
@@ -1894,6 +1890,159 @@ class ExportProfileParameterTest(unittest.TestCase):
             api_export_pack(9999, profile="standard", format="pdf")
         self.assertEqual(ctx.exception.status_code, 404)
         self.assertEqual(ctx.exception.detail, "資料が見つかりません")
+
+    def test_chat_profile_registered_and_uses_md_as_primary_format(self) -> None:
+        from tsundokensaku.export_profiles import PROFILES
+
+        self.assertIn("chat", PROFILES)
+        self.assertEqual(PROFILES["chat"].primary_format, "md")
+
+    def test_profile_chat_format_omitted_resolves_to_md(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            db_path = root / "index.db"
+            books_dir = root / "books"
+
+            with (
+                patch("tsundokensaku.web.get_db_path", return_value=db_path),
+                patch("tsundokensaku.web.get_books_dir", return_value=books_dir),
+            ):
+                created = self._setup_pack_with_one_item(books_dir)
+
+                response = api_export_pack(created["id"], profile="chat")  # format省略
+
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.media_type, "application/zip")
+                with zipfile.ZipFile(BytesIO(response.body)) as archive:
+                    names = archive.namelist()
+                    self.assertEqual(names, ["manifest.md", "資料_chat_01.md"])
+
+    def test_profile_chat_rejects_conflicting_format(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            db_path = root / "index.db"
+            books_dir = root / "books"
+
+            with (
+                patch("tsundokensaku.web.get_db_path", return_value=db_path),
+                patch("tsundokensaku.web.get_books_dir", return_value=books_dir),
+            ):
+                created = self._setup_pack_with_one_item(books_dir)
+
+                with self.assertRaises(HTTPException) as ctx:
+                    api_export_pack(created["id"], profile="chat", format="pdf")
+                self.assertEqual(ctx.exception.status_code, 400)
+                self.assertEqual(ctx.exception.detail, "profile=chat では format=md のみ指定できます")
+
+    def test_profile_chat_combines_small_items_and_lists_them_in_manifest(self) -> None:
+        from tsundokensaku.database import PageRecord, replace_pages
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            db_path = root / "index.db"
+            books_dir = root / "books"
+            pdf_path_a = books_dir / "a.pdf"
+            pdf_path_b = books_dir / "b.pdf"
+            self._make_pdf(pdf_path_a, 2)
+            self._make_pdf(pdf_path_b, 2)
+
+            connection = connect(db_path)
+            initialize(connection)
+            book_id_a = upsert_book(
+                connection, path=pdf_path_a, title="本A",
+                size_bytes=pdf_path_a.stat().st_size, modified_at=pdf_path_a.stat().st_mtime,
+            )
+            book_id_b = upsert_book(
+                connection, path=pdf_path_b, title="本B",
+                size_bytes=pdf_path_b.stat().st_size, modified_at=pdf_path_b.stat().st_mtime,
+            )
+            replace_pages(connection, book_id=book_id_a, title="本A", pages=[
+                PageRecord(page_number=1, text="本Aの1ページ目"),
+                PageRecord(page_number=2, text="本Aの2ページ目"),
+            ])
+            replace_pages(connection, book_id=book_id_b, title="本B", pages=[
+                PageRecord(page_number=1, text="本Bの1ページ目"),
+                PageRecord(page_number=2, text="本Bの2ページ目"),
+            ])
+            connection.commit()
+            connection.close()
+
+            with (
+                patch("tsundokensaku.web.get_db_path", return_value=db_path),
+                patch("tsundokensaku.web.get_books_dir", return_value=books_dir),
+            ):
+                created = self._payload(api_create_pack({"name": "対比資料"}))
+                items = [
+                    {"pdf_path": "a.pdf", "title": "本A", "pages": "1-2", "collapsed": False, "position": 0},
+                    {"pdf_path": "b.pdf", "title": "本B", "pages": "1-2", "collapsed": False, "position": 1},
+                ]
+                self._payload(api_replace_pack_items(created["id"], {"items": items}))
+
+                response = api_export_pack(created["id"], profile="chat")
+
+                self.assertEqual(response.status_code, 200)
+                with zipfile.ZipFile(BytesIO(response.body)) as archive:
+                    names = archive.namelist()
+                    # 小さい2項目は80,000トークン以内なので1チャンクに結合される
+                    self.assertEqual(names, ["manifest.md", "対比資料_chat_01.md"])
+
+                    manifest = archive.read("manifest.md").decode("utf-8")
+                    self.assertIn("- プロファイル: chat", manifest)
+                    self.assertIn("1. 対比資料_chat_01.md", manifest)
+                    # 結合されたチャンクでも両方の項目の出典がmanifestに残る
+                    self.assertIn("本A — p.1-2", manifest)
+                    self.assertIn("本B — p.1-2", manifest)
+                    self.assertNotIn("## 警告", manifest)
+
+                    content = archive.read("対比資料_chat_01.md").decode("utf-8")
+                    self.assertIn("対比資料（分冊 1/1）", content)
+                    self.assertIn("本Aの1ページ目", content)
+                    self.assertIn("本Bの1ページ目", content)
+
+    def test_profile_chat_isolates_and_warns_for_item_exceeding_token_limit(self) -> None:
+        from tsundokensaku.database import PageRecord, replace_pages
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            db_path = root / "index.db"
+            books_dir = root / "books"
+            pdf_path = books_dir / "huge.pdf"
+            page_count = 12
+            self._make_pdf(pdf_path, page_count)
+
+            connection = connect(db_path)
+            initialize(connection)
+            book_id = upsert_book(
+                connection, path=pdf_path, title="巨大本",
+                size_bytes=pdf_path.stat().st_size, modified_at=pdf_path.stat().st_mtime,
+            )
+            # 1ページ 8,000 CJK文字 x 12ページ = 96,000文字 -> 推定96,000トークン相当。
+            # chatの上限80,000を超える（Sudachiの1呼び出しあたりバイト上限を避けるため複数ページに分割）
+            replace_pages(connection, book_id=book_id, title="巨大本", pages=[
+                PageRecord(page_number=n, text="あ" * 8_000) for n in range(1, page_count + 1)
+            ])
+            connection.commit()
+            connection.close()
+
+            with (
+                patch("tsundokensaku.web.get_db_path", return_value=db_path),
+                patch("tsundokensaku.web.get_books_dir", return_value=books_dir),
+            ):
+                created = self._payload(api_create_pack({"name": "資料"}))
+                items = [{"pdf_path": "huge.pdf", "title": "巨大本", "pages": f"1-{page_count}", "collapsed": False, "position": 0}]
+                self._payload(api_replace_pack_items(created["id"], {"items": items}))
+
+                response = api_export_pack(created["id"], profile="chat")
+
+                self.assertEqual(response.status_code, 200)
+                with zipfile.ZipFile(BytesIO(response.body)) as archive:
+                    names = archive.namelist()
+                    # 単独で上限超過でも切り捨てず単独チャンクとして出力される
+                    self.assertEqual(names, ["manifest.md", "資料_chat_01.md"])
+
+                    manifest = archive.read("manifest.md").decode("utf-8")
+                    self.assertIn("## 警告", manifest)
+                    self.assertIn("「巨大本」は1ファイルの上限を超えるため単独で出力します", manifest)
 
 
 class BuildExportPreviewPayloadTest(unittest.TestCase):

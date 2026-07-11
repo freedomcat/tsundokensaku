@@ -85,6 +85,20 @@ def build_entry_filename(index: int, title: str, page_spec: str, extension: str)
     return f"{prefix}{truncated_title}{FILENAME_ELLIPSIS}_{short_pages}{suffix}"
 
 
+def build_sequenced_filename(base_name: str, profile_name: str, index: int, ext: str) -> str:
+    safe_base = sanitize_filename_component(base_name)
+    prefix = f"{safe_base}_{profile_name}_"
+    suffix = f"{index:02d}.{ext}"
+    full = f"{prefix}{suffix}"
+    if len(full.encode("utf-8")) <= MAX_FILENAME_BYTES:
+        return full
+
+    fixed = f"_{profile_name}_{suffix}"
+    available_bytes = MAX_FILENAME_BYTES - len(fixed.encode("utf-8"))
+    truncated_base = _truncate_to_byte_limit(safe_base, max(available_bytes, 0))
+    return f"{truncated_base}{fixed}"
+
+
 @dataclass(frozen=True)
 class PackExportEntry:
     index: int
@@ -118,6 +132,63 @@ def build_pack_zip(*, pack_name: str, entries: list[PackExportEntry], exported_a
     buffer = BytesIO()
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
         archive.writestr("manifest.md", render_pack_manifest(pack_name=pack_name, exported_at=exported_at, entries=entries))
+        for entry in entries:
+            archive.writestr(entry.filename, entry.content)
+    return buffer.getvalue()
+
+
+def render_plan_manifest(
+    *,
+    pack_name: str,
+    exported_at: datetime,
+    profile_name: str,
+    chunks: list[tuple[str, list[tuple[str, str]]]],
+    header_lines: list[str],
+    warnings: list[str],
+) -> str:
+    """profile 指定エクスポート用の manifest（設計書 10.3 / 14）。
+
+    standard の render_pack_manifest は PackExportEntry（1項目=1エントリ）
+    前提のため、複数項目チャンク（chat の分冊・notebooklm の結合）の項目
+    内訳を表現できない。ExportPlan から呼び出し側が組み立てた
+    「チャンク（出力ファイル） → 収録項目（書名・ページ範囲）」の一覧と、
+    plan の警告メッセージをそのまま並べる。export_profiles.py の型には
+    依存させず（循環import回避）プレーンなタプル/文字列で受け取る。
+    """
+    lines = [
+        f"# {pack_name}（資料一式・{profile_name}）",
+        "",
+        "- 生成: つんどけんさく",
+        f"- 書き出し日時: {exported_at:%Y-%m-%d %H:%M}",
+        f"- プロファイル: {profile_name}",
+        f"- 出力ファイル数: {len(chunks)}",
+    ]
+    lines.extend(header_lines)
+    lines.append("")
+    lines.append("## 収録内容")
+    lines.append("")
+    for index, (filename, items) in enumerate(chunks, start=1):
+        lines.append(f"{index}. {filename}")
+        for title, pages in items:
+            lines.append(f"   - {title} — p.{pages}")
+    if warnings:
+        lines.append("")
+        lines.append("## 警告")
+        lines.append("")
+        for warning in warnings:
+            lines.append(f"- {warning}")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def build_pack_zip_with_manifest(*, entries: list[PackExportEntry], manifest: str) -> bytes:
+    """既に組み立て済みの manifest 文字列でZIP化する（profile指定エクスポート用）。
+
+    standard 用の build_pack_zip は render_pack_manifest をハードコードして
+    呼ぶバイト互換維持のための既存関数のため変更せず、別関数として追加する。
+    """
+    buffer = BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("manifest.md", manifest)
         for entry in entries:
             archive.writestr(entry.filename, entry.content)
     return buffer.getvalue()

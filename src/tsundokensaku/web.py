@@ -70,6 +70,8 @@ from tsundokensaku.zip_export import (
     build_entry_filename,
     build_pack_zip,
     build_pack_zip_filename,
+    build_pack_zip_with_manifest,
+    render_plan_manifest,
     sanitize_filename_component,
 )
 
@@ -1348,11 +1350,26 @@ def _export_pack_archive(pack, items: list, *, format: str, profile: ExportProfi
     if not items:
         raise HTTPException(status_code=400, detail="資料が空です")
 
+    # 全項目の事前検証
+    for item in items:
+        if not item.pages.strip():
+            raise HTTPException(status_code=400, detail=f"{item.title}: ページを指定してください")
+
     books_dir = get_books_dir()
     db_path = get_db_path()
     exported_at = _now_jst()
 
-    plan = profile.plan([_placeholder_item_stats_for_export(item) for item in items])
+    # 実統計を必要とするプロファイル（chunk_limit が None 以外）なら collect_item_stats、そうでなければプレースホルダ
+    if profile.chunk_limit() is not None:
+        connection = _pack_connection()
+        try:
+            item_stats = collect_item_stats(connection, items, books_dir=books_dir)
+        finally:
+            connection.close()
+    else:
+        item_stats = [_placeholder_item_stats_for_export(item) for item in items]
+
+    plan = profile.plan(item_stats)
     ctx = RenderContext(
         pack_name=pack.name,
         exported_at=exported_at,
@@ -1362,24 +1379,43 @@ def _export_pack_archive(pack, items: list, *, format: str, profile: ExportProfi
         render_markdown=lambda candidate, pages: render_markdown_export(
             candidate, pages, books_dir=books_dir, db_path=db_path
         ),
+        total_chunks=len(plan.chunks),
     )
 
     entries: list[PackExportEntry] = []
+    manifest_chunks: list[tuple[str, list[tuple[str, str]]]] = []
     for chunk in plan.chunks:
-        item = chunk.items[0].item
-        if not item.pages.strip():
-            raise HTTPException(status_code=400, detail=f"{item.title}: ページを指定してください")
+        filename = profile.chunk_filename(chunk, pack_name=pack.name, format=format)
+        primary_item = chunk.items[0].item
         entries.append(
             PackExportEntry(
                 index=chunk.index,
-                title=item.title,
-                page_label=item.pages,
-                filename=profile.chunk_filename(chunk, pack_name=pack.name, format=format),
+                title=primary_item.title,
+                page_label=primary_item.pages,
+                filename=filename,
                 content=profile.render_chunk(chunk, ctx),
             )
         )
+        manifest_chunks.append((filename, [(entry.item.title, entry.item.pages) for entry in chunk.items]))
 
-    zip_bytes = build_pack_zip(pack_name=pack.name, entries=entries, exported_at=exported_at)
+    if profile.name == "standard":
+        # 現行 manifest（PackExportEntry 前提、1項目=1エントリ）をそのまま使い
+        # バイト互換を守る（設計書 10.3）
+        zip_bytes = build_pack_zip(pack_name=pack.name, entries=entries, exported_at=exported_at)
+    else:
+        # 複数項目チャンク（chat の分冊・notebooklm の結合）でも項目内訳が
+        # 失われないよう、ExportPlan から組み立てた manifest を使う。
+        # plan の警告（item_exceeds_limit 等）もここに記載する（設計書 14）
+        manifest = render_plan_manifest(
+            pack_name=pack.name,
+            exported_at=exported_at,
+            profile_name=profile.name,
+            chunks=manifest_chunks,
+            header_lines=profile.manifest_header_lines(plan),
+            warnings=[warning.message for warning in plan.warnings],
+        )
+        zip_bytes = build_pack_zip_with_manifest(entries=entries, manifest=manifest)
+
     zip_filename = profile.archive_filename(pack_name=pack.name, exported_at=exported_at)
     return Response(
         content=zip_bytes,
@@ -1396,8 +1432,12 @@ def _resolve_export_profile_or_400(name: str | None) -> ExportProfile:
 
 
 @app.get("/api/packs/{pack_id}/export")
-def api_export_pack(pack_id: int, profile: str | None = None, format: str = Query("pdf")) -> Response:
+def api_export_pack(pack_id: int, profile: str | None = None, format: str | None = None) -> Response:
     resolved_profile = _resolve_export_profile_or_400(profile)
+
+    if format is None:
+        # 省略時は profile の主形式（standard は None なので現行既定の pdf）
+        format = resolved_profile.primary_format if resolved_profile.primary_format is not None else "pdf"
 
     if format not in ("pdf", "md", "json"):
         raise HTTPException(status_code=400, detail="format は pdf, md, または json を指定してください")

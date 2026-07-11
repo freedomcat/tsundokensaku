@@ -44,3 +44,23 @@ def render_markdown_pages(
         lines.append(text if text else "（このページから抽出できたテキストはありません）")
         lines.append("")
     return "\n".join(lines).rstrip() + "\n"
+
+
+def render_chat_chunk_header(
+    *,
+    pack_name: str,
+    chunk_index: int,
+    total_chunks: int,
+    items: list[tuple[str, str]],
+) -> str:
+    lines = [
+        f"# {pack_name}（分冊 {chunk_index}/{total_chunks}）",
+        "",
+        "## 収録項目",
+    ]
+    for title, pages in items:
+        lines.append(f"- {title} ({pages})")
+    lines.append("")
+    lines.append("---")
+    lines.append("")
+    return "\n".join(lines)

@@ -7,8 +7,9 @@ from datetime import datetime
 from pathlib import Path
 
 from tsundokensaku.export_stats import ItemStats
+from tsundokensaku.markdown_export import render_chat_chunk_header
 from tsundokensaku.token_estimate import TextStats, TokenEstimator, estimate_tokens
-from tsundokensaku.zip_export import build_entry_filename, build_pack_zip_filename, sanitize_filename_component
+from tsundokensaku.zip_export import build_entry_filename, build_pack_zip_filename, sanitize_filename_component, build_sequenced_filename
 
 
 @dataclass(frozen=True)
@@ -53,6 +54,7 @@ class RenderContext:
     resolve_pdf: Callable[[str], Path]
     render_pdf: Callable[[Path, str], tuple[bytes, str]]
     render_markdown: Callable[[Path, str], tuple[str, str]]
+    total_chunks: int = 1
 
 
 def _sum_stats(item_stats: list[ItemStats]) -> TextStats:
@@ -219,7 +221,40 @@ class StandardProfile(ExportProfile):
         return content
 
 
-PROFILES: dict[str, ExportProfile] = {profile.name: profile for profile in (StandardProfile(),)}
+class ChatProfile(ExportProfile):
+    name = "chat"
+    primary_format = "md"
+
+    def item_weight(self, stats: ItemStats) -> int:
+        return self.estimator()(stats.stats)
+
+    def chunk_limit(self) -> int | None:
+        return 80000
+
+    def chunk_filename(self, chunk: ExportChunk, *, pack_name: str, format: str | None = None) -> str:
+        return build_sequenced_filename(pack_name, self.name, chunk.index, "md")
+
+    def render_chunk(self, chunk: ExportChunk, ctx: RenderContext) -> bytes:
+        rendered_parts = []
+        for entry in chunk.items:
+            item = entry.item
+            candidate = ctx.resolve_pdf(item.pdf_path)
+            content_str, _ = ctx.render_markdown(candidate, item.pages)
+            rendered_parts.append(content_str)
+
+        items_summary = [(e.item.title, e.item.pages) for e in chunk.items]
+        header = render_chat_chunk_header(
+            pack_name=ctx.pack_name,
+            chunk_index=chunk.index,
+            total_chunks=ctx.total_chunks,
+            items=items_summary
+        )
+
+        full_md = header + "\n\n---\n\n".join(rendered_parts)
+        return full_md.encode("utf-8")
+
+
+PROFILES: dict[str, ExportProfile] = {profile.name: profile for profile in (StandardProfile(), ChatProfile())}
 
 
 def resolve_profile(name: str | None) -> ExportProfile:

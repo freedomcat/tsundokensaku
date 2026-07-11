@@ -4,11 +4,15 @@ from datetime import datetime
 from io import BytesIO
 
 from tsundokensaku.zip_export import (
+    MAX_FILENAME_BYTES,
     PackExportEntry,
     build_entry_filename,
     build_pack_zip,
     build_pack_zip_filename,
+    build_pack_zip_with_manifest,
+    build_sequenced_filename,
     render_pack_manifest,
+    render_plan_manifest,
     sanitize_filename_component,
 )
 
@@ -105,6 +109,95 @@ class BuildPackZipTest(unittest.TestCase):
             self.assertIn("テスト資料（資料一式）", archive.read("manifest.md").decode("utf-8"))
             self.assertEqual(archive.read("01_a_p1-2.pdf"), b"PDF-A")
             self.assertEqual(archive.read("02_b_p5.pdf"), b"PDF-B")
+
+
+class BuildSequencedFilenameTest(unittest.TestCase):
+    def test_combines_pack_name_profile_and_index(self) -> None:
+        name = build_sequenced_filename("コードとログ", "chat", 1, "md")
+        self.assertEqual(name, "コードとログ_chat_01.md")
+
+    def test_pads_index_to_two_digits(self) -> None:
+        name = build_sequenced_filename("資料", "chat", 9, "md")
+        self.assertTrue(name.startswith("資料_chat_09"))
+
+    def test_index_can_exceed_two_digits(self) -> None:
+        name = build_sequenced_filename("資料", "chat", 123, "md")
+        self.assertEqual(name, "資料_chat_123.md")
+
+    def test_shortens_long_pack_name_when_over_byte_limit(self) -> None:
+        long_name = "非常に長い資料名" * 40
+        name = build_sequenced_filename(long_name, "chat", 1, "md")
+        self.assertTrue(name.endswith("_chat_01.md"))
+        self.assertLessEqual(len(name.encode("utf-8")), MAX_FILENAME_BYTES)
+
+    def test_short_name_is_unaffected_by_truncation_logic(self) -> None:
+        name = build_sequenced_filename("短い資料", "chat", 1, "md")
+        self.assertEqual(name, "短い資料_chat_01.md")
+
+
+class RenderPlanManifestTest(unittest.TestCase):
+    def test_lists_chunks_with_item_breakdown(self) -> None:
+        manifest = render_plan_manifest(
+            pack_name="コードとログ",
+            exported_at=datetime(2026, 7, 12, 9, 30),
+            profile_name="chat",
+            chunks=[
+                ("コードとログ_chat_01.md", [("伽藍とバザール", "1-15"), ("ノウアスフィアの開墾", "3-7")]),
+                ("コードとログ_chat_02.md", [("本C", "1-100")]),
+            ],
+            header_lines=[],
+            warnings=[],
+        )
+
+        self.assertIn("# コードとログ（資料一式・chat）", manifest)
+        self.assertIn("- プロファイル: chat", manifest)
+        self.assertIn("- 出力ファイル数: 2", manifest)
+        self.assertIn("1. コードとログ_chat_01.md", manifest)
+        self.assertIn("   - 伽藍とバザール — p.1-15", manifest)
+        self.assertIn("   - ノウアスフィアの開墾 — p.3-7", manifest)
+        self.assertIn("2. コードとログ_chat_02.md", manifest)
+        self.assertIn("   - 本C — p.1-100", manifest)
+
+    def test_includes_header_lines_and_warnings(self) -> None:
+        manifest = render_plan_manifest(
+            pack_name="資料",
+            exported_at=datetime(2026, 7, 12, 9, 30),
+            profile_name="chat",
+            chunks=[("資料_chat_01.md", [("巨大本", "1-1000")])],
+            header_lines=["- 備考: テスト用のヘッダ行"],
+            warnings=["「巨大本」は1ファイルの上限を超えるため単独で出力します"],
+        )
+
+        self.assertIn("- 備考: テスト用のヘッダ行", manifest)
+        self.assertIn("## 警告", manifest)
+        self.assertIn("「巨大本」は1ファイルの上限を超えるため単独で出力します", manifest)
+
+    def test_no_warnings_section_when_warnings_empty(self) -> None:
+        manifest = render_plan_manifest(
+            pack_name="資料",
+            exported_at=datetime(2026, 7, 12, 9, 30),
+            profile_name="chat",
+            chunks=[("資料_chat_01.md", [("本A", "1-1")])],
+            header_lines=[],
+            warnings=[],
+        )
+        self.assertNotIn("## 警告", manifest)
+
+
+class BuildPackZipWithManifestTest(unittest.TestCase):
+    def test_zip_contains_given_manifest_and_entries_in_order(self) -> None:
+        entries = [
+            PackExportEntry(index=1, title="本A", page_label="1-2", filename="資料_chat_01.md", content=b"MD-A"),
+            PackExportEntry(index=2, title="本B", page_label="5", filename="資料_chat_02.md", content=b"MD-B"),
+        ]
+        zip_bytes = build_pack_zip_with_manifest(entries=entries, manifest="# カスタムmanifest\n")
+
+        with zipfile.ZipFile(BytesIO(zip_bytes)) as archive:
+            names = archive.namelist()
+            self.assertEqual(names, ["manifest.md", "資料_chat_01.md", "資料_chat_02.md"])
+            self.assertEqual(archive.read("manifest.md").decode("utf-8"), "# カスタムmanifest\n")
+            self.assertEqual(archive.read("資料_chat_01.md"), b"MD-A")
+            self.assertEqual(archive.read("資料_chat_02.md"), b"MD-B")
 
 
 if __name__ == "__main__":
