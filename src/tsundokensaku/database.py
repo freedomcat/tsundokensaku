@@ -77,6 +77,7 @@ class PackRecord:
 
 @dataclass(frozen=True)
 class PackItemRecord:
+    id: int
     pdf_path: str
     title: str
     pages: str
@@ -1072,7 +1073,7 @@ def resolve_active_pack_id(connection: sqlite3.Connection) -> int | None:
 def get_pack_items(connection: sqlite3.Connection, pack_id: int) -> list[PackItemRecord]:
     rows = connection.execute(
         """
-        SELECT pdf_path, title, pages, collapsed, position, added_at, updated_at
+        SELECT id, pdf_path, title, pages, collapsed, position, added_at, updated_at
         FROM pack_items
         WHERE pack_id = ?
         ORDER BY position, id
@@ -1081,6 +1082,7 @@ def get_pack_items(connection: sqlite3.Connection, pack_id: int) -> list[PackIte
     ).fetchall()
     return [
         PackItemRecord(
+            id=int(row["id"]),
             pdf_path=str(row["pdf_path"]),
             title=str(row["title"]),
             pages=str(row["pages"]),
@@ -1206,14 +1208,51 @@ def _ensure_pack_schema(connection: sqlite3.Connection) -> None:
             collapsed INTEGER NOT NULL DEFAULT 0,
             position INTEGER NOT NULL DEFAULT 0,
             added_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
-            UNIQUE(pack_id, pdf_path)
+            updated_at TEXT NOT NULL
         );
 
         CREATE TABLE IF NOT EXISTS app_state (
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL
         );
+        """
+    )
+    _migrate_pack_items_drop_pdf_path_unique(connection)
+
+
+def _migrate_pack_items_drop_pdf_path_unique(connection: sqlite3.Connection) -> None:
+    row = connection.execute(
+        """
+        SELECT sql
+        FROM sqlite_master
+        WHERE type = 'table' AND name = 'pack_items'
+        """
+    ).fetchone()
+    create_sql = str(row["sql"] or "") if row is not None else ""
+    if "UNIQUE(pack_id, pdf_path)" not in create_sql:
+        return
+
+    connection.executescript(
+        """
+        CREATE TABLE pack_items_new (
+            id INTEGER PRIMARY KEY,
+            pack_id INTEGER NOT NULL REFERENCES packs(id) ON DELETE CASCADE,
+            pdf_path TEXT NOT NULL,
+            title TEXT NOT NULL,
+            pages TEXT NOT NULL DEFAULT '',
+            collapsed INTEGER NOT NULL DEFAULT 0,
+            position INTEGER NOT NULL DEFAULT 0,
+            added_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        INSERT INTO pack_items_new(id, pack_id, pdf_path, title, pages, collapsed, position, added_at, updated_at)
+        SELECT id, pack_id, pdf_path, title, pages, collapsed, position, added_at, updated_at
+        FROM pack_items
+        ORDER BY pack_id, position, id;
+
+        DROP TABLE pack_items;
+        ALTER TABLE pack_items_new RENAME TO pack_items;
         """
     )
 

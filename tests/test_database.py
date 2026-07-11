@@ -983,6 +983,55 @@ class PackTest(unittest.TestCase):
             self.assertEqual(get_pack(connection, pack_id).name, "残る")
             connection.close()
 
+    def test_initialize_drops_legacy_pack_items_pdf_path_unique_constraint(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "index.db"
+            connection = connect(db_path)
+            connection.executescript(
+                """
+                CREATE TABLE packs (
+                    id INTEGER PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    note TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    archived_at TEXT
+                );
+                CREATE TABLE pack_items (
+                    id INTEGER PRIMARY KEY,
+                    pack_id INTEGER NOT NULL REFERENCES packs(id) ON DELETE CASCADE,
+                    pdf_path TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    pages TEXT NOT NULL DEFAULT '',
+                    collapsed INTEGER NOT NULL DEFAULT 0,
+                    position INTEGER NOT NULL DEFAULT 0,
+                    added_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(pack_id, pdf_path)
+                );
+                CREATE TABLE app_state (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                INSERT INTO packs(id, name, note, created_at, updated_at) VALUES (1, 'p', '', 'a', 'a');
+                INSERT INTO pack_items(id, pack_id, pdf_path, title, pages, collapsed, position, added_at, updated_at)
+                VALUES (10, 1, 'books/a.pdf', '本A', '1', 0, 7, 'old', 'old');
+                """
+            )
+            connection.commit()
+
+            initialize(connection)
+            connection.execute(
+                """
+                INSERT INTO pack_items(pack_id, pdf_path, title, pages, collapsed, position, added_at, updated_at)
+                VALUES (1, 'books/a.pdf', '本A', '2', 0, 8, 'new', 'new')
+                """
+            )
+            connection.commit()
+
+            items = get_pack_items(connection, 1)
+            self.assertEqual([item.id for item in items], [10, 11])
+            self.assertEqual([item.position for item in items], [7, 8])
+            self.assertEqual([item.pages for item in items], ["1", "2"])
+            connection.close()
+
 
 if __name__ == "__main__":
     unittest.main()
