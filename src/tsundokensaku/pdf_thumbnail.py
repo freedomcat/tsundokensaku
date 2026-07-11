@@ -36,3 +36,30 @@ def render_thumbnails(
         return results
     finally:
         doc.close()
+
+
+def render_thumbnail_detail(
+    pdf_path: Path,
+    page_number: int,
+    *,
+    zoom: float = 1.0,
+    quality: int = 85,
+) -> tuple[int, bytes] | None:
+    """単一ページの高解像度プレビューをレンダリングする。
+
+    detail表示では範囲確認とレンダリングを1回の fitz.open() で完結させる。
+    範囲外のページ番号は None を返す。
+    """
+    import fitz  # PyMuPDF
+
+    doc = fitz.open(str(pdf_path))
+    try:
+        if page_number < 1 or page_number > doc.page_count:
+            return None
+        matrix = fitz.Matrix(zoom, zoom)
+        page = doc[page_number - 1]
+        pix = page.get_pixmap(matrix=matrix)
+        data = pix.tobytes("jpeg", jpg_quality=quality)
+        return page_number, data
+    finally:
+        doc.close()
