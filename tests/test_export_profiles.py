@@ -1,5 +1,6 @@
 import unittest
 from datetime import datetime
+from pathlib import Path
 
 from tsundokensaku.database import PackItemRecord
 from tsundokensaku.export_profiles import (
@@ -8,6 +9,7 @@ from tsundokensaku.export_profiles import (
     ExportPlan,
     ExportProfile,
     ExportWarning,
+    RenderContext,
     StandardProfile,
 )
 from tsundokensaku.export_stats import ItemStats
@@ -73,7 +75,7 @@ class _LimitedTestProfile(ExportProfile):
     def extra_warnings(self, plan: ExportPlan) -> tuple[ExportWarning, ...]:
         return self._extra_warnings_result
 
-    def chunk_filename(self, chunk: ExportChunk, *, pack_name: str) -> str:
+    def chunk_filename(self, chunk: ExportChunk, *, pack_name: str, format: str | None = None) -> str:
         raise NotImplementedError
 
     def render_chunk(self, chunk: ExportChunk, ctx) -> bytes:
@@ -149,9 +151,17 @@ class StandardProfileTest(unittest.TestCase):
         plan = StandardProfile().plan(items)
         chunk = plan.chunks[0]
 
-        actual = StandardProfile().chunk_filename(chunk, pack_name="資料")
+        actual = StandardProfile().chunk_filename(chunk, pack_name="資料", format="pdf")
         expected = build_entry_filename(1, "伽藍とバザール", "1-3", "pdf")
         self.assertEqual(actual, expected)
+
+    def test_chunk_filename_requires_format_when_primary_format_is_none(self) -> None:
+        # standard は primary_format=None のため、format 未指定は呼び出し側の
+        # 誤りとして明示的に失敗させる（設計上「不整合」の是正点）
+        items = [_item_stats(1, page_count=1, title="本A")]
+        plan = StandardProfile().plan(items)
+        with self.assertRaises(ValueError):
+            StandardProfile().chunk_filename(plan.chunks[0], pack_name="資料")
 
     def test_archive_filename_reuses_build_pack_zip_filename(self) -> None:
         exported_at = datetime(2026, 7, 11, 9, 0)
@@ -159,11 +169,64 @@ class StandardProfileTest(unittest.TestCase):
         expected = build_pack_zip_filename("コードとログ", exported_at)
         self.assertEqual(actual, expected)
 
-    def test_render_chunk_is_unimplemented_stub_in_b1(self) -> None:
-        items = [_item_stats(1, page_count=1, title="本A")]
+    def test_render_chunk_calls_render_pdf_when_format_is_pdf(self) -> None:
+        items = [_item_stats(1, page_count=1, title="本A", pdf_path="a.pdf")]
         plan = StandardProfile().plan(items)
-        with self.assertRaises(NotImplementedError):
-            StandardProfile().render_chunk(plan.chunks[0], ctx=None)
+        chunk = plan.chunks[0]
+        calls: dict[str, object] = {}
+
+        def fake_resolve_pdf(pdf_path):
+            calls["resolved_path"] = pdf_path
+            return Path("/resolved/a.pdf")
+
+        def fake_render_pdf(candidate, pages):
+            calls["render_pdf_args"] = (candidate, pages)
+            return b"PDF-BYTES", "ignored.pdf"
+
+        def fake_render_markdown(candidate, pages):
+            raise AssertionError("render_markdown は呼ばれないはず")
+
+        ctx = RenderContext(
+            pack_name="資料",
+            exported_at=datetime(2026, 7, 11, 9, 0),
+            format="pdf",
+            resolve_pdf=fake_resolve_pdf,
+            render_pdf=fake_render_pdf,
+            render_markdown=fake_render_markdown,
+        )
+
+        content = StandardProfile().render_chunk(chunk, ctx)
+
+        self.assertEqual(content, b"PDF-BYTES")
+        self.assertEqual(calls["resolved_path"], "a.pdf")
+        self.assertEqual(calls["render_pdf_args"], (Path("/resolved/a.pdf"), "1-1"))
+
+    def test_render_chunk_calls_render_markdown_when_format_is_md(self) -> None:
+        items = [_item_stats(1, page_count=1, title="本A", pdf_path="a.pdf")]
+        plan = StandardProfile().plan(items)
+        chunk = plan.chunks[0]
+        calls: dict[str, object] = {}
+
+        def fake_render_pdf(candidate, pages):
+            raise AssertionError("render_pdf は呼ばれないはず")
+
+        def fake_render_markdown(candidate, pages):
+            calls["render_markdown_args"] = (candidate, pages)
+            return "# md content", "ignored.md"
+
+        ctx = RenderContext(
+            pack_name="資料",
+            exported_at=datetime(2026, 7, 11, 9, 0),
+            format="md",
+            resolve_pdf=lambda pdf_path: Path("/resolved/a.pdf"),
+            render_pdf=fake_render_pdf,
+            render_markdown=fake_render_markdown,
+        )
+
+        content = StandardProfile().render_chunk(chunk, ctx)
+
+        self.assertEqual(content, "# md content")
+        self.assertEqual(calls["render_markdown_args"], (Path("/resolved/a.pdf"), "1-1"))
 
     def test_manifest_header_lines_defaults_to_empty(self) -> None:
         plan = StandardProfile().plan([_item_stats(1, page_count=1)])

@@ -48,6 +48,7 @@ from tsundokensaku.database import (
     update_pack,
 )
 from tsundokensaku.database import initialize
+from tsundokensaku.export_profiles import PROFILES, RenderContext
 from tsundokensaku.export_stats import ItemStats, collect_item_stats
 from tsundokensaku.indexer import find_pdfs, index_books
 from tsundokensaku.metadata import (
@@ -1297,6 +1298,97 @@ def api_preview_pack_export(pack_id: int) -> JSONResponse:
     return JSONResponse(build_export_preview_payload(item_stats))
 
 
+def _export_pack_json(pack, items: list) -> Response:
+    import json
+    export_data = {
+        "version": 3,
+        "name": pack.name,
+        "items": [
+            {
+                "pdf_path": item.pdf_path,
+                "title": item.title,
+                "pages": item.pages,
+                "collapsed": item.collapsed,
+                "addedAt": item.added_at,
+                "position": item.position,
+            }
+            for item in items
+        ]
+    }
+    json_bytes = json.dumps(export_data, ensure_ascii=False, indent=2).encode("utf-8")
+    filename = f"{sanitize_filename_component(pack.name)}_{_now_jst():%Y%m%d}.json"
+    return Response(
+        content=json_bytes,
+        media_type="application/json",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"},
+    )
+
+
+def _placeholder_item_stats_for_export(item) -> ItemStats:
+    """StandardProfile.plan() へ渡す最小限のItemStats。
+
+    standard は chunk_limit=None のため item_weight は使われず、plan() は
+    1項目=1チャンクの構造（position順）を作るだけに使う。実際のページ数・
+    本文検証・レンダリングは render_chunk 内で既存の render_pdf_export /
+    render_markdown_export が行うため、ここでは重複計算しない
+    （collect_item_stats の寛容なエラー処理をそのまま使うと、不正な
+    ページ範囲の詳細なエラーメッセージが失われ後方互換性が壊れるため
+    採用していない）。
+    """
+    return ItemStats(
+        item=item,
+        page_numbers=[],
+        stats=TextStats(cjk_chars=0, other_chars=0),
+        unindexed_pages=0,
+        missing_pdf=False,
+    )
+
+
+def _export_pack_archive(pack, items: list, *, format: str) -> Response:
+    if not items:
+        raise HTTPException(status_code=400, detail="資料が空です")
+
+    books_dir = get_books_dir()
+    db_path = get_db_path()
+    exported_at = _now_jst()
+
+    profile = PROFILES["standard"]
+    plan = profile.plan([_placeholder_item_stats_for_export(item) for item in items])
+    ctx = RenderContext(
+        pack_name=pack.name,
+        exported_at=exported_at,
+        format=format,
+        resolve_pdf=lambda pdf_path: _resolve_pdf_file_or_404(pdf_path, books_dir),
+        render_pdf=render_pdf_export,
+        render_markdown=lambda candidate, pages: render_markdown_export(
+            candidate, pages, books_dir=books_dir, db_path=db_path
+        ),
+    )
+
+    entries: list[PackExportEntry] = []
+    for chunk in plan.chunks:
+        item = chunk.items[0].item
+        if not item.pages.strip():
+            raise HTTPException(status_code=400, detail=f"{item.title}: ページを指定してください")
+        entries.append(
+            PackExportEntry(
+                index=chunk.index,
+                title=item.title,
+                page_label=item.pages,
+                filename=profile.chunk_filename(chunk, pack_name=pack.name, format=format),
+                content=profile.render_chunk(chunk, ctx),
+            )
+        )
+
+    zip_bytes = build_pack_zip(pack_name=pack.name, entries=entries, exported_at=exported_at)
+    zip_filename = profile.archive_filename(pack_name=pack.name, exported_at=exported_at)
+    return Response(
+        content=zip_bytes,
+        media_type="application/zip",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(zip_filename)}"},
+    )
+
+
 @app.get("/api/packs/{pack_id}/export")
 def api_export_pack(pack_id: int, format: str = Query("pdf")) -> Response:
     if format not in ("pdf", "md", "json"):
@@ -1312,64 +1404,9 @@ def api_export_pack(pack_id: int, format: str = Query("pdf")) -> Response:
         connection.close()
 
     if format == "json":
-        import json
-        export_data = {
-            "version": 3,
-            "name": pack.name,
-            "items": [
-                {
-                    "pdf_path": item.pdf_path,
-                    "title": item.title,
-                    "pages": item.pages,
-                    "collapsed": item.collapsed,
-                    "addedAt": item.added_at,
-                    "position": item.position,
-                }
-                for item in items
-            ]
-        }
-        json_bytes = json.dumps(export_data, ensure_ascii=False, indent=2).encode("utf-8")
-        filename = f"{sanitize_filename_component(pack.name)}_{_now_jst():%Y%m%d}.json"
-        return Response(
-            content=json_bytes,
-            media_type="application/json",
-            headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"},
-        )
+        return _export_pack_json(pack, items)
 
-    if not items:
-        raise HTTPException(status_code=400, detail="資料が空です")
-
-    books_dir = get_books_dir()
-    db_path = get_db_path()
-    exported_at = _now_jst()
-    entries: list[PackExportEntry] = []
-    for index, item in enumerate(items, start=1):
-        if not item.pages.strip():
-            raise HTTPException(status_code=400, detail=f"{item.title}: ページを指定してください")
-        candidate = _resolve_pdf_file_or_404(item.pdf_path, books_dir)
-        if format == "pdf":
-            content, _base_filename = render_pdf_export(candidate, item.pages)
-        else:
-            content, _base_filename = render_markdown_export(
-                candidate, item.pages, books_dir=books_dir, db_path=db_path
-            )
-        entries.append(
-            PackExportEntry(
-                index=index,
-                title=item.title,
-                page_label=item.pages,
-                filename=build_entry_filename(index, item.title, item.pages, format),
-                content=content,
-            )
-        )
-
-    zip_bytes = build_pack_zip(pack_name=pack.name, entries=entries, exported_at=exported_at)
-    zip_filename = build_pack_zip_filename(pack.name, exported_at)
-    return Response(
-        content=zip_bytes,
-        media_type="application/zip",
-        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(zip_filename)}"},
-    )
+    return _export_pack_archive(pack, items, format=format)
 
 
 @app.post("/api/packs/import")

@@ -35,16 +35,24 @@ class ExportPlan:
 
 @dataclass(frozen=True)
 class RenderContext:
-    """render_chunk が I/O を行うための注入ポイント（B-2 で接続する）。
+    """render_chunk が I/O を行うための注入ポイント（B-2 で接続）。
 
-    プロファイルにDB接続やbooks_dirを直接持たせず、web.py側が組み立てた
-    関数（PDF実体解決・本文取得）を経由させる（設計書 13.2 / 13.3）。
+    プロファイルにDB接続やbooks_dir、FastAPIのRequest/Responseを直接持たせず、
+    web.py側が組み立てた関数を経由させる（設計書 13.2 / 13.3）。
+
+    render_pdf / render_markdown は web.py 既存の render_pdf_export /
+    render_markdown_export をそのまま注入する想定。両関数は内部で
+    HTTPException を送出するが、export_profiles.py 側は fastapi を一切
+    import せず、注入された関数を呼ぶだけに留める（web.py への逆依存を
+    作らないため。既存ロジックのコピーもしない）。
     """
 
     pack_name: str
     exported_at: datetime
+    format: str
     resolve_pdf: Callable[[str], Path]
-    load_texts: Callable[[Path, list[int]], dict[int, str]]
+    render_pdf: Callable[[Path, str], tuple[bytes, str]]
+    render_markdown: Callable[[Path, str], tuple[str, str]]
 
 
 def _sum_stats(item_stats: list[ItemStats]) -> TextStats:
@@ -56,7 +64,11 @@ def _sum_stats(item_stats: list[ItemStats]) -> TextStats:
 
 class ExportProfile(ABC):
     name: str
-    primary_format: str
+    # standard は format=pdf|md|json を実行時に選べるため固定値を持たない（None）。
+    # chat/notebooklm は将来それぞれ "md"/"pdf" を固定値として持つ想定
+    # （設計書7.3/7.4）。固定値を持たないプロファイルは、実際に使う形式を
+    # RenderContext.format 経由で実行時に受け取る
+    primary_format: str | None
 
     # --- 概算 ---
     def estimator(self) -> TokenEstimator:
@@ -143,8 +155,13 @@ class ExportProfile(ABC):
 
     # --- 命名 ---
     @abstractmethod
-    def chunk_filename(self, chunk: ExportChunk, *, pack_name: str) -> str:
-        """チャンク1つの出力ファイル名。"""
+    def chunk_filename(self, chunk: ExportChunk, *, pack_name: str, format: str | None = None) -> str:
+        """チャンク1つの出力ファイル名。
+
+        format は primary_format が None のプロファイル（standard）が、
+        実行時に選ばれた形式を拡張子に反映するためのオプション引数。
+        primary_format を固定値で持つプロファイルは無視してよい。
+        """
 
     def archive_filename(self, *, pack_name: str, exported_at: datetime) -> str:
         return f"{sanitize_filename_component(pack_name)}_{self.name}_{exported_at:%Y%m%d}.zip"
@@ -162,13 +179,14 @@ class ExportProfile(ABC):
 class StandardProfile(ExportProfile):
     """現行のPDF/MDエクスポート動作をそのまま位置づけるプロファイル（設計書7.2）。
 
-    B-1時点では既存のエクスポート処理（web.py の api_export_pack）へは接続しない。
-    バイト互換を守るため、命名は既存の zip_export 関数をそのまま呼ぶだけにとどめ、
-    新しいフォーマット規則は導入しない。
+    format=pdf|md|json を実行時に選べる現行仕様のため primary_format は
+    固定値を持たない（None）。バイト互換を守るため、命名・出力は既存の
+    zip_export / web.py の関数をそのまま呼ぶだけにとどめ、新しい規則は
+    導入しない。
     """
 
     name = "standard"
-    primary_format = "pdf"
+    primary_format = None
 
     def item_weight(self, stats: ItemStats) -> int:
         return len(stats.page_numbers)
@@ -176,18 +194,29 @@ class StandardProfile(ExportProfile):
     def chunk_limit(self) -> int | None:
         return None
 
-    def chunk_filename(self, chunk: ExportChunk, *, pack_name: str) -> str:
+    def chunk_filename(self, chunk: ExportChunk, *, pack_name: str, format: str | None = None) -> str:
         # limitがNoneのため plan() は常に1項目=1チャンクを作る。現行の
         # build_entry_filename（{NN}_{書名}_p{範囲}.{ext}）をそのまま再利用する
+        if format is None:
+            raise ValueError("StandardProfile.chunk_filename には format（拡張子）が必要です")
         item_stats = chunk.items[0]
-        return build_entry_filename(chunk.index, item_stats.item.title, item_stats.item.pages, self.primary_format)
+        return build_entry_filename(chunk.index, item_stats.item.title, item_stats.item.pages, format)
 
     def archive_filename(self, *, pack_name: str, exported_at: datetime) -> str:
         # 現行のZIP名（{資料名}_{YYYYMMDD}.zip、profile名を含まない）を維持する
         return build_pack_zip_filename(pack_name, exported_at)
 
     def render_chunk(self, chunk: ExportChunk, ctx: RenderContext) -> bytes:
-        raise NotImplementedError("render_chunk は B-2 で既存エクスポート処理へ接続する")
+        # 1項目=1チャンクなので items[0] だけを見ればよい。実際のPDF解決・
+        # ページ範囲検証・本文レンダリングは、web.py が注入した既存関数
+        # （render_pdf_export / render_markdown_export）にそのまま委ねる
+        item = chunk.items[0].item
+        candidate = ctx.resolve_pdf(item.pdf_path)
+        if ctx.format == "pdf":
+            content, _filename = ctx.render_pdf(candidate, item.pages)
+        else:
+            content, _filename = ctx.render_markdown(candidate, item.pages)
+        return content
 
 
 PROFILES: dict[str, ExportProfile] = {profile.name: profile for profile in (StandardProfile(),)}
