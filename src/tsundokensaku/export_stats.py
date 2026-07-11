@@ -68,11 +68,20 @@ def _resolve_pdf_path(pdf_path: str | Path, books_dir: Path) -> Path | None:
 
 
 def _find_indexed_book(connection: sqlite3.Connection, relative: Path, *, books_dir: Path):
-    """web._get_indexed_book と同じ二重候補チェック（books.path の新旧表記ゆれ対応）。"""
-    for path_candidate in (relative, books_dir.expanduser().resolve() / relative):
-        book = get_book(connection, path=path_candidate)
-        if book is not None:
-            return book
+    """web._get_indexed_book と同じ二重候補チェック（books.path の新旧表記ゆれ対応）。
+
+    パック関連APIは ensure_pack_schema（packs/pack_items/app_state のみ作成）で
+    足りるため、一度も index を実行していないDBでは books テーブル自体が
+    存在しない。この場合は「未インデックス」と同義として扱う
+    （web._get_indexed_book と同じ OperationalError の握りつぶし方）。
+    """
+    try:
+        for path_candidate in (relative, books_dir.expanduser().resolve() / relative):
+            book = get_book(connection, path=path_candidate)
+            if book is not None:
+                return book
+    except sqlite3.OperationalError:
+        pass
     return None
 
 
@@ -104,14 +113,18 @@ def _resolve_total_page_count(
     """spec展開に使う総ページ数を得る。
 
     インデックス済みならDBの pages テーブルの最大ページ番号を使い、PDFファイルは
-    開かない（8.3節: プレビュー時の負荷を抑えるため）。未インデックス、または
-    pages テーブルに行がない場合のみ fitz でページ数だけを取得する。
+    開かない（8.3節: プレビュー時の負荷を抑えるため）。未インデックス、
+    pages テーブルに行がない、または pages テーブル自体が存在しない場合のみ
+    fitz でページ数だけを取得する。
     """
     if book_id is not None:
-        row = connection.execute(
-            "SELECT MAX(page_number) AS max_page FROM pages WHERE book_id = ?",
-            (book_id,),
-        ).fetchone()
+        try:
+            row = connection.execute(
+                "SELECT MAX(page_number) AS max_page FROM pages WHERE book_id = ?",
+                (book_id,),
+            ).fetchone()
+        except sqlite3.OperationalError:
+            row = None
         max_page = row["max_page"] if row is not None else None
         if max_page is not None:
             return int(max_page)
@@ -158,11 +171,16 @@ def _collect_single_item_stats(
             missing_pdf=False,
         )
 
+    # book_id が取れた時点で pages テーブルは存在するはず（books/pages は
+    # initialize() が常に一緒に作る）だが、web.load_pages_text と同じ防御を揃える。
     placeholders = ",".join("?" for _ in page_numbers)
-    rows = connection.execute(
-        f"SELECT page_number, text FROM pages WHERE book_id = ? AND page_number IN ({placeholders})",
-        [book_id, *page_numbers],
-    ).fetchall()
+    try:
+        rows = connection.execute(
+            f"SELECT page_number, text FROM pages WHERE book_id = ? AND page_number IN ({placeholders})",
+            [book_id, *page_numbers],
+        ).fetchall()
+    except sqlite3.OperationalError:
+        rows = []
     texts_by_page = {int(row["page_number"]): str(row["text"]) for row in rows}
 
     total_cjk = 0

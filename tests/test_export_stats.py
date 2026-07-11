@@ -142,6 +142,30 @@ class CollectItemStatsTest(unittest.TestCase):
             self.assertFalse(result.missing_pdf)
             self.assertEqual(result.stats, TextStats(cjk_chars=0, other_chars=0))
 
+    def test_db_without_books_table_is_treated_as_unindexed(self) -> None:
+        # パックAPIは ensure_pack_schema（packs/pack_items/app_state のみ）で足りる
+        # ため、一度も index を実行していないDBでは books テーブル自体が存在しない。
+        # get_book が sqlite3.OperationalError を送出する状況を、web._get_indexed_book
+        # と同様に「未インデックス」として扱えることを確認する。
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            books_dir = root / "books"
+            db_path = root / "index.db"
+            pdf_path = books_dir / "sample.pdf"
+            _write_blank_pdf(pdf_path, 2)
+
+            connection = connect(db_path)
+            # initialize() を呼ばない = books/pages テーブルが存在しない状態
+
+            item = _pack_item(item_id=1, pdf_path="sample.pdf", pages="1-2")
+            [result] = collect_item_stats(connection, [item], books_dir=books_dir)
+            connection.close()
+
+            self.assertEqual(result.page_numbers, [1, 2])
+            self.assertEqual(result.unindexed_pages, 2)
+            self.assertFalse(result.missing_pdf)
+            self.assertEqual(result.stats, TextStats(cjk_chars=0, other_chars=0))
+
     def test_missing_pdf_file_reports_missing_pdf_and_empty_stats(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
