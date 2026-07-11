@@ -1021,6 +1021,10 @@
         overflow-y: auto;
       }
 
+      .modal-thumb-panel.detail-open {
+        overflow: hidden;
+      }
+
       .modal-thumb-scroll {
         display: flex;
         flex-direction: column;
@@ -1070,6 +1074,11 @@
         height: 1px;
         overflow: hidden;
         opacity: 0;
+      }
+
+      .modal-thumb-checkbox:focus-visible + .modal-thumb-check-badge {
+        outline: 3px solid rgba(61, 98, 176, 0.95);
+        outline-offset: 3px;
       }
 
       .modal-thumb-check-control {

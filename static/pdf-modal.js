@@ -241,11 +241,15 @@
 
   function updateThumbDetailNav() {
     if (thumbDetailPrevButton) {
-      thumbDetailPrevButton.disabled = !thumbDetailActivePage || thumbDetailActivePage <= 1;
+      thumbDetailPrevButton.disabled = !currentPageCount || !thumbDetailActivePage || thumbDetailActivePage <= 1;
     }
     if (thumbDetailNextButton) {
-      thumbDetailNextButton.disabled = !thumbDetailActivePage || Boolean(currentPageCount && thumbDetailActivePage >= currentPageCount);
+      thumbDetailNextButton.disabled = !currentPageCount || !thumbDetailActivePage || thumbDetailActivePage >= currentPageCount;
     }
+  }
+
+  function isThumbDetailOverlayOpen() {
+    return Boolean(thumbDetailOverlay && !thumbDetailOverlay.hidden);
   }
 
   function openThumbDetailOverlay(pageNumber, returnFocus = null) {
@@ -258,6 +262,7 @@
       thumbDetailOverlay.classList.add('is-open');
     });
     document.body.classList.add('modal-thumb-overlay-open');
+    thumbPanel?.classList.add('detail-open');
     setThumbDetailTitle(pageNumber);
     updateThumbDetailNav();
     thumbDetailCloseButton?.focus();
@@ -276,6 +281,7 @@
       thumbDetailOverlay.hidden = true;
     }
     document.body.classList.remove('modal-thumb-overlay-open');
+    thumbPanel?.classList.remove('detail-open');
     updateThumbDetailNav();
     if (thumbDetailReturnFocus && typeof thumbDetailReturnFocus.focus === 'function') {
       thumbDetailReturnFocus.focus();
@@ -397,7 +403,7 @@
   }
 
   function moveThumbDetail(delta) {
-    if (!thumbDetailActivePage) {
+    if (!currentPageCount || !thumbDetailActivePage) {
       return;
     }
     const nextPage = thumbDetailActivePage + delta;
@@ -413,6 +419,7 @@
     }
     if (event.key === 'Escape') {
       event.preventDefault();
+      event.stopImmediatePropagation();
       closeThumbDetailOverlay();
       return;
     }
@@ -591,7 +598,7 @@
     img.addEventListener('dblclick', (event) => {
       event.preventDefault();
       event.stopPropagation();
-      void loadThumbDetail(pageNumber, { returnFocus: img });
+      void loadThumbDetail(pageNumber, { returnFocus: zoomButton });
     });
 
     // レスポンスの到着順はページ番号順と限らないため、挿入位置をページ番号で揃える
@@ -755,7 +762,7 @@
     }
   });
 
-  document.addEventListener('keydown', handleThumbDetailKeydown);
+  document.addEventListener('keydown', handleThumbDetailKeydown, true);
 
   thumbApplyButton?.addEventListener('click', async () => {
     // cart初回ロード未完了だと資料内の本を誤って「新規」判定してしまうため待つ
@@ -1064,6 +1071,9 @@
     }
   });
   document.addEventListener('keydown', (event) => {
+    if (isThumbDetailOverlayOpen()) {
+      return;
+    }
     if (event.key === 'Escape' && modal.classList.contains('open')) {
       void closeModal();
     }
