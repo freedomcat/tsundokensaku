@@ -58,7 +58,7 @@ from tsundokensaku.metadata import (
 from tsundokensaku.markdown_export import default_markdown_output_name, render_markdown_pages
 from tsundokensaku.pdf_export import default_output_path, parse_page_selection, render_selected_pages
 from tsundokensaku.pdf_outline import get_page_count, list_chapters
-from tsundokensaku.pdf_thumbnail import render_thumbnails
+from tsundokensaku.pdf_thumbnail import render_thumbnail_detail, render_thumbnails
 from tsundokensaku.tokenizer import query_highlight_terms
 from tsundokensaku.zip_export import (
     PackExportEntry,
@@ -1500,10 +1500,19 @@ def pdf_thumbnails(pdf_path: str, pages: str, size: str = "thumbnail") -> JSONRe
         )
     if size == "detail" and len(page_numbers) != 1:
         raise HTTPException(status_code=400, detail="detail size requires a single page number")
-    if size == "detail" and page_numbers[0] > get_page_count(candidate):
-        raise HTTPException(status_code=404, detail="page not found")
+    if size == "detail":
+        rendered_detail = render_thumbnail_detail(
+            candidate,
+            page_numbers[0],
+            zoom=preset["zoom"],
+            quality=preset["quality"],
+        )
+        if rendered_detail is None:
+            raise HTTPException(status_code=404, detail="page not found")
+        rendered = [rendered_detail]
+    else:
+        rendered = render_thumbnails(candidate, page_numbers, zoom=preset["zoom"], quality=preset["quality"])
 
-    rendered = render_thumbnails(candidate, page_numbers, zoom=preset["zoom"], quality=preset["quality"])
     return JSONResponse(
         {
             "pages": [
