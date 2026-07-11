@@ -399,14 +399,22 @@ window.TsundokuCart = (() => {
   }
 
   async function activatePack(packId) {
-    await flushPendingSave();
+    try {
+      await flushPendingSave();
+    } catch (err) {
+      console.warn('Failed to flush pending save before activating pack', err);
+    }
     await fetchJson(`/api/packs/${packId}/activate`, { method: 'POST' });
     await fetchActivePack();
   }
 
   // 現在の資料を意図的に未選択にする（資料自体・中身は削除しない）
   async function deactivatePack() {
-    await flushPendingSave();
+    try {
+      await flushPendingSave();
+    } catch (err) {
+      console.warn('Failed to flush pending save before deactivating pack', err);
+    }
     await fetchJson('/api/packs/deactivate', { method: 'POST' });
     await fetchActivePack();
   }

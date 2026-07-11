@@ -274,13 +274,26 @@ test.describe('Search multiple additions (Phase 3A E2E)', () => {
     const pageCount2 = (pdfText2.match(/\/Type\s*\/Page\b/g) || []).length;
     expect(pageCount2).toBe(6);
 
+    // 9.5. 資料データを読み込む (JSONインポートのUIテスト)
+    const importFileInputLocator = page.locator('#ws-import-file-input');
+    await importFileInputLocator.setInputFiles(jsonDownloadPath);
+    
+    
+    // インポート完了後の新しいワークスペースで、2つのカードが正しく復元されていることを確認
+    const importedCards = page.locator('.ws-book');
+    await expect(importedCards).toHaveCount(2);
+    await expect(importedCards.nth(0)).toContainText('3ページ');
+    await expect(importedCards.nth(1)).toContainText('6ページ');
+
+    const cards2 = importedCards;
+
     // 片方を削除した場合、残った項目だけが出力される
     // 1件目のカード（2-4 ページ）を削除
-    await cards.nth(0).locator('button:has-text("削除")').click();
+    await cards2.nth(0).locator('button:has-text("削除")').click();
     await page.evaluate(async () => {
       await window.TsundokuCart.flushPendingSave();
     });
-    await expect(cards).toHaveCount(1);
+    await expect(cards2).toHaveCount(1);
 
     // 再度エクスポート
     const downloadPromise2 = page.waitForEvent('download');

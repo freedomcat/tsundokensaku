@@ -18,7 +18,9 @@
     <button type="button" id="ws-add-open">ページを追加</button>
     <button type="button" class="primary" id="ws-export-pdf">PDF一式を書き出す</button>
     <button type="button" id="ws-export-md">MD一式を書き出す</button>
-    <button type="button" id="ws-export-json">資料データを書き出す</button>
+    <button type="button" id="ws-export-json" title="PDF本体ではなく、資料の構成・ページ範囲・並び順をJSONで保存します">資料データを書き出す</button>
+    <button type="button" id="ws-import-json" title="つんどけんさくで書き出したJSONから資料を復元します">資料データを読み込む</button>
+    <input type="file" id="ws-import-file-input" accept=".json,application/json" style="display:none">
     <button type="button" id="ws-clear">この資料を空にする</button>
     <span class="ws-status" id="ws-status"></span>
   </div>
@@ -68,6 +70,8 @@
     const exportPdfButton = document.getElementById('ws-export-pdf');
     const exportMdButton = document.getElementById('ws-export-md');
     const exportJsonButton = document.getElementById('ws-export-json');
+    const importJsonButton = document.getElementById('ws-import-json');
+    const importFileInput = document.getElementById('ws-import-file-input');
     const clearButton = document.getElementById('ws-clear');
     const statusLine = document.getElementById('ws-status');
     const addOpenButton = document.getElementById('ws-add-open');
@@ -96,6 +100,7 @@
       for (const button of [exportPdfButton, exportMdButton, exportJsonButton, clearButton, addOpenButton]) {
         button.disabled = !hasPack || count === 0;
       }
+      importJsonButton.disabled = !hasPack;
       packRenameButton.disabled = !hasPack;
       packDeleteButton.disabled = !hasPack;
     }
@@ -749,6 +754,49 @@
 
     exportJsonButton.addEventListener('click', () => {
       void exportPackZip('json');
+    });
+
+    importJsonButton.addEventListener('click', () => {
+      importFileInput.value = '';
+      importFileInput.click();
+    });
+
+    importFileInput.addEventListener('change', (event) => {
+      const file = event.target.files[0];
+      if (!file) { return; }
+
+      const reader = new FileReader();
+      reader.onload = async (e) => {
+        try {
+          const payload = JSON.parse(e.target.result);
+          
+          setStatus('資料データを読み込み中...');
+          const response = await fetch('/api/packs/import', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(payload)
+          });
+
+          if (!response.ok) {
+            throw new Error(await errorMessageFromResponse(response));
+          }
+
+          const result = await response.json();
+          console.log('IMPORT SUCCESS RESULT:', result);
+          setStatus(`資料「${result.name}」（${result.items.length}項目）を読み込みました`);
+          
+          console.log('ACTIVATING PACK ID:', result.id);
+          await TsundokuCart.activatePack(result.id);
+          console.log('ACTIVATION COMPLETE');
+
+        } catch (error) {
+          console.error('IMPORT ERROR CAUGHT:', error);
+          setStatus(error instanceof Error ? error.message : '読み込みに失敗しました', true);
+        }
+      };
+      reader.readAsText(file);
     });
 
     clearButton.addEventListener('click', () => {
