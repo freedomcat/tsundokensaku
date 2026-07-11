@@ -745,6 +745,7 @@
       }
 
       .modal-panel {
+        position: relative;
         width: min(1200px, 100%);
         height: min(92vh, 980px);
         background: white;
@@ -1044,9 +1045,8 @@
         position: relative;
         display: block;
         border: 3px solid var(--border);
-        border-radius: 10px;
+        border-radius: 8px;
         overflow: hidden;
-        cursor: pointer;
         background: white;
       }
 
@@ -1072,28 +1072,42 @@
         opacity: 0;
       }
 
-      .modal-thumb-check-badge {
-        display: none;
+      .modal-thumb-check-control {
         position: absolute;
         top: 8px;
         left: 8px;
+        z-index: 2;
+        display: inline-flex;
+        width: 40px;
+        height: 40px;
+        align-items: center;
+        justify-content: center;
+        cursor: pointer;
+      }
+
+      .modal-thumb-check-badge {
+        display: flex;
         width: 26px;
         height: 26px;
         border-radius: 50%;
-        background: var(--accent);
-        color: white;
+        border: 2px solid rgba(15, 23, 42, 0.35);
+        background: rgba(255, 255, 255, 0.9);
+        color: transparent;
         align-items: center;
         justify-content: center;
         font-size: 0.9rem;
+        box-shadow: 0 2px 8px rgba(15, 23, 42, 0.18);
       }
 
       .modal-thumb-item.selected .modal-thumb-check-badge {
-        display: flex;
+        border-color: var(--accent);
+        background: var(--accent);
+        color: white;
       }
 
       .modal-thumb-page-label {
         position: absolute;
-        bottom: 6px;
+        bottom: 44px;
         right: 6px;
         background: rgba(17, 24, 39, 0.72);
         color: white;
@@ -1104,6 +1118,116 @@
 
       .modal-thumb-item.current-page .modal-thumb-page-label {
         background: rgba(180, 83, 9, 0.85);
+      }
+
+      .modal-thumb-zoom-button {
+        position: absolute;
+        top: 8px;
+        right: 8px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 40px;
+        height: 40px;
+        border-radius: 999px;
+        border-color: rgba(15, 23, 42, 0.18);
+        background: rgba(255, 255, 255, 0.92);
+        color: var(--text);
+        font-size: 1rem;
+        box-shadow: 0 2px 8px rgba(15, 23, 42, 0.18);
+        z-index: 2;
+      }
+
+      .modal-thumb-overlay {
+        position: absolute;
+        inset: 0;
+        z-index: 20;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 18px;
+        background: rgba(15, 23, 42, 0.68);
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 180ms ease;
+      }
+
+      .modal-thumb-overlay.is-open {
+        opacity: 1;
+        pointer-events: auto;
+      }
+
+      .modal-thumb-dialog {
+        width: min(980px, 100%);
+        max-height: min(90vh, 900px);
+        display: grid;
+        grid-template-rows: auto minmax(0, 1fr);
+        border-radius: 8px;
+        background: white;
+        box-shadow: 0 24px 80px rgba(15, 23, 42, 0.38);
+        transform: scale(0.985);
+        transition: transform 180ms ease;
+        overflow: hidden;
+      }
+
+      .modal-thumb-overlay.is-open .modal-thumb-dialog {
+        transform: scale(1);
+      }
+
+      .modal-thumb-dialog-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        padding: 10px 12px;
+        border-bottom: 1px solid var(--border);
+        background: white;
+      }
+
+      .modal-thumb-dialog-title {
+        font-weight: 600;
+        font-size: 0.92rem;
+      }
+
+      .modal-thumb-dialog-actions {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .modal-thumb-dialog-body {
+        min-height: 320px;
+        max-height: calc(90vh - 58px);
+        overflow: auto;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 12px;
+        background: var(--panel);
+        text-align: center;
+        color: var(--muted);
+      }
+
+      .modal-thumb-dialog-body img {
+        max-width: 100%;
+        max-height: calc(90vh - 86px);
+        height: auto;
+        display: block;
+        border: 1px solid var(--border);
+        background: white;
+      }
+
+      .modal-thumb-dialog-message {
+        max-width: 24rem;
+        font-size: 0.9rem;
+      }
+
+      .modal-thumb-dialog-retry {
+        margin-top: 10px;
+      }
+
+      body.modal-thumb-overlay-open {
+        overflow: hidden;
       }
 
       @media (max-width: 640px) {
@@ -1125,6 +1249,20 @@
         .progress { height: 12px; }
         .modal { padding: 8px; }
         .modal-panel { height: 96vh; border-radius: 10px; }
+        .modal-thumb-panel {
+          padding: 12px;
+        }
+        .modal-thumb-overlay {
+          padding: 10px;
+        }
+        .modal-thumb-dialog {
+          max-height: 92vh;
+        }
+        .modal-thumb-dialog-body {
+          min-height: 260px;
+          max-height: calc(92vh - 58px);
+          padding: 10px;
+        }
       }
     </style>
   </head>
@@ -1198,6 +1336,19 @@
               <div class="modal-thumb-grid" id="pdf-modal-thumb-grid"></div>
               <div class="modal-thumb-range-toggle">
                 <button type="button" id="pdf-modal-thumb-next" hidden>次の10ページを表示</button>
+              </div>
+            </div>
+            <div class="modal-thumb-overlay" id="pdf-modal-thumb-overlay" hidden>
+              <div class="modal-thumb-dialog" role="dialog" aria-modal="true" aria-labelledby="pdf-modal-thumb-detail-title">
+                <div class="modal-thumb-dialog-header">
+                  <div class="modal-thumb-dialog-title" id="pdf-modal-thumb-detail-title">拡大プレビュー</div>
+                  <div class="modal-thumb-dialog-actions">
+                    <button type="button" id="pdf-modal-thumb-detail-prev">前</button>
+                    <button type="button" id="pdf-modal-thumb-detail-next">次</button>
+                    <button type="button" id="pdf-modal-thumb-detail-close">閉じる</button>
+                  </div>
+                </div>
+                <div class="modal-thumb-dialog-body" id="pdf-modal-thumb-detail-body" aria-live="polite"></div>
               </div>
             </div>
           </div>
