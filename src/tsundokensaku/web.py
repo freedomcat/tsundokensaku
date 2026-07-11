@@ -1304,7 +1304,7 @@ def api_import_pack(payload: dict = Body(default={})) -> JSONResponse:
         pack = get_pack(connection, pack_id)
         imported_cart = pack_items_as_cart(connection, pack_id)
         imported_items = pack_items_as_items(connection, pack_id)
-    except ValueError as exc:
+    except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     finally:
         connection.close()

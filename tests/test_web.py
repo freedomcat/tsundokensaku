@@ -1091,6 +1091,103 @@ class PackApiTest(unittest.TestCase):
                 pack_count_after = len(self._payload(api_list_packs())["packs"])
                 self.assertEqual(pack_count_before, pack_count_after)
 
+                # 17. 様々な position パターンの検証
+                # (1) position = [0, 1, 2] （正常）
+                p1_payload = {
+                    "version": 3,
+                    "name": "pos1",
+                    "items": [
+                        {"pdf_path": "a.pdf", "title": "A", "pages": "1", "collapsed": False, "position": 0},
+                        {"pdf_path": "b.pdf", "title": "B", "pages": "1", "collapsed": False, "position": 1},
+                        {"pdf_path": "c.pdf", "title": "C", "pages": "1", "collapsed": False, "position": 2},
+                    ]
+                }
+                res1 = self._payload(api_import_pack(p1_payload))
+                self.assertEqual([item["position"] for item in res1["items"]], [0, 1, 2])
+                self.assertEqual([item["title"] for item in res1["items"]], ["A", "B", "C"])
+
+                # (2) position = [0, 2, 5] （隙間・欠番あり。順序関係を維持して 0, 1, 2 に正規化される）
+                p2_payload = {
+                    "version": 3,
+                    "name": "pos2",
+                    "items": [
+                        {"pdf_path": "a.pdf", "title": "A", "pages": "1", "collapsed": False, "position": 0},
+                        {"pdf_path": "b.pdf", "title": "B", "pages": "1", "collapsed": False, "position": 2},
+                        {"pdf_path": "c.pdf", "title": "C", "pages": "1", "collapsed": False, "position": 5},
+                    ]
+                }
+                res2 = self._payload(api_import_pack(p2_payload))
+                self.assertEqual([item["position"] for item in res2["items"]], [0, 1, 2])
+                self.assertEqual([item["title"] for item in res2["items"]], ["A", "B", "C"])
+
+                # (3) position = [2, 0, 1] （配列順とposition指定が不一致。position値の昇順に並べ替えられて [0, 1, 2] に再採番）
+                p3_payload = {
+                    "version": 3,
+                    "name": "pos3",
+                    "items": [
+                        {"pdf_path": "c.pdf", "title": "C", "pages": "1", "collapsed": False, "position": 2},
+                        {"pdf_path": "a.pdf", "title": "A", "pages": "1", "collapsed": False, "position": 0},
+                        {"pdf_path": "b.pdf", "title": "B", "pages": "1", "collapsed": False, "position": 1},
+                    ]
+                }
+                res3 = self._payload(api_import_pack(p3_payload))
+                self.assertEqual([item["position"] for item in res3["items"]], [0, 1, 2])
+                self.assertEqual([item["title"] for item in res3["items"]], ["A", "B", "C"])
+
+                # (4) position 重複 (例: [1, 1, 0] -> 不正扱いとなり配列内の順序 A -> B -> C を基準に [0, 1, 2] に再採番)
+                p4_payload = {
+                    "version": 3,
+                    "name": "pos4",
+                    "items": [
+                        {"pdf_path": "a.pdf", "title": "A", "pages": "1", "collapsed": False, "position": 1},
+                        {"pdf_path": "b.pdf", "title": "B", "pages": "1", "collapsed": False, "position": 1},
+                        {"pdf_path": "c.pdf", "title": "C", "pages": "1", "collapsed": False, "position": 0},
+                    ]
+                }
+                res4 = self._payload(api_import_pack(p4_payload))
+                self.assertEqual([item["position"] for item in res4["items"]], [0, 1, 2])
+                self.assertEqual([item["title"] for item in res4["items"]], ["A", "B", "C"])
+
+                # (5) position 負数 (例: [-1, 0, 2] -> 配列順を基準に [0, 1, 2] に再採番)
+                p5_payload = {
+                    "version": 3,
+                    "name": "pos5",
+                    "items": [
+                        {"pdf_path": "a.pdf", "title": "A", "pages": "1", "collapsed": False, "position": -1},
+                        {"pdf_path": "b.pdf", "title": "B", "pages": "1", "collapsed": False, "position": 0},
+                        {"pdf_path": "c.pdf", "title": "C", "pages": "1", "collapsed": False, "position": 2},
+                    ]
+                }
+                res5 = self._payload(api_import_pack(p5_payload))
+                self.assertEqual([item["position"] for item in res5["items"]], [0, 1, 2])
+                self.assertEqual([item["title"] for item in res5["items"]], ["A", "B", "C"])
+
+                # (6) position 欠落 (positionキーなし -> 配列順を基準に [0, 1, 2] に再採番)
+                p6_payload = {
+                    "version": 3,
+                    "name": "pos6",
+                    "items": [
+                        {"pdf_path": "a.pdf", "title": "A", "pages": "1", "collapsed": False},
+                        {"pdf_path": "b.pdf", "title": "B", "pages": "1", "collapsed": False},
+                        {"pdf_path": "c.pdf", "title": "C", "pages": "1", "collapsed": False},
+                    ]
+                }
+                res6 = self._payload(api_import_pack(p6_payload))
+                self.assertEqual([item["position"] for item in res6["items"]], [0, 1, 2])
+                self.assertEqual([item["title"] for item in res6["items"]], ["A", "B", "C"])
+
+                # 18. items登録途中の例外でpackもitemsも残らないことの検証
+                from unittest.mock import patch as mock_patch
+                with mock_patch("tsundokensaku.database.replace_pack_item_entries", side_effect=RuntimeError("DB Write Error")):
+                    pack_count_before_err = len(self._payload(api_list_packs())["packs"])
+                    
+                    with self.assertRaises(HTTPException) as ctx:
+                        api_import_pack(p6_payload)
+                    self.assertEqual(ctx.exception.status_code, 400)
+                    
+                    pack_count_after_err = len(self._payload(api_list_packs())["packs"])
+                    self.assertEqual(pack_count_before_err, pack_count_after_err)
+
     def test_pack_api_export_zip_contains_manifest_and_ordered_entries(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

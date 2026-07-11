@@ -1346,6 +1346,8 @@ def normalize_pack_payload_to_items(payload: dict) -> list[dict[str, object]] | 
             })
         
         normalized.sort(key=lambda x: x["position"]) # type: ignore
+        for idx, item in enumerate(normalized):
+            item["position"] = idx
         return normalized
 
     if version == 2:
