@@ -1176,17 +1176,54 @@ class PackApiTest(unittest.TestCase):
                 self.assertEqual([item["position"] for item in res6["items"]], [0, 1, 2])
                 self.assertEqual([item["title"] for item in res6["items"]], ["A", "B", "C"])
 
-                # 18. items登録途中の例外でpackもitemsも残らないことの検証
+                # 18. 各種エラー時の例外およびHTTPステータスコード検証 (不正JSON, pages形式エラー, version不正, SQLite例外, RuntimeError)
+                import sqlite3
+
+                # (1) 不正JSON (dictでない型、例: 文字列) -> HTTPException(400) を期待
+                with self.assertRaises(HTTPException) as ctx:
+                    api_import_pack("invalid_json") # type: ignore
+                self.assertEqual(ctx.exception.status_code, 400)
+
+                # (2) pages形式エラー -> HTTPException(400)
+                p_pages_err = {
+                    "version": 3,
+                    "name": "pages_err",
+                    "items": [{"pdf_path": "a.pdf", "title": "A", "pages": "99-10", "collapsed": False}]
+                }
+                with self.assertRaises(HTTPException) as ctx:
+                    api_import_pack(p_pages_err)
+                self.assertEqual(ctx.exception.status_code, 400)
+
+                # (3) version不正 -> HTTPException(400)
+                p_version_err = {
+                    "version": 99,
+                    "name": "version_err",
+                    "items": [{"pdf_path": "a.pdf", "title": "A", "pages": "1", "collapsed": False}]
+                }
+                with self.assertRaises(HTTPException) as ctx:
+                    api_import_pack(p_version_err)
+                self.assertEqual(ctx.exception.status_code, 400)
+
+                # (4) SQLite例外 -> HTTPExceptionに変換されず sqlite3.Error がそのままスローされること (FastAPI既定の500になることを意味する)
                 from unittest.mock import patch as mock_patch
-                with mock_patch("tsundokensaku.database.replace_pack_item_entries", side_effect=RuntimeError("DB Write Error")):
-                    pack_count_before_err = len(self._payload(api_list_packs())["packs"])
+                with mock_patch("tsundokensaku.database.replace_pack_item_entries", side_effect=sqlite3.Error("Mock DB Error")):
+                    pack_count_before_db_err = len(self._payload(api_list_packs())["packs"])
                     
-                    with self.assertRaises(HTTPException) as ctx:
+                    with self.assertRaises(sqlite3.Error):
                         api_import_pack(p6_payload)
-                    self.assertEqual(ctx.exception.status_code, 400)
                     
-                    pack_count_after_err = len(self._payload(api_list_packs())["packs"])
-                    self.assertEqual(pack_count_before_err, pack_count_after_err)
+                    pack_count_after_db_err = len(self._payload(api_list_packs())["packs"])
+                    self.assertEqual(pack_count_before_db_err, pack_count_after_db_err)
+
+                # (5) RuntimeError -> HTTPExceptionに変換されず RuntimeError がそのままスローされること (FastAPI既定の500になることを意味する)
+                with mock_patch("tsundokensaku.database.replace_pack_item_entries", side_effect=RuntimeError("Runtime Error")):
+                    pack_count_before_rt_err = len(self._payload(api_list_packs())["packs"])
+                    
+                    with self.assertRaises(RuntimeError):
+                        api_import_pack(p6_payload)
+                    
+                    pack_count_after_rt_err = len(self._payload(api_list_packs())["packs"])
+                    self.assertEqual(pack_count_before_rt_err, pack_count_after_rt_err)
 
     def test_pack_api_export_zip_contains_manifest_and_ordered_entries(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
