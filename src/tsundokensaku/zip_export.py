@@ -99,6 +99,47 @@ def build_sequenced_filename(base_name: str, profile_name: str, index: int, ext:
     return f"{truncated_base}{fixed}"
 
 
+def _build_capped_filename(index: int, title: str, detail_candidates: list[str], extension: str) -> str:
+    safe_title = sanitize_filename_component(title)
+    prefix = f"{index:02d}_"
+    suffix = f".{extension}"
+
+    for detail in detail_candidates:
+        full = f"{prefix}{safe_title}_{detail}{suffix}"
+        if len(full.encode("utf-8")) <= MAX_FILENAME_BYTES:
+            return full
+
+    fallback_detail = detail_candidates[-1]
+    fixed = f"{prefix}{FILENAME_ELLIPSIS}_{fallback_detail}{suffix}"
+    available_bytes = MAX_FILENAME_BYTES - len(fixed.encode("utf-8"))
+    truncated_title = _truncate_to_byte_limit(safe_title, max(available_bytes, 0))
+    return f"{prefix}{truncated_title}{FILENAME_ELLIPSIS}_{fallback_detail}{suffix}"
+
+
+def build_notebooklm_filename(
+    index: int,
+    title: str,
+    page_specs: list[str],
+    *,
+    label: str | None = None,
+) -> str:
+    safe_page_specs = [sanitize_filename_component(page_spec) for page_spec in page_specs]
+    total_pages = sum(_count_pages_in_spec(page_spec) for page_spec in page_specs)
+
+    detail_candidates: list[str] = []
+    if len(page_specs) == 1:
+        pages_detail = f"p{safe_page_specs[0]}"
+        if label:
+            detail_candidates.append(f"{sanitize_filename_component(label)}_{pages_detail}")
+        detail_candidates.append(pages_detail)
+        detail_candidates.append(f"{total_pages}ページ")
+    else:
+        detail_candidates.append(f"p{'_'.join(safe_page_specs)}")
+        detail_candidates.append(f"{total_pages}ページ")
+
+    return _build_capped_filename(index, title, list(dict.fromkeys(detail_candidates)), "pdf")
+
+
 @dataclass(frozen=True)
 class PackExportEntry:
     index: int
@@ -106,6 +147,19 @@ class PackExportEntry:
     page_label: str
     filename: str
     content: bytes
+
+
+@dataclass(frozen=True)
+class PlanManifestFragment:
+    title: str
+    pages: str
+    label: str | None = None
+
+
+@dataclass(frozen=True)
+class PlanManifestChunk:
+    filename: str
+    fragments: list[PlanManifestFragment]
 
 
 def render_pack_manifest(*, pack_name: str, exported_at: datetime, entries: list[PackExportEntry]) -> str:
@@ -142,7 +196,7 @@ def render_plan_manifest(
     pack_name: str,
     exported_at: datetime,
     profile_name: str,
-    chunks: list[tuple[str, list[tuple[str, str]]]],
+    chunks: list[tuple[str, list[tuple[str, str]]] | PlanManifestChunk],
     header_lines: list[str],
     warnings: list[str],
 ) -> str:
@@ -167,7 +221,21 @@ def render_plan_manifest(
     lines.append("")
     lines.append("## 収録内容")
     lines.append("")
-    for index, (filename, items) in enumerate(chunks, start=1):
+    for index, chunk in enumerate(chunks, start=1):
+        if isinstance(chunk, PlanManifestChunk):
+            lines.append(f"{index}. {chunk.filename}")
+            current_title: str | None = None
+            for fragment in chunk.fragments:
+                if fragment.title != current_title:
+                    lines.append(f"   - {fragment.title}")
+                    current_title = fragment.title
+                if fragment.label:
+                    lines.append(f"     - {fragment.label} — p.{fragment.pages}")
+                else:
+                    lines.append(f"     - p.{fragment.pages}")
+            continue
+
+        filename, items = chunk
         lines.append(f"{index}. {filename}")
         for title, pages in items:
             lines.append(f"   - {title} — p.{pages}")
