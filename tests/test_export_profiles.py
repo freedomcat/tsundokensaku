@@ -10,6 +10,7 @@ from tsundokensaku.export_profiles import (
     ExportPlan,
     ExportProfile,
     ExportWarning,
+    ItemFragment,
     RenderContext,
     StandardProfile,
     resolve_profile,
@@ -65,13 +66,13 @@ class _LimitedTestProfile(ExportProfile):
         self._merge_allowed = merge_allowed
         self._extra_warnings_result = extra_warnings_result
 
-    def item_weight(self, stats: ItemStats) -> int:
-        return len(stats.page_numbers)
+    def item_weight(self, fragment: ItemFragment) -> int:
+        return len(fragment.page_numbers)
 
     def chunk_limit(self):
         return self._limit
 
-    def can_merge(self, current: ExportChunk, stats: ItemStats) -> bool:
+    def can_merge(self, current: ExportChunk, fragment: ItemFragment) -> bool:
         return self._merge_allowed
 
     def extra_warnings(self, plan: ExportPlan) -> tuple[ExportWarning, ...]:
@@ -91,6 +92,20 @@ class ExportProfileAbstractTest(unittest.TestCase):
 
 
 class StandardProfileTest(unittest.TestCase):
+    def test_split_items_is_identity_by_default(self) -> None:
+        stats = _item_stats(1, page_count=3, title="本A", position=0)
+        fragments = StandardProfile().split_items([stats])
+
+        self.assertEqual(len(fragments), 1)
+        fragment = fragments[0]
+        self.assertIs(fragment.item_stats, stats)
+        self.assertEqual(fragment.page_numbers, (1, 2, 3))
+        self.assertEqual(fragment.page_spec, "1-3")
+        self.assertEqual(fragment.stats, stats.stats)
+        self.assertIsNone(fragment.label)
+        self.assertEqual(fragment.fragment_index, 1)
+        self.assertEqual(fragment.fragment_count, 1)
+
     def test_one_chunk_per_item(self) -> None:
         items = [
             _item_stats(1, page_count=3, title="本A", position=0),
@@ -99,6 +114,8 @@ class StandardProfileTest(unittest.TestCase):
         plan = StandardProfile().plan(items)
 
         self.assertEqual(len(plan.chunks), 2)
+        self.assertEqual(len(plan.chunks[0].fragments), 1)
+        self.assertEqual(len(plan.chunks[1].fragments), 1)
         self.assertEqual(plan.chunks[0].items, (items[0],))
         self.assertEqual(plan.chunks[1].items, (items[1],))
         self.assertEqual(plan.warnings, ())
@@ -230,12 +247,27 @@ class StandardProfileTest(unittest.TestCase):
         self.assertEqual(content, "# md content")
         self.assertEqual(calls["render_markdown_args"], (Path("/resolved/a.pdf"), "1-1"))
 
+    def test_chunk_items_property_maps_back_to_item_stats(self) -> None:
+        items = [_item_stats(1, page_count=2, title="本A")]
+        chunk = StandardProfile().plan(items).chunks[0]
+        self.assertEqual(chunk.items, tuple(fragment.item_stats for fragment in chunk.fragments))
+
     def test_manifest_header_lines_defaults_to_empty(self) -> None:
         plan = StandardProfile().plan([_item_stats(1, page_count=1)])
         self.assertEqual(StandardProfile().manifest_header_lines(plan), [])
 
 
 class BasePlanTest(unittest.TestCase):
+    def test_plan_builds_fragment_based_chunks(self) -> None:
+        items = [
+            _item_stats(1, page_count=2, title="A"),
+            _item_stats(2, page_count=2, title="B"),
+        ]
+        plan = _LimitedTestProfile(limit=10).plan(items)
+
+        self.assertEqual(len(plan.chunks), 1)
+        self.assertEqual([fragment.item.title for fragment in plan.chunks[0].fragments], ["A", "B"])
+
     def test_merges_items_within_limit(self) -> None:
         items = [
             _item_stats(1, page_count=3, title="A"),
@@ -321,10 +353,20 @@ class ProfilesRegistryTest(unittest.TestCase):
 
 
 class ChatProfileTest(unittest.TestCase):
+    def test_split_items_is_identity_by_default(self) -> None:
+        stats = _item_stats(1, page_count=2, title="本A", position=0)
+        fragments = ChatProfile().split_items([stats])
+
+        self.assertEqual(len(fragments), 1)
+        self.assertIs(fragments[0].item_stats, stats)
+        self.assertEqual(fragments[0].page_spec, "1-2")
+        self.assertIsNone(fragments[0].label)
+
     def test_item_weight_is_token_count(self) -> None:
         # CJK: 10文字 (10.0), Other: 8文字 (2.0) -> ceil(12.0) = 12
         stats = _item_stats(1, page_count=1, cjk_chars=10, other_chars=8)
-        self.assertEqual(ChatProfile().item_weight(stats), 12)
+        fragment = ChatProfile().split_items([stats])[0]
+        self.assertEqual(ChatProfile().item_weight(fragment), 12)
 
     def test_chunk_limit_is_80000(self) -> None:
         self.assertEqual(ChatProfile().chunk_limit(), 80000)

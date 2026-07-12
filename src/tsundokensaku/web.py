@@ -1326,13 +1326,13 @@ def build_export_preview_payload_for_profile(
             "pages": chunk.total_pages,
             "items": [
                 {
-                    "item_id": entry.item.id,
-                    "title": entry.item.title,
-                    "pdf_path": entry.item.pdf_path,
-                    "pages": entry.item.pages,
-                    "estimated_tokens": estimate_tokens(entry.stats),
+                    "item_id": fragment.item.id,
+                    "title": fragment.item.title,
+                    "pdf_path": fragment.item.pdf_path,
+                    "pages": fragment.page_spec,
+                    "estimated_tokens": estimate_tokens(fragment.stats),
                 }
-                for entry in chunk.items
+                for fragment in chunk.fragments
             ],
         }
         for chunk in plan.chunks
@@ -1460,17 +1460,17 @@ def _export_pack_archive(pack, items: list, *, format: str, profile: ExportProfi
     manifest_chunks: list[tuple[str, list[tuple[str, str]]]] = []
     for chunk in plan.chunks:
         filename = profile.chunk_filename(chunk, pack_name=pack.name, format=format)
-        primary_item = chunk.items[0].item
+        primary_fragment = chunk.fragments[0]
         entries.append(
             PackExportEntry(
                 index=chunk.index,
-                title=primary_item.title,
-                page_label=primary_item.pages,
+                title=primary_fragment.item.title,
+                page_label=primary_fragment.page_spec,
                 filename=filename,
                 content=profile.render_chunk(chunk, ctx),
             )
         )
-        manifest_chunks.append((filename, [(entry.item.title, entry.item.pages) for entry in chunk.items]))
+        manifest_chunks.append((filename, [(fragment.item.title, fragment.page_spec) for fragment in chunk.fragments]))
 
     if profile.name == "standard":
         # 現行 manifest（PackExportEntry 前提、1項目=1エントリ）をそのまま使い
