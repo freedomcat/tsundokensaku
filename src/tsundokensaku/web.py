@@ -82,6 +82,7 @@ DEFAULT_BOOKS_DIR = Path("data/books")
 CONTAINER_BOOKS_DIRS = (Path("/data/books"), Path("/books/tech"))
 DEFAULT_DB_PATH = Path("data/index.db")
 PDF_EXPORT_SAVE_DIR_ENV = "PDF_EXPORT_SAVE_DIR"
+EXTERNALLY_AVAILABLE_EXPORT_PROFILES = frozenset({"standard", "chat"})
 
 
 def _find_project_root() -> Path:
@@ -1500,9 +1501,12 @@ def _export_pack_archive(pack, items: list, *, format: str, profile: ExportProfi
 
 def _resolve_export_profile_or_400(name: str | None) -> ExportProfile:
     try:
-        return resolve_profile(name)
+        profile = resolve_profile(name)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=f"不明なエクスポートプロファイルです: {exc}") from exc
+    if profile.name not in EXTERNALLY_AVAILABLE_EXPORT_PROFILES:
+        raise HTTPException(status_code=400, detail=f"不明なエクスポートプロファイルです: {profile.name}")
+    return profile
 
 
 @app.get("/api/packs/{pack_id}/export")

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -100,6 +101,27 @@ def _sum_stats(fragments: list[ItemFragment]) -> TextStats:
 
 def _default_fragment_page_spec(stats: ItemStats) -> str:
     return stats.item.pages
+
+
+NOTEBOOKLM_MAX_PAGES_PER_FILE_DEFAULT = 300
+NOTEBOOKLM_MAX_SOURCES_DEFAULT = 50
+NOTEBOOKLM_ESTIMATED_CHARS_WARNING_GUIDELINE = 400_000
+
+
+def _read_positive_int_env(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    value = raw.strip()
+    if not value:
+        return default
+    try:
+        parsed = int(value)
+    except ValueError:
+        return default
+    if parsed <= 0:
+        return default
+    return parsed
 
 
 class ExportProfile(ABC):
@@ -303,7 +325,67 @@ class ChatProfile(ExportProfile):
         return full_md.encode("utf-8")
 
 
-PROFILES: dict[str, ExportProfile] = {profile.name: profile for profile in (StandardProfile(), ChatProfile())}
+class NotebookLMProfile(ExportProfile):
+    name = "notebooklm"
+    primary_format = "pdf"
+
+    def item_weight(self, fragment: ItemFragment) -> int:
+        return len(fragment.page_numbers)
+
+    def chunk_limit(self) -> int | None:
+        return _read_positive_int_env(
+            "TSUNDOKENSAKU_NOTEBOOKLM_MAX_PAGES_PER_FILE",
+            NOTEBOOKLM_MAX_PAGES_PER_FILE_DEFAULT,
+        )
+
+    def can_merge(self, current: ExportChunk, fragment: ItemFragment) -> bool:
+        if not current.fragments:
+            return True
+        return current.fragments[-1].item.pdf_path == fragment.item.pdf_path
+
+    def extra_warnings(self, plan: ExportPlan) -> tuple[ExportWarning, ...]:
+        warnings: list[ExportWarning] = []
+        max_sources = _read_positive_int_env(
+            "TSUNDOKENSAKU_NOTEBOOKLM_MAX_SOURCES",
+            NOTEBOOKLM_MAX_SOURCES_DEFAULT,
+        )
+        if len(plan.chunks) > max_sources:
+            warnings.append(
+                ExportWarning(
+                    code="too_many_sources",
+                    item_id=None,
+                    message=f"出力ファイル数がNotebookLMのソース数目安（{max_sources}件）を超えています",
+                )
+            )
+
+        for chunk in plan.chunks:
+            estimated_chars = sum(
+                fragment.stats.cjk_chars + fragment.stats.other_chars
+                for fragment in chunk.fragments
+            )
+            if estimated_chars > NOTEBOOKLM_ESTIMATED_CHARS_WARNING_GUIDELINE:
+                warnings.append(
+                    ExportWarning(
+                        code="estimated_chars_exceed_guideline",
+                        item_id=None,
+                        message=(
+                            f"分冊 {chunk.index} は推定文字数が{NOTEBOOKLM_ESTIMATED_CHARS_WARNING_GUIDELINE:,}字の目安を超えています"
+                        ),
+                    )
+                )
+        return tuple(warnings)
+
+    def chunk_filename(self, chunk: ExportChunk, *, pack_name: str, format: str | None = None) -> str:
+        raise NotImplementedError("NotebookLMProfile は D-1 では plan のみ実装します")
+
+    def render_chunk(self, chunk: ExportChunk, ctx: RenderContext) -> bytes:
+        raise NotImplementedError("NotebookLMProfile は D-1 では plan のみ実装します")
+
+
+PROFILES: dict[str, ExportProfile] = {
+    profile.name: profile
+    for profile in (StandardProfile(), NotebookLMProfile(), ChatProfile())
+}
 
 
 def resolve_profile(name: str | None) -> ExportProfile:
