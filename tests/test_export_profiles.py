@@ -1,7 +1,10 @@
 import unittest
 from datetime import datetime
+from io import BytesIO
 from pathlib import Path
 from unittest.mock import patch
+
+from pypdf import PdfReader, PdfWriter
 
 from tsundokensaku.database import PackItemRecord
 from tsundokensaku.export_profiles import (
@@ -58,6 +61,60 @@ def _item_stats(
         unindexed_pages=unindexed_pages,
         missing_pdf=missing_pdf,
     )
+
+
+def _fragment(
+    item_id: int,
+    *,
+    title: str = "本",
+    pdf_path: str = "a.pdf",
+    pages: str = "1-1",
+    label: str | None = None,
+    fragment_index: int = 1,
+    fragment_count: int = 1,
+    cjk_chars: int = 0,
+    other_chars: int = 0,
+) -> ItemFragment:
+    numbers: list[int] = []
+    for part in pages.split(","):
+        chunk = part.strip()
+        if not chunk:
+            continue
+        if "-" in chunk:
+            start_text, end_text = chunk.split("-", 1)
+            start = int(start_text)
+            end = int(end_text)
+            numbers.extend(range(start, end + 1))
+        else:
+            numbers.append(int(chunk))
+
+    stats = ItemStats(
+        item=_pack_item(item_id, pdf_path=pdf_path, title=title, pages=pages, position=item_id - 1),
+        page_numbers=numbers,
+        stats=TextStats(cjk_chars=cjk_chars, other_chars=other_chars),
+        unindexed_pages=0,
+        missing_pdf=False,
+    )
+    return ItemFragment(
+        item_stats=stats,
+        page_numbers=tuple(numbers),
+        page_spec=pages,
+        stats=stats.stats,
+        label=label,
+        fragment_index=fragment_index,
+        fragment_count=fragment_count,
+    )
+
+
+def _pdf_bytes(page_count: int, *, metadata: dict[str, str] | None = None) -> bytes:
+    writer = PdfWriter()
+    for _ in range(page_count):
+        writer.add_blank_page(width=72, height=72)
+    if metadata:
+        writer.add_metadata(metadata)
+    buffer = BytesIO()
+    writer.write(buffer)
+    return buffer.getvalue()
 
 
 class _LimitedTestProfile(ExportProfile):
@@ -650,6 +707,140 @@ class NotebookLMProfileTest(unittest.TestCase):
         char_warnings = [entry for entry in plan.warnings if entry.code == "estimated_chars_exceed_guideline"]
         self.assertEqual(len(char_warnings), 1)
         self.assertIsNone(char_warnings[0].item_id)
+
+    def test_chunk_filename_uses_label_when_single_fragment_has_label(self) -> None:
+        chunk = ExportChunk(
+            index=1,
+            fragments=(_fragment(1, title="本A", pages="1-20", label="第1章"),),
+            total_pages=20,
+            estimated_tokens=0,
+        )
+        filename = NotebookLMProfile().chunk_filename(chunk, pack_name="資料")
+        self.assertEqual(filename, "01_本A_第1章_p1-20.pdf")
+
+    def test_chunk_filename_uses_pages_when_single_fragment_has_no_label(self) -> None:
+        chunk = ExportChunk(
+            index=2,
+            fragments=(_fragment(1, title="本A", pages="21-30"),),
+            total_pages=10,
+            estimated_tokens=0,
+        )
+        filename = NotebookLMProfile().chunk_filename(chunk, pack_name="資料")
+        self.assertEqual(filename, "02_本A_p21-30.pdf")
+
+    def test_chunk_filename_uses_joined_page_ranges_for_merged_fragments(self) -> None:
+        chunk = ExportChunk(
+            index=3,
+            fragments=(
+                _fragment(1, title="本A", pages="1-10", label="第1章"),
+                _fragment(1, title="本A", pages="5-8", label="第2章", fragment_index=2, fragment_count=2),
+            ),
+            total_pages=14,
+            estimated_tokens=0,
+        )
+        filename = NotebookLMProfile().chunk_filename(chunk, pack_name="資料")
+        self.assertEqual(filename, "03_本A_p1-10_5-8.pdf")
+
+    def test_chunk_filename_stays_within_255_bytes_for_long_japanese_title_and_label(self) -> None:
+        chunk = ExportChunk(
+            index=1,
+            fragments=(
+                _fragment(1, title="非常に長い書名" * 30, pages="1-300", label="非常に長い章名" * 30),
+            ),
+            total_pages=300,
+            estimated_tokens=0,
+        )
+        filename = NotebookLMProfile().chunk_filename(chunk, pack_name="資料")
+        self.assertLessEqual(len(filename.encode("utf-8")), 255)
+        self.assertTrue(filename.startswith("01_"))
+        self.assertTrue(filename.endswith(".pdf"))
+
+    def test_render_chunk_returns_single_fragment_pdf(self) -> None:
+        chunk = ExportChunk(
+            index=1,
+            fragments=(_fragment(1, title="本A", pages="1-2"),),
+            total_pages=2,
+            estimated_tokens=0,
+        )
+        calls: list[tuple[str, str]] = []
+        expected_pdf = _pdf_bytes(2, metadata={"/Title": "first"})
+        ctx = RenderContext(
+            pack_name="資料",
+            exported_at=datetime(2026, 7, 12, 1, 0),
+            format="pdf",
+            resolve_pdf=lambda path: Path(path),
+            render_pdf=lambda path, pages: (calls.append((path.name, pages)) or expected_pdf, "x.pdf"),
+            render_markdown=lambda path, pages: ("", "x.md"),
+        )
+
+        rendered = NotebookLMProfile().render_chunk(chunk, ctx)
+        self.assertEqual(rendered, expected_pdf)
+        self.assertEqual(calls, [("a.pdf", "1-2")])
+        self.assertEqual(len(PdfReader(BytesIO(rendered)).pages), 2)
+
+    def test_render_chunk_merges_fragments_in_order_without_deduplicating_pages(self) -> None:
+        chunk = ExportChunk(
+            index=1,
+            fragments=(
+                _fragment(1, title="本A", pages="1-10"),
+                _fragment(1, title="本A", pages="5-8", fragment_index=2, fragment_count=2),
+            ),
+            total_pages=14,
+            estimated_tokens=0,
+        )
+        rendered_by_pages = {
+            "1-10": _pdf_bytes(10, metadata={"/Title": "first", "/Author": "alice"}),
+            "5-8": _pdf_bytes(4, metadata={"/Title": "second"}),
+        }
+        calls: list[str] = []
+        ctx = RenderContext(
+            pack_name="資料",
+            exported_at=datetime(2026, 7, 12, 1, 0),
+            format="pdf",
+            resolve_pdf=lambda path: Path(path),
+            render_pdf=lambda path, pages: (calls.append(pages) or rendered_by_pages[pages], "x.pdf"),
+            render_markdown=lambda path, pages: ("", "x.md"),
+        )
+
+        rendered = NotebookLMProfile().render_chunk(chunk, ctx)
+        reader = PdfReader(BytesIO(rendered))
+        self.assertEqual(calls, ["1-10", "5-8"])
+        self.assertEqual(len(reader.pages), 14)
+        self.assertEqual(reader.metadata.get("/Title"), "first")
+        self.assertEqual(reader.metadata.get("/Author"), "alice")
+
+    def test_render_chunk_succeeds_when_first_pdf_has_no_metadata(self) -> None:
+        chunk = ExportChunk(
+            index=1,
+            fragments=(
+                _fragment(1, title="本A", pages="1-2"),
+                _fragment(1, title="本A", pages="3-4", fragment_index=2, fragment_count=2),
+            ),
+            total_pages=4,
+            estimated_tokens=0,
+        )
+        ctx = RenderContext(
+            pack_name="資料",
+            exported_at=datetime(2026, 7, 12, 1, 0),
+            format="pdf",
+            resolve_pdf=lambda path: Path(path),
+            render_pdf=lambda path, pages: (_pdf_bytes(2), "x.pdf"),
+            render_markdown=lambda path, pages: ("", "x.md"),
+        )
+
+        rendered = NotebookLMProfile().render_chunk(chunk, ctx)
+        reader = PdfReader(BytesIO(rendered))
+        self.assertEqual(len(reader.pages), 4)
+
+    def test_manifest_header_lines_describe_notebooklm_export(self) -> None:
+        plan = ExportPlan(
+            profile_name="notebooklm",
+            chunks=(ExportChunk(index=1, fragments=(_fragment(1),), total_pages=1, estimated_tokens=0),),
+            warnings=(),
+        )
+        lines = NotebookLMProfile().manifest_header_lines(plan)
+        self.assertIn("- NotebookLM向けのPDFです", lines)
+        self.assertIn("- 出力ファイル数: 1", lines)
 
 
 class ChatProfileTest(unittest.TestCase):

@@ -9,8 +9,15 @@ from pathlib import Path
 
 from tsundokensaku.export_stats import ItemStats
 from tsundokensaku.markdown_export import render_chat_chunk_header
+from tsundokensaku.pdf_export import merge_rendered_pdfs
 from tsundokensaku.token_estimate import TextStats, TokenEstimator, estimate_tokens
-from tsundokensaku.zip_export import build_entry_filename, build_pack_zip_filename, sanitize_filename_component, build_sequenced_filename
+from tsundokensaku.zip_export import (
+    build_entry_filename,
+    build_notebooklm_filename,
+    build_pack_zip_filename,
+    build_sequenced_filename,
+    sanitize_filename_component,
+)
 
 
 @dataclass(frozen=True)
@@ -376,10 +383,26 @@ class NotebookLMProfile(ExportProfile):
         return tuple(warnings)
 
     def chunk_filename(self, chunk: ExportChunk, *, pack_name: str, format: str | None = None) -> str:
-        raise NotImplementedError("NotebookLMProfile は D-1 では plan のみ実装します")
+        primary_fragment = chunk.fragments[0]
+        return build_notebooklm_filename(
+            chunk.index,
+            primary_fragment.item.title,
+            [fragment.page_spec for fragment in chunk.fragments],
+            label=primary_fragment.label if len(chunk.fragments) == 1 else None,
+        )
 
     def render_chunk(self, chunk: ExportChunk, ctx: RenderContext) -> bytes:
-        raise NotImplementedError("NotebookLMProfile は D-1 では plan のみ実装します")
+        rendered_pdfs = [ctx.render_pdf_fragment(fragment)[0] for fragment in chunk.fragments]
+        if len(rendered_pdfs) == 1:
+            return rendered_pdfs[0]
+        return merge_rendered_pdfs(rendered_pdfs)
+
+    def manifest_header_lines(self, plan: ExportPlan) -> list[str]:
+        return [
+            "- NotebookLM向けのPDFです",
+            f"- 出力ファイル数: {len(plan.chunks)}",
+            "- 分割・結合は出力時の最適化であり、資料棚の構成自体は変更していません",
+        ]
 
 
 PROFILES: dict[str, ExportProfile] = {

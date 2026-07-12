@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from io import BytesIO
 from pathlib import Path
 
 from pypdf import PdfReader, PdfWriter
@@ -8,6 +9,7 @@ from tsundokensaku.pdf_export import (
     compact_page_selection,
     default_output_path,
     export_selected_pages,
+    merge_rendered_pdfs,
     parse_page_selection,
 )
 
@@ -40,6 +42,71 @@ class ExportPdfPagesTest(unittest.TestCase):
 
             reader = PdfReader(str(output_pdf))
             self.assertEqual(len(reader.pages), 2)
+
+    def test_merge_rendered_pdfs_returns_single_pdf(self) -> None:
+        writer = PdfWriter()
+        writer.add_blank_page(width=72, height=72)
+        writer.add_metadata({"/Title": "single"})
+        buffer = BytesIO()
+        writer.write(buffer)
+
+        merged = merge_rendered_pdfs([buffer.getvalue()])
+        reader = PdfReader(BytesIO(merged))
+        self.assertEqual(len(reader.pages), 1)
+        self.assertEqual(reader.metadata.get("/Title"), "single")
+
+    def test_merge_rendered_pdfs_preserves_page_order(self) -> None:
+        first = PdfWriter()
+        first.add_blank_page(width=72, height=72)
+        first.add_blank_page(width=72, height=72)
+        first_buffer = BytesIO()
+        first.write(first_buffer)
+
+        second = PdfWriter()
+        second.add_blank_page(width=72, height=72)
+        second_buffer = BytesIO()
+        second.write(second_buffer)
+
+        merged = merge_rendered_pdfs([first_buffer.getvalue(), second_buffer.getvalue()])
+        reader = PdfReader(BytesIO(merged))
+        self.assertEqual(len(reader.pages), 3)
+
+    def test_merge_rendered_pdfs_copies_metadata_from_first_pdf(self) -> None:
+        first = PdfWriter()
+        first.add_blank_page(width=72, height=72)
+        first.add_metadata({"/Title": "first", "/Author": "alice"})
+        first_buffer = BytesIO()
+        first.write(first_buffer)
+
+        second = PdfWriter()
+        second.add_blank_page(width=72, height=72)
+        second.add_metadata({"/Title": "second"})
+        second_buffer = BytesIO()
+        second.write(second_buffer)
+
+        merged = merge_rendered_pdfs([first_buffer.getvalue(), second_buffer.getvalue()])
+        reader = PdfReader(BytesIO(merged))
+        self.assertEqual(reader.metadata.get("/Title"), "first")
+        self.assertEqual(reader.metadata.get("/Author"), "alice")
+
+    def test_merge_rendered_pdfs_succeeds_when_metadata_missing(self) -> None:
+        first = PdfWriter()
+        first.add_blank_page(width=72, height=72)
+        first_buffer = BytesIO()
+        first.write(first_buffer)
+
+        second = PdfWriter()
+        second.add_blank_page(width=72, height=72)
+        second_buffer = BytesIO()
+        second.write(second_buffer)
+
+        merged = merge_rendered_pdfs([first_buffer.getvalue(), second_buffer.getvalue()])
+        reader = PdfReader(BytesIO(merged))
+        self.assertEqual(len(reader.pages), 2)
+
+    def test_merge_rendered_pdfs_rejects_empty_input(self) -> None:
+        with self.assertRaises(ValueError):
+            merge_rendered_pdfs([])
 
 
 if __name__ == "__main__":
