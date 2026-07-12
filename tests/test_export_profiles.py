@@ -102,6 +102,7 @@ class StandardProfileTest(unittest.TestCase):
         self.assertEqual(fragment.page_numbers, (1, 2, 3))
         self.assertEqual(fragment.page_spec, "1-3")
         self.assertEqual(fragment.stats, stats.stats)
+        self.assertIsNone(fragment.label)
         self.assertEqual(fragment.fragment_index, 1)
         self.assertEqual(fragment.fragment_count, 1)
 
@@ -352,6 +353,15 @@ class ProfilesRegistryTest(unittest.TestCase):
 
 
 class ChatProfileTest(unittest.TestCase):
+    def test_split_items_is_identity_by_default(self) -> None:
+        stats = _item_stats(1, page_count=2, title="本A", position=0)
+        fragments = ChatProfile().split_items([stats])
+
+        self.assertEqual(len(fragments), 1)
+        self.assertIs(fragments[0].item_stats, stats)
+        self.assertEqual(fragments[0].page_spec, "1-2")
+        self.assertIsNone(fragments[0].label)
+
     def test_item_weight_is_token_count(self) -> None:
         # CJK: 10文字 (10.0), Other: 8文字 (2.0) -> ceil(12.0) = 12
         stats = _item_stats(1, page_count=1, cjk_chars=10, other_chars=8)

@@ -8,7 +8,6 @@ from pathlib import Path
 
 from tsundokensaku.export_stats import ItemStats
 from tsundokensaku.markdown_export import render_chat_chunk_header
-from tsundokensaku.pdf_export import compact_page_selection
 from tsundokensaku.token_estimate import TextStats, TokenEstimator, estimate_tokens
 from tsundokensaku.zip_export import build_entry_filename, build_pack_zip_filename, sanitize_filename_component, build_sequenced_filename
 
@@ -25,13 +24,14 @@ class ItemFragment:
     """D-0: plan/render の中間単位。
 
     現時点では 1資料項目 = 1フラグメントだが、将来の NotebookLM 向け細分化では
-    ItemStats を壊さずにページ範囲だけを分けられるよう、この層を挟む。
+    ItemStats を壊さずにページ範囲や章名などのラベルを持てるよう、この層を挟む。
     """
 
     item_stats: ItemStats
     page_numbers: tuple[int, ...]
     page_spec: str
     stats: TextStats
+    label: str | None = None
     fragment_index: int = 1
     fragment_count: int = 1
 
@@ -99,11 +99,7 @@ def _sum_stats(fragments: list[ItemFragment]) -> TextStats:
 
 
 def _default_fragment_page_spec(stats: ItemStats) -> str:
-    if stats.item.pages.strip():
-        return stats.item.pages
-    if not stats.page_numbers:
-        return ""
-    return compact_page_selection(stats.page_numbers).replace("_", ",")
+    return stats.item.pages
 
 
 class ExportProfile(ABC):
@@ -126,6 +122,7 @@ class ExportProfile(ABC):
                 page_numbers=tuple(stats.page_numbers),
                 page_spec=_default_fragment_page_spec(stats),
                 stats=stats.stats,
+                label=None,
             )
             for stats in item_stats
         ]
