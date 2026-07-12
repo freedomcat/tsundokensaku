@@ -8,6 +8,7 @@ from pathlib import Path
 
 from tsundokensaku.export_stats import ItemStats
 from tsundokensaku.markdown_export import render_chat_chunk_header
+from tsundokensaku.pdf_export import compact_page_selection
 from tsundokensaku.token_estimate import TextStats, TokenEstimator, estimate_tokens
 from tsundokensaku.zip_export import build_entry_filename, build_pack_zip_filename, sanitize_filename_component, build_sequenced_filename
 
@@ -20,11 +21,36 @@ class ExportWarning:
 
 
 @dataclass(frozen=True)
+class ItemFragment:
+    """D-0: plan/render の中間単位。
+
+    現時点では 1資料項目 = 1フラグメントだが、将来の NotebookLM 向け細分化では
+    ItemStats を壊さずにページ範囲だけを分けられるよう、この層を挟む。
+    """
+
+    item_stats: ItemStats
+    page_numbers: tuple[int, ...]
+    page_spec: str
+    stats: TextStats
+    fragment_index: int = 1
+    fragment_count: int = 1
+
+    @property
+    def item(self):
+        return self.item_stats.item
+
+
+@dataclass(frozen=True)
 class ExportChunk:
     index: int
-    items: tuple[ItemStats, ...]
+    fragments: tuple[ItemFragment, ...]
     total_pages: int
     estimated_tokens: int
+
+    @property
+    def items(self) -> tuple[ItemStats, ...]:
+        """既存呼び出し側との後方互換用。D-0 では維持する。"""
+        return tuple(fragment.item_stats for fragment in self.fragments)
 
 
 @dataclass(frozen=True)
@@ -56,12 +82,28 @@ class RenderContext:
     render_markdown: Callable[[Path, str], tuple[str, str]]
     total_chunks: int = 1
 
+    def render_pdf_fragment(self, fragment: ItemFragment) -> tuple[bytes, str]:
+        candidate = self.resolve_pdf(fragment.item.pdf_path)
+        return self.render_pdf(candidate, fragment.page_spec)
 
-def _sum_stats(item_stats: list[ItemStats]) -> TextStats:
+    def render_markdown_fragment(self, fragment: ItemFragment) -> tuple[str, str]:
+        candidate = self.resolve_pdf(fragment.item.pdf_path)
+        return self.render_markdown(candidate, fragment.page_spec)
+
+
+def _sum_stats(fragments: list[ItemFragment]) -> TextStats:
     return TextStats(
-        cjk_chars=sum(entry.stats.cjk_chars for entry in item_stats),
-        other_chars=sum(entry.stats.other_chars for entry in item_stats),
+        cjk_chars=sum(entry.stats.cjk_chars for entry in fragments),
+        other_chars=sum(entry.stats.other_chars for entry in fragments),
     )
+
+
+def _default_fragment_page_spec(stats: ItemStats) -> str:
+    if stats.item.pages.strip():
+        return stats.item.pages
+    if not stats.page_numbers:
+        return ""
+    return compact_page_selection(stats.page_numbers).replace("_", ",")
 
 
 class ExportProfile(ABC):
@@ -76,33 +118,46 @@ class ExportProfile(ABC):
     def estimator(self) -> TokenEstimator:
         return estimate_tokens
 
+    def split_items(self, item_stats: list[ItemStats]) -> list[ItemFragment]:
+        """将来の項目細分化ポイント。既定は 1項目 = 1フラグメント。"""
+        return [
+            ItemFragment(
+                item_stats=stats,
+                page_numbers=tuple(stats.page_numbers),
+                page_spec=_default_fragment_page_spec(stats),
+                stats=stats.stats,
+            )
+            for stats in item_stats
+        ]
+
     # --- 分割判断（plan の基底実装から呼ばれるフック） ---
     @abstractmethod
-    def item_weight(self, stats: ItemStats) -> int:
-        """分割判断に使う項目の重み（chat=トークン数, notebooklm=ページ数）。"""
+    def item_weight(self, fragment: ItemFragment) -> int:
+        """分割判断に使う重み（chat=トークン数, notebooklm=ページ数）。"""
 
     @abstractmethod
     def chunk_limit(self) -> int | None:
         """1チャンクあたりの重み上限。None は上限なし（分割・結合ロジックを行わない）。"""
 
-    def can_merge(self, current: ExportChunk, stats: ItemStats) -> bool:
-        """current（構築中のチャンク）に stats を結合してよいか。既定は常に許可。"""
+    def can_merge(self, current: ExportChunk, fragment: ItemFragment) -> bool:
+        """current（構築中のチャンク）に fragment を結合してよいか。既定は常に許可。"""
         return True
 
     # --- プラン（9.2節の貪欲法。基底実装1つ、純粋ロジック） ---
     def plan(self, item_stats: list[ItemStats]) -> ExportPlan:
         limit = self.chunk_limit()
         estimator = self.estimator()
+        fragments = self.split_items(item_stats)
         chunks: list[ExportChunk] = []
         warnings: list[ExportWarning] = []
-        pending: list[ItemStats] = []
+        pending: list[ItemFragment] = []
 
-        def build_chunk(items: list[ItemStats], index: int) -> ExportChunk:
+        def build_chunk(chunk_fragments: list[ItemFragment], index: int) -> ExportChunk:
             return ExportChunk(
                 index=index,
-                items=tuple(items),
-                total_pages=sum(len(entry.page_numbers) for entry in items),
-                estimated_tokens=estimator(_sum_stats(items)),
+                fragments=tuple(chunk_fragments),
+                total_pages=sum(len(entry.page_numbers) for entry in chunk_fragments),
+                estimated_tokens=estimator(_sum_stats(chunk_fragments)),
             )
 
         def flush_pending() -> None:
@@ -110,24 +165,24 @@ class ExportProfile(ABC):
                 chunks.append(build_chunk(list(pending), len(chunks) + 1))
                 pending.clear()
 
-        for stats in item_stats:
+        for fragment in fragments:
             if limit is None:
                 # 上限なし = 結合ロジックを行わず、各項目を独立チャンクにする
                 # （standard プロファイルはこの経路で自然に「1項目=1チャンク」になる）
                 flush_pending()
-                chunks.append(build_chunk([stats], len(chunks) + 1))
+                chunks.append(build_chunk([fragment], len(chunks) + 1))
                 continue
 
-            item_weight = self.item_weight(stats)
+            item_weight = self.item_weight(fragment)
             if item_weight > limit:
                 # 1項目単独で上限超過。切り捨てず単独チャンクとして確定し警告する
                 flush_pending()
-                chunks.append(build_chunk([stats], len(chunks) + 1))
+                chunks.append(build_chunk([fragment], len(chunks) + 1))
                 warnings.append(
                     ExportWarning(
                         code="item_exceeds_limit",
-                        item_id=stats.item.id,
-                        message=f"「{stats.item.title}」は1ファイルの上限を超えるため単独で出力します",
+                        item_id=fragment.item.id,
+                        message=f"「{fragment.item.title}」は1ファイルの上限を超えるため単独で出力します",
                     )
                 )
                 continue
@@ -136,12 +191,12 @@ class ExportProfile(ABC):
                 pending_weight = sum(self.item_weight(entry) for entry in pending)
                 provisional_chunk = build_chunk(pending, len(chunks) + 1)
                 fits_limit = pending_weight + item_weight <= limit
-                if fits_limit and self.can_merge(provisional_chunk, stats):
-                    pending.append(stats)
+                if fits_limit and self.can_merge(provisional_chunk, fragment):
+                    pending.append(fragment)
                     continue
                 flush_pending()
 
-            pending.append(stats)
+            pending.append(fragment)
 
         flush_pending()
 
@@ -190,8 +245,8 @@ class StandardProfile(ExportProfile):
     name = "standard"
     primary_format = None
 
-    def item_weight(self, stats: ItemStats) -> int:
-        return len(stats.page_numbers)
+    def item_weight(self, fragment: ItemFragment) -> int:
+        return len(fragment.page_numbers)
 
     def chunk_limit(self) -> int | None:
         return None
@@ -201,8 +256,8 @@ class StandardProfile(ExportProfile):
         # build_entry_filename（{NN}_{書名}_p{範囲}.{ext}）をそのまま再利用する
         if format is None:
             raise ValueError("StandardProfile.chunk_filename には format（拡張子）が必要です")
-        item_stats = chunk.items[0]
-        return build_entry_filename(chunk.index, item_stats.item.title, item_stats.item.pages, format)
+        fragment = chunk.fragments[0]
+        return build_entry_filename(chunk.index, fragment.item.title, fragment.page_spec, format)
 
     def archive_filename(self, *, pack_name: str, exported_at: datetime) -> str:
         # 現行のZIP名（{資料名}_{YYYYMMDD}.zip、profile名を含まない）を維持する
@@ -212,12 +267,11 @@ class StandardProfile(ExportProfile):
         # 1項目=1チャンクなので items[0] だけを見ればよい。実際のPDF解決・
         # ページ範囲検証・本文レンダリングは、web.py が注入した既存関数
         # （render_pdf_export / render_markdown_export）にそのまま委ねる
-        item = chunk.items[0].item
-        candidate = ctx.resolve_pdf(item.pdf_path)
+        fragment = chunk.fragments[0]
         if ctx.format == "pdf":
-            content, _filename = ctx.render_pdf(candidate, item.pages)
+            content, _filename = ctx.render_pdf_fragment(fragment)
         else:
-            content, _filename = ctx.render_markdown(candidate, item.pages)
+            content, _filename = ctx.render_markdown_fragment(fragment)
         return content
 
 
@@ -225,8 +279,8 @@ class ChatProfile(ExportProfile):
     name = "chat"
     primary_format = "md"
 
-    def item_weight(self, stats: ItemStats) -> int:
-        return self.estimator()(stats.stats)
+    def item_weight(self, fragment: ItemFragment) -> int:
+        return self.estimator()(fragment.stats)
 
     def chunk_limit(self) -> int | None:
         return 80000
@@ -236,13 +290,11 @@ class ChatProfile(ExportProfile):
 
     def render_chunk(self, chunk: ExportChunk, ctx: RenderContext) -> bytes:
         rendered_parts = []
-        for entry in chunk.items:
-            item = entry.item
-            candidate = ctx.resolve_pdf(item.pdf_path)
-            content_str, _ = ctx.render_markdown(candidate, item.pages)
+        for fragment in chunk.fragments:
+            content_str, _ = ctx.render_markdown_fragment(fragment)
             rendered_parts.append(content_str)
 
-        items_summary = [(e.item.title, e.item.pages) for e in chunk.items]
+        items_summary = [(fragment.item.title, fragment.page_spec) for fragment in chunk.fragments]
         header = render_chat_chunk_header(
             pack_name=ctx.pack_name,
             chunk_index=chunk.index,
