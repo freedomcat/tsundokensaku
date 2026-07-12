@@ -68,6 +68,8 @@ from tsundokensaku.token_estimate import ESTIMATOR_NAME, TextStats, estimate_tok
 from tsundokensaku.tokenizer import query_highlight_terms
 from tsundokensaku.zip_export import (
     PackExportEntry,
+    PlanManifestChunk,
+    PlanManifestFragment,
     build_entry_filename,
     build_pack_zip,
     build_pack_zip_filename,
@@ -82,7 +84,7 @@ DEFAULT_BOOKS_DIR = Path("data/books")
 CONTAINER_BOOKS_DIRS = (Path("/data/books"), Path("/books/tech"))
 DEFAULT_DB_PATH = Path("data/index.db")
 PDF_EXPORT_SAVE_DIR_ENV = "PDF_EXPORT_SAVE_DIR"
-EXTERNALLY_AVAILABLE_EXPORT_PROFILES = frozenset({"standard", "chat"})
+EXTERNALLY_AVAILABLE_EXPORT_PROFILES = frozenset({"standard", "chat", "notebooklm"})
 
 
 def _find_project_root() -> Path:
@@ -1296,7 +1298,11 @@ def build_export_preview_payload(item_stats: list[ItemStats]) -> dict[str, objec
 
 
 def build_export_preview_payload_for_profile(
-    item_stats: list[ItemStats], profile: ExportProfile, *, pack_name: str
+    item_stats: list[ItemStats],
+    profile: ExportProfile,
+    *,
+    pack_name: str,
+    chapter_loader=None,
 ) -> dict[str, object]:
     """standard以外（chat等）向けの拡張プレビュー。設計書12.1のchunks付きレスポンス。
 
@@ -1315,7 +1321,7 @@ def build_export_preview_payload_for_profile(
             "warnings": item_warnings,
         }
 
-    plan = profile.plan(item_stats)
+    plan = profile.plan(item_stats, chapter_loader=chapter_loader)
     # primary_format を持たないプロファイル（standardのみ）はこの関数の対象外のため
     # 実際には使われないが、chunk_filename の型契約上フォーマット文字列が必要
     format_for_naming = profile.primary_format or "pdf"
@@ -1331,6 +1337,9 @@ def build_export_preview_payload_for_profile(
                     "title": fragment.item.title,
                     "pdf_path": fragment.item.pdf_path,
                     "pages": fragment.page_spec,
+                    "label": fragment.label,
+                    "fragment_index": fragment.fragment_index,
+                    "fragment_count": fragment.fragment_count,
                     "estimated_tokens": estimate_tokens(fragment.stats),
                 }
                 for fragment in chunk.fragments
@@ -1370,8 +1379,17 @@ def api_preview_pack_export(pack_id: int, profile: str | None = None) -> JSONRes
     if resolved_profile.name == "standard":
         return JSONResponse(build_export_preview_payload(item_stats))
 
+    chapter_loader = None
+    if resolved_profile.name == "notebooklm":
+        chapter_loader = lambda pdf_path: list_chapters(_resolve_pdf_file_or_404(str(pdf_path), get_books_dir()))
+
     return JSONResponse(
-        build_export_preview_payload_for_profile(item_stats, resolved_profile, pack_name=pack.name)
+        build_export_preview_payload_for_profile(
+            item_stats,
+            resolved_profile,
+            pack_name=pack.name,
+            chapter_loader=chapter_loader,
+        )
     )
 
 
@@ -1444,7 +1462,11 @@ def _export_pack_archive(pack, items: list, *, format: str, profile: ExportProfi
     else:
         item_stats = [_placeholder_item_stats_for_export(item) for item in items]
 
-    plan = profile.plan(item_stats)
+    chapter_loader = None
+    if profile.name == "notebooklm":
+        chapter_loader = lambda pdf_path: list_chapters(_resolve_pdf_file_or_404(str(pdf_path), books_dir))
+
+    plan = profile.plan(item_stats, chapter_loader=chapter_loader)
     ctx = RenderContext(
         pack_name=pack.name,
         exported_at=exported_at,
@@ -1458,7 +1480,7 @@ def _export_pack_archive(pack, items: list, *, format: str, profile: ExportProfi
     )
 
     entries: list[PackExportEntry] = []
-    manifest_chunks: list[tuple[str, list[tuple[str, str]]]] = []
+    manifest_chunks: list[tuple[str, list[tuple[str, str]]] | PlanManifestChunk] = []
     for chunk in plan.chunks:
         filename = profile.chunk_filename(chunk, pack_name=pack.name, format=format)
         primary_fragment = chunk.fragments[0]
@@ -1471,7 +1493,22 @@ def _export_pack_archive(pack, items: list, *, format: str, profile: ExportProfi
                 content=profile.render_chunk(chunk, ctx),
             )
         )
-        manifest_chunks.append((filename, [(fragment.item.title, fragment.page_spec) for fragment in chunk.fragments]))
+        if profile.name == "notebooklm":
+            manifest_chunks.append(
+                PlanManifestChunk(
+                    filename=filename,
+                    fragments=[
+                        PlanManifestFragment(
+                            title=fragment.item.title,
+                            pages=fragment.page_spec,
+                            label=fragment.label,
+                        )
+                        for fragment in chunk.fragments
+                    ],
+                )
+            )
+        else:
+            manifest_chunks.append((filename, [(fragment.item.title, fragment.page_spec) for fragment in chunk.fragments]))
 
     if profile.name == "standard":
         # 現行 manifest（PackExportEntry 前提、1項目=1エントリ）をそのまま使い

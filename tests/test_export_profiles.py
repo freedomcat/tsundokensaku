@@ -508,8 +508,10 @@ class NotebookLMProfileTest(unittest.TestCase):
         with patch.dict("os.environ", {"TSUNDOKENSAKU_NOTEBOOKLM_MAX_PAGES_PER_FILE": "5"}):
             plan = NotebookLMProfile().plan(items)
 
-        self.assertEqual(len(plan.chunks), 1)
-        self.assertEqual(plan.warnings[0].code, "item_exceeds_limit")
+        self.assertEqual(len(plan.chunks), 2)
+        self.assertEqual(plan.chunks[0].total_pages, 5)
+        self.assertEqual(plan.chunks[1].total_pages, 1)
+        self.assertEqual(plan.warnings[0].code, "no_outline_fallback")
         self.assertEqual(plan.warnings[0].item_id, 1)
 
     def test_source_count_warning_only_when_threshold_is_exceeded(self) -> None:
@@ -841,6 +843,360 @@ class NotebookLMProfileTest(unittest.TestCase):
         lines = NotebookLMProfile().manifest_header_lines(plan)
         self.assertIn("- NotebookLM向けのPDFです", lines)
         self.assertIn("- 出力ファイル数: 1", lines)
+
+
+class NotebookLMChapterSplitTest(unittest.TestCase):
+    """chapter_loaderを直接モックして章分割ロジックを検証する純粋ユニットテスト。
+
+    fitz / PDF ファイルへの依存なしに実行できる。
+    """
+
+    def _make_chapter(self, title: str, start_page: int, end_page: int):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(title=title, start_page=start_page, end_page=end_page)
+
+    def _chapter_loader(self, chapters):
+        def loader(pdf_path):
+            return chapters
+
+        return loader
+
+    # ── 上限以内ではアウトラインを読み込まない ──────────────────────────────────
+
+    def test_chapter_loader_not_called_when_item_is_within_limit(self) -> None:
+        """上限以内の項目では chapter_loader を一切呼ばない。"""
+        called = []
+
+        def loader(pdf_path):
+            called.append(pdf_path)
+            return []
+
+        items = [_item_stats(1, page_count=3, pdf_path="a.pdf", title="本", position=0)]
+        with patch.dict("os.environ", {"TSUNDOKENSAKU_NOTEBOOKLM_MAX_PAGES_PER_FILE": "5"}):
+            NotebookLMProfile().plan(items, chapter_loader=loader)
+
+        self.assertEqual(called, [])
+
+    # ── 選択ページと章範囲の交差 ─────────────────────────────────────────────────
+
+    def test_only_selected_pages_within_chapter_range_are_included(self) -> None:
+        """資料の選択ページと章ページ範囲の交差だけが出力される。"""
+        chapters = [
+            self._make_chapter("章A", 1, 5),
+            self._make_chapter("章B", 6, 10),
+        ]
+        # 1-4 ページのみ選択（章Aは1-4、章Bはヒットしない）
+        item = _item_stats(1, page_count=4, pdf_path="a.pdf", title="本", position=0)
+        # page_numbers を 1-4 に限定
+        from tsundokensaku.database import PackItemRecord
+        from tsundokensaku.export_stats import ItemStats
+        from tsundokensaku.token_estimate import TextStats
+
+        item_custom = ItemStats(
+            item=item.item,
+            page_numbers=list(range(1, 5)),  # 1-4
+            stats=TextStats(cjk_chars=0, other_chars=0),
+            unindexed_pages=0,
+            missing_pdf=False,
+        )
+        with patch.dict("os.environ", {"TSUNDOKENSAKU_NOTEBOOKLM_MAX_PAGES_PER_FILE": "3"}):
+            fragments, warnings = NotebookLMProfile().split_items_with_warnings(
+                [item_custom], chapter_loader=self._chapter_loader(chapters)
+            )
+
+        # 章Aとしての交差(1-3, 4)となるが上限3なので再分割される
+        # 章Bは交差なし → 出力なし
+        all_pages = [p for f in fragments for p in f.page_numbers]
+        for p in all_pages:
+            self.assertLessEqual(p, 4, "選択ページ外のページが含まれている")
+        self.assertNotIn(6, all_pages)
+        self.assertNotIn(7, all_pages)
+
+    def test_pages_outside_chapter_range_not_included(self) -> None:
+        """選択ページのうち、どの章にも属さないページは出力されない。"""
+        chapters = [self._make_chapter("章A", 3, 8)]
+        # 1-10 選択、章Aは 3-8 なので 1,2,9,10 は除外
+        items = [_item_stats(1, page_count=10, pdf_path="a.pdf", title="本", position=0)]
+        with patch.dict("os.environ", {"TSUNDOKENSAKU_NOTEBOOKLM_MAX_PAGES_PER_FILE": "5"}):
+            fragments, warnings = NotebookLMProfile().split_items_with_warnings(
+                items, chapter_loader=self._chapter_loader(chapters)
+            )
+
+        all_pages = [p for f in fragments for p in f.page_numbers]
+        for page in all_pages:
+            self.assertIn(page, range(3, 9), f"章範囲外のページ {page} が含まれている")
+        for excluded in [1, 2, 9, 10]:
+            self.assertNotIn(excluded, all_pages)
+
+    # ── アウトラインなし時のフォールバック ────────────────────────────────────────
+
+    def test_no_outline_fallback_when_chapter_loader_returns_empty(self) -> None:
+        """chapter_loader が空リストを返すと no_outline_fallback 警告で連続ページ分割。"""
+        items = [_item_stats(1, page_count=8, pdf_path="a.pdf", title="本", position=0)]
+        with patch.dict("os.environ", {"TSUNDOKENSAKU_NOTEBOOKLM_MAX_PAGES_PER_FILE": "5"}):
+            fragments, warnings = NotebookLMProfile().split_items_with_warnings(
+                items, chapter_loader=self._chapter_loader([])
+            )
+
+        codes = [w.code for w in warnings]
+        self.assertIn("no_outline_fallback", codes)
+        # 連続分割: 5 + 3
+        self.assertEqual(len(fragments), 2)
+        self.assertEqual(len(fragments[0].page_numbers), 5)
+        self.assertEqual(len(fragments[1].page_numbers), 3)
+
+    def test_no_outline_fallback_when_chapter_loader_is_none(self) -> None:
+        """chapter_loader=None のとき超過項目は no_outline_fallback になる。"""
+        items = [_item_stats(1, page_count=6, pdf_path="a.pdf", title="本", position=0)]
+        with patch.dict("os.environ", {"TSUNDOKENSAKU_NOTEBOOKLM_MAX_PAGES_PER_FILE": "4"}):
+            fragments, warnings = NotebookLMProfile().split_items_with_warnings(items, chapter_loader=None)
+
+        codes = [w.code for w in warnings]
+        self.assertIn("no_outline_fallback", codes)
+        self.assertNotIn("item_split_by_chapters", codes)
+        self.assertEqual(len(fragments), 2)
+
+    # ── 巨大章の再分割（chapter_exceeds_limit） ───────────────────────────────────
+
+    def test_chapter_exceeds_limit_triggers_page_block_split(self) -> None:
+        """章ページ数が上限を超えるとページブロック再分割と chapter_exceeds_limit 警告。"""
+        chapters = [self._make_chapter("大章", 1, 12)]
+        items = [_item_stats(1, page_count=12, pdf_path="a.pdf", title="本", position=0)]
+        with patch.dict("os.environ", {"TSUNDOKENSAKU_NOTEBOOKLM_MAX_PAGES_PER_FILE": "5"}):
+            fragments, warnings = NotebookLMProfile().split_items_with_warnings(
+                items, chapter_loader=self._chapter_loader(chapters)
+            )
+
+        codes = [w.code for w in warnings]
+        self.assertIn("chapter_exceeds_limit", codes)
+        # 12ページ → 5+5+2 = 3フラグメント
+        self.assertEqual(len(fragments), 3)
+        # label は "大章 part1", "大章 part2", "大章 part3"
+        self.assertTrue(all(f.label is not None and "大章" in f.label for f in fragments))
+
+    # ── item_split_by_chapters 警告 ──────────────────────────────────────────────
+
+    def test_item_split_by_chapters_warning_when_multiple_chapters(self) -> None:
+        """複数章に分割された場合に item_split_by_chapters 警告が発生する。"""
+        chapters = [
+            self._make_chapter("第1章", 1, 5),
+            self._make_chapter("第2章", 6, 11),
+        ]
+        items = [_item_stats(1, page_count=11, pdf_path="a.pdf", title="本", position=0)]
+        with patch.dict("os.environ", {"TSUNDOKENSAKU_NOTEBOOKLM_MAX_PAGES_PER_FILE": "6"}):
+            fragments, warnings = NotebookLMProfile().split_items_with_warnings(
+                items, chapter_loader=self._chapter_loader(chapters)
+            )
+
+        codes = [w.code for w in warnings]
+        self.assertIn("item_split_by_chapters", codes)
+        self.assertEqual(len(fragments), 2)
+
+    def test_item_split_by_chapters_not_emitted_for_single_chapter_fragment(self) -> None:
+        """1章のみで上限以内に収まる場合は item_split_by_chapters 警告は不要。"""
+        chapters = [self._make_chapter("第1章", 1, 5)]
+        items = [_item_stats(1, page_count=10, pdf_path="a.pdf", title="本", position=0)]
+        # 第1章: 1-5 ページが交差, 6-10 は章外 → 第1章のみで上限6以内
+        with patch.dict("os.environ", {"TSUNDOKENSAKU_NOTEBOOKLM_MAX_PAGES_PER_FILE": "6"}):
+            fragments, warnings = NotebookLMProfile().split_items_with_warnings(
+                items, chapter_loader=self._chapter_loader(chapters)
+            )
+
+        codes = [w.code for w in warnings]
+        self.assertNotIn("item_split_by_chapters", codes)
+        # 1フラグメントのみ
+        self.assertEqual(len(fragments), 1)
+        self.assertEqual(fragments[0].label, "第1章")
+
+    # ── ページ順維持・重複ページ不除去 ─────────────────────────────────────────────
+
+    def test_page_order_is_preserved_after_chapter_split(self) -> None:
+        """章分割後もフラグメント内のページ順は元の選択順を維持する。"""
+        chapters = [
+            self._make_chapter("第1章", 1, 5),
+            self._make_chapter("第2章", 6, 10),
+        ]
+        items = [_item_stats(1, page_count=10, pdf_path="a.pdf", title="本", position=0)]
+        with patch.dict("os.environ", {"TSUNDOKENSAKU_NOTEBOOKLM_MAX_PAGES_PER_FILE": "6"}):
+            fragments, _ = NotebookLMProfile().split_items_with_warnings(
+                items, chapter_loader=self._chapter_loader(chapters)
+            )
+
+        self.assertEqual(list(fragments[0].page_numbers), list(range(1, 6)))
+        self.assertEqual(list(fragments[1].page_numbers), list(range(6, 11)))
+
+    def test_duplicate_pages_not_removed_during_page_block_split(self) -> None:
+        """ページブロック分割では重複ページを除去しない（重複はそのまま保持）。"""
+        chapters = [self._make_chapter("章A", 1, 5)]
+        from tsundokensaku.database import PackItemRecord
+        from tsundokensaku.export_stats import ItemStats
+        from tsundokensaku.token_estimate import TextStats
+
+        # ページが重複している（3,3 を含む）
+        item = ItemStats(
+            item=_pack_item(1, pdf_path="a.pdf", title="本", pages="1-5", position=0),
+            page_numbers=[1, 2, 3, 3, 4, 5],
+            stats=TextStats(cjk_chars=0, other_chars=0),
+            unindexed_pages=0,
+            missing_pdf=False,
+        )
+        with patch.dict("os.environ", {"TSUNDOKENSAKU_NOTEBOOKLM_MAX_PAGES_PER_FILE": "4"}):
+            fragments, warnings = NotebookLMProfile().split_items_with_warnings(
+                [item], chapter_loader=self._chapter_loader(chapters)
+            )
+
+        all_pages = [p for f in fragments for p in f.page_numbers]
+        # 章Aは 1-5 なので交差は [1,2,3,3,4,5] 全部 → 上限4で 4+2 に分割
+        self.assertEqual(all_pages.count(3), 2, "重複ページが除去されてはいけない")
+
+    # ── fragment_index / fragment_count ─────────────────────────────────────────
+
+    def test_fragment_index_and_count_are_correct_after_chapter_split(self) -> None:
+        """chapter分割後のフラグメントは fragment_index と fragment_count が正確。"""
+        chapters = [
+            self._make_chapter("第1章", 1, 3),
+            self._make_chapter("第2章", 4, 7),
+            self._make_chapter("第3章", 8, 10),
+        ]
+        items = [_item_stats(1, page_count=10, pdf_path="a.pdf", title="本", position=0)]
+        with patch.dict("os.environ", {"TSUNDOKENSAKU_NOTEBOOKLM_MAX_PAGES_PER_FILE": "4"}):
+            fragments, _ = NotebookLMProfile().split_items_with_warnings(
+                items, chapter_loader=self._chapter_loader(chapters)
+            )
+
+        self.assertEqual(len(fragments), 3)
+        for i, frag in enumerate(fragments, start=1):
+            self.assertEqual(frag.fragment_index, i, f"fragment_index at position {i}")
+            self.assertEqual(frag.fragment_count, 3, f"fragment_count at position {i}")
+
+    def test_fragment_index_and_count_are_correct_after_fallback_split(self) -> None:
+        """フォールバック分割後も fragment_index と fragment_count が正確。"""
+        items = [_item_stats(1, page_count=11, pdf_path="a.pdf", title="本", position=0)]
+        with patch.dict("os.environ", {"TSUNDOKENSAKU_NOTEBOOKLM_MAX_PAGES_PER_FILE": "5"}):
+            fragments, _ = NotebookLMProfile().split_items_with_warnings(
+                items, chapter_loader=self._chapter_loader([])
+            )
+
+        # 11 → 5+5+1 = 3フラグメント
+        self.assertEqual(len(fragments), 3)
+        for i, frag in enumerate(fragments, start=1):
+            self.assertEqual(frag.fragment_index, i)
+            self.assertEqual(frag.fragment_count, 3)
+
+    # ── label ───────────────────────────────────────────────────────────────────
+
+    def test_label_is_chapter_title_when_split_by_chapters(self) -> None:
+        """章分割フラグメントの label は章名になる。"""
+        chapters = [
+            self._make_chapter("はじめに", 1, 5),
+            self._make_chapter("第1章 概要", 6, 10),
+        ]
+        items = [_item_stats(1, page_count=10, pdf_path="a.pdf", title="本", position=0)]
+        with patch.dict("os.environ", {"TSUNDOKENSAKU_NOTEBOOKLM_MAX_PAGES_PER_FILE": "6"}):
+            fragments, _ = NotebookLMProfile().split_items_with_warnings(
+                items, chapter_loader=self._chapter_loader(chapters)
+            )
+
+        self.assertEqual(fragments[0].label, "はじめに")
+        self.assertEqual(fragments[1].label, "第1章 概要")
+
+    def test_label_is_partN_when_fallback_split(self) -> None:
+        """フォールバック分割フラグメントの label は 'part1', 'part2' ... になる。"""
+        items = [_item_stats(1, page_count=9, pdf_path="a.pdf", title="本", position=0)]
+        with patch.dict("os.environ", {"TSUNDOKENSAKU_NOTEBOOKLM_MAX_PAGES_PER_FILE": "5"}):
+            fragments, _ = NotebookLMProfile().split_items_with_warnings(
+                items, chapter_loader=self._chapter_loader([])
+            )
+
+        self.assertEqual(len(fragments), 2)
+        self.assertEqual(fragments[0].label, "part1")
+        self.assertEqual(fragments[1].label, "part2")
+
+    def test_label_for_oversized_chapter_block_includes_chapter_name(self) -> None:
+        """巨大章のページブロック分割では label に章名が含まれる（'章名 part1' 形式）。"""
+        chapters = [self._make_chapter("巨大章", 1, 15)]
+        items = [_item_stats(1, page_count=15, pdf_path="a.pdf", title="本", position=0)]
+        with patch.dict("os.environ", {"TSUNDOKENSAKU_NOTEBOOKLM_MAX_PAGES_PER_FILE": "6"}):
+            fragments, _ = NotebookLMProfile().split_items_with_warnings(
+                items, chapter_loader=self._chapter_loader(chapters)
+            )
+
+        for frag in fragments:
+            self.assertIsNotNone(frag.label)
+            self.assertIn("巨大章", frag.label)
+
+    # ── standard / chat は恒等変換のまま ────────────────────────────────────────
+
+    def test_standard_profile_ignores_chapter_loader(self) -> None:
+        """StandardProfile は chapter_loader を渡しても恒等変換のまま。"""
+        called = []
+
+        def loader(pdf_path):
+            called.append(pdf_path)
+            return []
+
+        items = [_item_stats(1, page_count=5, pdf_path="a.pdf", title="本", position=0)]
+        fragments = StandardProfile().split_items(items, chapter_loader=loader)
+
+        self.assertEqual(called, [])
+        self.assertEqual(len(fragments), 1)
+        self.assertIsNone(fragments[0].label)
+        self.assertEqual(fragments[0].page_numbers, tuple(range(1, 6)))
+
+    def test_chat_profile_ignores_chapter_loader(self) -> None:
+        """ChatProfile は chapter_loader を渡しても恒等変換のまま。"""
+        called = []
+
+        def loader(pdf_path):
+            called.append(pdf_path)
+            return []
+
+        items = [_item_stats(1, page_count=5, pdf_path="a.pdf", title="本", position=0)]
+        fragments = ChatProfile().split_items(items, chapter_loader=loader)
+
+        self.assertEqual(called, [])
+        self.assertEqual(len(fragments), 1)
+        self.assertIsNone(fragments[0].label)
+
+    def test_chat_item_exceeds_limit_still_warned_not_split(self) -> None:
+        """ChatProfile では上限超過でも item_exceeds_limit 警告（分割なし）。"""
+        items = [_item_stats(1, page_count=1, cjk_chars=90000, title="巨大本", position=0)]
+        plan = ChatProfile().plan(items)
+
+        self.assertEqual(len(plan.chunks), 1)
+        codes = [w.code for w in plan.warnings]
+        self.assertIn("item_exceeds_limit", codes)
+        self.assertNotIn("no_outline_fallback", codes)
+
+    # ── 複数項目の混在 ───────────────────────────────────────────────────────────
+
+    def test_within_limit_item_is_not_split_even_when_other_items_need_splitting(self) -> None:
+        """上限以内の項目は chapter_loader を呼ばず、他の項目が分割されても影響なし。"""
+        chapters = [self._make_chapter("第1章", 1, 10)]
+        call_log = []
+
+        def loader(pdf_path):
+            call_log.append(str(pdf_path))
+            return chapters
+
+        items = [
+            _item_stats(1, page_count=3, pdf_path="small.pdf", title="小さい本", position=0),
+            _item_stats(2, page_count=12, pdf_path="big.pdf", title="大きい本", position=1),
+        ]
+        with patch.dict("os.environ", {"TSUNDOKENSAKU_NOTEBOOKLM_MAX_PAGES_PER_FILE": "5"}):
+            fragments, warnings = NotebookLMProfile().split_items_with_warnings(
+                items, chapter_loader=loader
+            )
+
+        # small.pdf の loader 呼び出しはない
+        self.assertNotIn("small.pdf", call_log)
+        # big.pdf は呼ばれる
+        self.assertIn("big.pdf", call_log)
+        # small.pdf は 1 フラグメント（label なし）
+        small_frags = [f for f in fragments if f.item.pdf_path == "small.pdf"]
+        self.assertEqual(len(small_frags), 1)
+        self.assertIsNone(small_frags[0].label)
 
 
 class ChatProfileTest(unittest.TestCase):
