@@ -6,10 +6,11 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import Protocol
 
 from tsundokensaku.export_stats import ItemStats
 from tsundokensaku.markdown_export import render_chat_chunk_header
-from tsundokensaku.pdf_export import merge_rendered_pdfs
+from tsundokensaku.pdf_export import compact_page_selection, merge_rendered_pdfs
 from tsundokensaku.token_estimate import TextStats, TokenEstimator, estimate_tokens
 from tsundokensaku.zip_export import (
     build_entry_filename,
@@ -99,6 +100,15 @@ class RenderContext:
         return self.render_markdown(candidate, fragment.page_spec)
 
 
+class ChapterLike(Protocol):
+    title: str
+    start_page: int
+    end_page: int
+
+
+ChapterLoader = Callable[[Path], list[ChapterLike]]
+
+
 def _sum_stats(fragments: list[ItemFragment]) -> TextStats:
     return TextStats(
         cjk_chars=sum(entry.stats.cjk_chars for entry in fragments),
@@ -108,6 +118,10 @@ def _sum_stats(fragments: list[ItemFragment]) -> TextStats:
 
 def _default_fragment_page_spec(stats: ItemStats) -> str:
     return stats.item.pages
+
+
+def _page_spec_from_numbers(page_numbers: tuple[int, ...]) -> str:
+    return compact_page_selection(list(page_numbers)).replace("_", ",")
 
 
 NOTEBOOKLM_MAX_PAGES_PER_FILE_DEFAULT = 300
@@ -143,7 +157,7 @@ class ExportProfile(ABC):
     def estimator(self) -> TokenEstimator:
         return estimate_tokens
 
-    def split_items(self, item_stats: list[ItemStats]) -> list[ItemFragment]:
+    def split_items(self, item_stats: list[ItemStats], *, chapter_loader: ChapterLoader | None = None) -> list[ItemFragment]:
         """将来の項目細分化ポイント。既定は 1項目 = 1フラグメント。"""
         return [
             ItemFragment(
@@ -155,6 +169,14 @@ class ExportProfile(ABC):
             )
             for stats in item_stats
         ]
+
+    def split_items_with_warnings(
+        self,
+        item_stats: list[ItemStats],
+        *,
+        chapter_loader: ChapterLoader | None = None,
+    ) -> tuple[list[ItemFragment], tuple[ExportWarning, ...]]:
+        return self.split_items(item_stats, chapter_loader=chapter_loader), ()
 
     # --- 分割判断（plan の基底実装から呼ばれるフック） ---
     @abstractmethod
@@ -170,12 +192,17 @@ class ExportProfile(ABC):
         return True
 
     # --- プラン（9.2節の貪欲法。基底実装1つ、純粋ロジック） ---
-    def plan(self, item_stats: list[ItemStats]) -> ExportPlan:
+    def plan(
+        self,
+        item_stats: list[ItemStats],
+        *,
+        chapter_loader: ChapterLoader | None = None,
+    ) -> ExportPlan:
         limit = self.chunk_limit()
         estimator = self.estimator()
-        fragments = self.split_items(item_stats)
+        fragments, split_warnings = self.split_items_with_warnings(item_stats, chapter_loader=chapter_loader)
         chunks: list[ExportChunk] = []
-        warnings: list[ExportWarning] = []
+        warnings: list[ExportWarning] = list(split_warnings)
         pending: list[ItemFragment] = []
 
         def build_chunk(chunk_fragments: list[ItemFragment], index: int) -> ExportChunk:
@@ -339,6 +366,40 @@ class NotebookLMProfile(ExportProfile):
     def item_weight(self, fragment: ItemFragment) -> int:
         return len(fragment.page_numbers)
 
+    def split_items_with_warnings(
+        self,
+        item_stats: list[ItemStats],
+        *,
+        chapter_loader: ChapterLoader | None = None,
+    ) -> tuple[list[ItemFragment], tuple[ExportWarning, ...]]:
+        limit = self.chunk_limit()
+        if limit is None:
+            return self.split_items(item_stats, chapter_loader=chapter_loader), ()
+
+        fragments: list[ItemFragment] = []
+        warnings: list[ExportWarning] = []
+        for stats in item_stats:
+            if len(stats.page_numbers) <= limit or stats.missing_pdf or not stats.item.pages.strip():
+                fragments.append(
+                    ItemFragment(
+                        item_stats=stats,
+                        page_numbers=tuple(stats.page_numbers),
+                        page_spec=_default_fragment_page_spec(stats),
+                        stats=stats.stats,
+                    )
+                )
+                continue
+
+            item_fragments, item_warnings = self._split_oversized_item(
+                stats,
+                limit=limit,
+                chapter_loader=chapter_loader,
+            )
+            fragments.extend(item_fragments)
+            warnings.extend(item_warnings)
+
+        return fragments, tuple(warnings)
+
     def chunk_limit(self) -> int | None:
         return _read_positive_int_env(
             "TSUNDOKENSAKU_NOTEBOOKLM_MAX_PAGES_PER_FILE",
@@ -402,6 +463,118 @@ class NotebookLMProfile(ExportProfile):
             "- NotebookLM向けのPDFです",
             f"- 出力ファイル数: {len(plan.chunks)}",
             "- 分割・結合は出力時の最適化であり、資料棚の構成自体は変更していません",
+        ]
+
+    def _split_oversized_item(
+        self,
+        stats: ItemStats,
+        *,
+        limit: int,
+        chapter_loader: ChapterLoader | None,
+    ) -> tuple[list[ItemFragment], list[ExportWarning]]:
+        warnings: list[ExportWarning] = []
+        page_numbers = tuple(stats.page_numbers)
+        chapter_fragments: list[ItemFragment] = []
+
+        if chapter_loader is not None:
+            chapters = chapter_loader(Path(stats.item.pdf_path))
+            for chapter in chapters:
+                chapter_pages = tuple(
+                    page_number
+                    for page_number in page_numbers
+                    if chapter.start_page <= page_number <= chapter.end_page
+                )
+                if not chapter_pages:
+                    continue
+                if len(chapter_pages) > limit:
+                    oversized_blocks = self._split_page_block_fragments(
+                        stats,
+                        chapter_pages,
+                        limit=limit,
+                        label_prefix=chapter.title,
+                    )
+                    chapter_fragments.extend(oversized_blocks)
+                    warnings.append(
+                        ExportWarning(
+                            code="chapter_exceeds_limit",
+                            item_id=stats.item.id,
+                            message=f"「{stats.item.title}」の章「{chapter.title}」は大きいためさらに分割します",
+                        )
+                    )
+                else:
+                    chapter_fragments.append(
+                        ItemFragment(
+                            item_stats=stats,
+                            page_numbers=chapter_pages,
+                            page_spec=_page_spec_from_numbers(chapter_pages),
+                            stats=stats.stats,
+                            label=chapter.title,
+                        )
+                    )
+
+        if chapter_fragments:
+            chapter_fragments = self._finalize_fragment_indexes(chapter_fragments)
+            if len(chapter_fragments) > 1:
+                warnings.append(
+                    ExportWarning(
+                        code="item_split_by_chapters",
+                        item_id=stats.item.id,
+                        message=f"「{stats.item.title}」は章単位に分割して出力します",
+                    )
+                )
+            return chapter_fragments, warnings
+
+        fallback_fragments = self._finalize_fragment_indexes(
+            self._split_page_block_fragments(stats, page_numbers, limit=limit, label_prefix=None)
+        )
+        warnings.append(
+            ExportWarning(
+                code="no_outline_fallback",
+                item_id=stats.item.id,
+                message=f"「{stats.item.title}」はアウトラインがないため連続ページ単位で分割します",
+            )
+        )
+        return fallback_fragments, warnings
+
+    def _split_page_block_fragments(
+        self,
+        stats: ItemStats,
+        page_numbers: tuple[int, ...],
+        *,
+        limit: int,
+        label_prefix: str | None,
+    ) -> list[ItemFragment]:
+        fragments: list[ItemFragment] = []
+        for index, start in enumerate(range(0, len(page_numbers), limit), start=1):
+            chunk_numbers = page_numbers[start:start + limit]
+            if label_prefix:
+                label = f"{label_prefix} part{index}"
+            else:
+                label = f"part{index}"
+            fragments.append(
+                ItemFragment(
+                    item_stats=stats,
+                    page_numbers=chunk_numbers,
+                    page_spec=_page_spec_from_numbers(chunk_numbers),
+                    stats=stats.stats,
+                    label=label,
+                )
+            )
+        return fragments
+
+    def _finalize_fragment_indexes(self, fragments: list[ItemFragment]) -> list[ItemFragment]:
+        total = len(fragments)
+        return [
+            ItemFragment(
+                item_stats=fragment.item_stats,
+                page_numbers=fragment.page_numbers,
+                page_spec=fragment.page_spec,
+                stats=fragment.stats,
+                label=fragment.label,
+                fragment_index=index,
+                fragment_count=total,
+            )
+            for index, fragment in enumerate(fragments, start=1)
         ]
 
 

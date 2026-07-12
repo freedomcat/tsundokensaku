@@ -503,6 +503,9 @@ class HighlightQueryTest(unittest.TestCase):
         self.assertIn("ws-export-md", body)
         self.assertIn("ws-export-preview", body)
         self.assertIn("/api/packs/${pack.id}/export/preview", body)
+        self.assertIn("ChatGPT", body)
+        self.assertIn("Claude", body)
+        self.assertIn("NotebookLM", body)
 
     def test_search_pages_returns_matching_pages_with_snippets(self) -> None:
         from tsundokensaku.database import PageRecord, replace_pages
@@ -1694,6 +1697,47 @@ class ExportProfileParameterTest(unittest.TestCase):
         with path.open("wb") as handle:
             writer.write(handle)
 
+    def _make_pdf_with_toc(self, path: Path, page_count: int, toc: list[list[object]]) -> None:
+        import fitz
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        doc = fitz.open()
+        for _ in range(page_count):
+            doc.new_page(width=72, height=72)
+        doc.set_toc(toc)
+        doc.save(str(path))
+        doc.close()
+
+    def _index_pages(self, db_path: Path, pdf_path: Path, *, title: str, texts: list[str]) -> None:
+        from tsundokensaku.database import PageRecord, replace_pages
+
+        connection = connect(db_path)
+        initialize(connection)
+        book_id = upsert_book(
+            connection,
+            path=pdf_path,
+            title=title,
+            size_bytes=pdf_path.stat().st_size,
+            modified_at=pdf_path.stat().st_mtime,
+        )
+        replace_pages(
+            connection,
+            book_id=book_id,
+            title=title,
+            pages=[PageRecord(page_number=index, text=text) for index, text in enumerate(texts, start=1)],
+        )
+        connection.commit()
+        connection.close()
+
+    def _count_events(self, db_path: Path) -> int:
+        import sqlite3
+
+        connection = sqlite3.connect(str(db_path))
+        try:
+            return connection.execute("SELECT COUNT(*) FROM export_events").fetchone()[0]
+        finally:
+            connection.close()
+
     def _setup_pack_with_one_item(self, books_dir: Path) -> dict:
         self._make_pdf(books_dir / "a.pdf", 5)
         created = self._payload(api_create_pack({"name": "資料"}))
@@ -1865,15 +1909,103 @@ class ExportProfileParameterTest(unittest.TestCase):
                 self.assertEqual(ctx.exception.status_code, 400)
                 self.assertEqual(ctx.exception.detail, "不明なエクスポートプロファイルです: unknown")
 
-    def test_notebooklm_profile_is_not_yet_available_from_export_api(self) -> None:
+    def test_profile_notebooklm_format_omitted_resolves_to_pdf(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            db_path = Path(temp_dir) / "index.db"
-            with patch("tsundokensaku.web.get_db_path", return_value=db_path):
+            root = Path(temp_dir)
+            db_path = root / "index.db"
+            books_dir = root / "books"
+            self._make_pdf_with_toc(books_dir / "a.pdf", 6, [[1, "第1章", 1], [1, "第2章", 4]])
+            self._index_pages(db_path, books_dir / "a.pdf", title="本A", texts=[f"page {i}" for i in range(1, 7)])
+
+            with (
+                patch("tsundokensaku.web.get_db_path", return_value=db_path),
+                patch("tsundokensaku.web.get_books_dir", return_value=books_dir),
+                patch.dict(os.environ, {"TSUNDOKENSAKU_NOTEBOOKLM_MAX_PAGES_PER_FILE": "4"}),
+            ):
                 created = self._payload(api_create_pack({"name": "資料"}))
+                items = [{"pdf_path": "a.pdf", "title": "本A", "pages": "1-6", "collapsed": False, "position": 0}]
+                self._payload(api_replace_pack_items(created["id"], {"items": items}))
+
+                response = api_export_pack(created["id"], profile="notebooklm")
+
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.media_type, "application/zip")
+                with zipfile.ZipFile(BytesIO(response.body)) as archive:
+                    self.assertEqual(
+                        archive.namelist(),
+                        ["manifest.md", "01_本A_第1章_p1-4.pdf", "02_本A_第2章_p4-6.pdf"],
+                    )
+                    manifest = archive.read("manifest.md").decode("utf-8")
+                    self.assertIn("第1章 — p.1-4", manifest)
+                    self.assertIn("第2章 — p.4-6", manifest)
+                    self.assertIn("章単位に分割して出力します", manifest)
+
+    def test_profile_notebooklm_rejects_conflicting_format(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            db_path = root / "index.db"
+            books_dir = root / "books"
+
+            with (
+                patch("tsundokensaku.web.get_db_path", return_value=db_path),
+                patch("tsundokensaku.web.get_books_dir", return_value=books_dir),
+            ):
+                created = self._setup_pack_with_one_item(books_dir)
+
                 with self.assertRaises(HTTPException) as ctx:
-                    api_export_pack(created["id"], profile="notebooklm", format="pdf")
+                    api_export_pack(created["id"], profile="notebooklm", format="md")
                 self.assertEqual(ctx.exception.status_code, 400)
-                self.assertEqual(ctx.exception.detail, "不明なエクスポートプロファイルです: notebooklm")
+                self.assertEqual(ctx.exception.detail, "profile=notebooklm では format=pdf のみ指定できます")
+
+    def test_profile_notebooklm_falls_back_to_page_blocks_without_outline(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            db_path = root / "index.db"
+            books_dir = root / "books"
+            self._make_pdf(books_dir / "a.pdf", 5)
+            self._index_pages(db_path, books_dir / "a.pdf", title="本A", texts=[f"page {i}" for i in range(1, 6)])
+
+            with (
+                patch("tsundokensaku.web.get_db_path", return_value=db_path),
+                patch("tsundokensaku.web.get_books_dir", return_value=books_dir),
+                patch.dict(os.environ, {"TSUNDOKENSAKU_NOTEBOOKLM_MAX_PAGES_PER_FILE": "2"}),
+            ):
+                created = self._payload(api_create_pack({"name": "資料"}))
+                items = [{"pdf_path": "a.pdf", "title": "本A", "pages": "1-5", "collapsed": False, "position": 0}]
+                self._payload(api_replace_pack_items(created["id"], {"items": items}))
+
+                response = api_export_pack(created["id"], profile="notebooklm", format="pdf")
+
+                with zipfile.ZipFile(BytesIO(response.body)) as archive:
+                    self.assertEqual(
+                        archive.namelist(),
+                        ["manifest.md", "01_本A_part1_p1-2.pdf", "02_本A_part2_p3-4.pdf", "03_本A_part3_p5.pdf"],
+                    )
+                    manifest = archive.read("manifest.md").decode("utf-8")
+                    self.assertIn("part1 — p.1-2", manifest)
+                    self.assertIn("アウトラインがないため連続ページ単位で分割します", manifest)
+
+    def test_profile_notebooklm_records_export_event_on_success(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            db_path = root / "index.db"
+            books_dir = root / "books"
+            self._make_pdf(books_dir / "a.pdf", 2)
+            self._index_pages(db_path, books_dir / "a.pdf", title="本A", texts=["a", "b"])
+
+            with (
+                patch("tsundokensaku.web.get_db_path", return_value=db_path),
+                patch("tsundokensaku.web.get_books_dir", return_value=books_dir),
+            ):
+                created = self._payload(api_create_pack({"name": "資料"}))
+                items = [{"pdf_path": "a.pdf", "title": "本A", "pages": "1-2", "collapsed": False, "position": 0}]
+                self._payload(api_replace_pack_items(created["id"], {"items": items}))
+                before = self._count_events(db_path)
+
+                response = api_export_pack(created["id"], profile="notebooklm")
+
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(self._count_events(db_path), before + 1)
 
     def test_invalid_format_still_returns_400_with_standard_profile(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -2174,13 +2306,20 @@ class BuildExportPreviewPayloadForProfileTest(unittest.TestCase):
         chunk = payload["chunks"][0]
         self.assertEqual(chunk["filename"], "資料_chat_01.md")
         self.assertEqual(chunk["pages"], 3)
-        self.assertEqual(
-            chunk["items"],
-            [
-                {"item_id": 1, "title": "本A", "pdf_path": "a.pdf", "pages": "1-2", "estimated_tokens": 10},
-                {"item_id": 2, "title": "本B", "pdf_path": "b.pdf", "pages": "5", "estimated_tokens": 20},
-            ],
-        )
+        self.assertEqual(len(chunk["items"]), 2)
+        self.assertEqual(chunk["items"][0]["item_id"], 1)
+        self.assertEqual(chunk["items"][0]["title"], "本A")
+        self.assertEqual(chunk["items"][0]["pdf_path"], "a.pdf")
+        self.assertEqual(chunk["items"][0]["pages"], "1-2")
+        self.assertEqual(chunk["items"][0]["estimated_tokens"], 10)
+        self.assertIsNone(chunk["items"][0]["label"])
+        self.assertEqual(chunk["items"][0]["fragment_index"], 1)
+        self.assertEqual(chunk["items"][0]["fragment_count"], 1)
+        self.assertEqual(chunk["items"][1]["item_id"], 2)
+        self.assertEqual(chunk["items"][1]["title"], "本B")
+        self.assertEqual(chunk["items"][1]["pdf_path"], "b.pdf")
+        self.assertEqual(chunk["items"][1]["pages"], "5")
+        self.assertEqual(chunk["items"][1]["estimated_tokens"], 20)
         self.assertEqual(payload["warnings"], [])
 
     def test_item_exceeding_limit_produces_plan_warning(self) -> None:
@@ -2433,15 +2572,20 @@ class PackExportPreviewTest(unittest.TestCase):
                 self.assertEqual(ctx.exception.status_code, 400)
                 self.assertEqual(ctx.exception.detail, "不明なエクスポートプロファイルです: unknown")
 
-    def test_preview_notebooklm_profile_is_not_yet_available(self) -> None:
+    def test_preview_profile_notebooklm_returns_empty_pack_with_extended_fields(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / "index.db"
             with patch("tsundokensaku.web.get_db_path", return_value=db_path):
                 created = self._payload(api_create_pack({"name": "資料"}))
-                with self.assertRaises(HTTPException) as ctx:
-                    api_preview_pack_export(created["id"], profile="notebooklm")
-                self.assertEqual(ctx.exception.status_code, 400)
-                self.assertEqual(ctx.exception.detail, "不明なエクスポートプロファイルです: notebooklm")
+                preview = self._payload(api_preview_pack_export(created["id"], profile="notebooklm"))
+                self.assertEqual(preview["profile"], "notebooklm")
+                self.assertEqual(preview["file_count"], 0)
+                self.assertEqual(preview["archive"], "zip")
+                self.assertEqual(preview["chunks"], [])
+                self.assertEqual(
+                    preview["warnings"],
+                    [{"code": "empty_pack", "item_id": None, "message": "この資料には資料項目がありません"}],
+                )
 
     def test_preview_unknown_profile_checked_before_pack_lookup(self) -> None:
         # エクスポートAPIと同じ検証順序（profile解決が先）。存在しないpack_idでも
@@ -2546,6 +2690,107 @@ class PackExportPreviewTest(unittest.TestCase):
                         [name for name in archive.namelist() if name != "manifest.md"],
                         [chunk["filename"]],
                     )
+
+    def test_preview_profile_notebooklm_splits_by_chapters_with_labels(self) -> None:
+        import fitz
+        from tsundokensaku.database import PageRecord, replace_pages
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            db_path = root / "index.db"
+            books_dir = root / "books"
+            books_dir.mkdir(parents=True)
+            pdf_path = books_dir / "a.pdf"
+
+            doc = fitz.open()
+            for _ in range(6):
+                doc.new_page(width=72, height=72)
+            doc.set_toc([[1, "第1章", 1], [1, "第2章", 4]])
+            doc.save(str(pdf_path))
+            doc.close()
+
+            with (
+                patch("tsundokensaku.web.get_db_path", return_value=db_path),
+                patch("tsundokensaku.web.get_books_dir", return_value=books_dir),
+                patch.dict(os.environ, {"TSUNDOKENSAKU_NOTEBOOKLM_MAX_PAGES_PER_FILE": "4"}),
+            ):
+                connection = connect(db_path)
+                initialize(connection)
+                book_id = upsert_book(
+                    connection,
+                    path=pdf_path,
+                    title="本A",
+                    size_bytes=pdf_path.stat().st_size,
+                    modified_at=pdf_path.stat().st_mtime,
+                )
+                replace_pages(connection, book_id=book_id, title="本A", pages=[
+                    PageRecord(page_number=1, text="1"),
+                    PageRecord(page_number=2, text="2"),
+                    PageRecord(page_number=3, text="3"),
+                    PageRecord(page_number=4, text="4"),
+                    PageRecord(page_number=5, text="5"),
+                    PageRecord(page_number=6, text="6"),
+                ])
+                connection.commit()
+                connection.close()
+
+                created = self._payload(api_create_pack({"name": "資料"}))
+                self._payload(api_replace_pack_items(created["id"], {"items": [
+                    {"pdf_path": "a.pdf", "title": "本A", "pages": "1-6", "collapsed": False, "position": 0},
+                ]}))
+
+                preview = self._payload(api_preview_pack_export(created["id"], profile="notebooklm"))
+
+                self.assertEqual(preview["profile"], "notebooklm")
+                self.assertEqual(preview["file_count"], 2)
+                self.assertEqual(
+                    [chunk["filename"] for chunk in preview["chunks"]],
+                    ["01_本A_第1章_p1-4.pdf", "02_本A_第2章_p4-6.pdf"],
+                )
+                self.assertEqual(preview["chunks"][0]["items"][0]["label"], "第1章")
+                self.assertEqual(preview["chunks"][1]["items"][0]["label"], "第2章")
+                self.assertEqual(preview["chunks"][0]["items"][0]["pages"], "1-4")
+                codes = [warning["code"] for warning in preview["warnings"]]
+                self.assertIn("item_split_by_chapters", codes)
+
+                export_response = api_export_pack(created["id"], profile="notebooklm")
+                with zipfile.ZipFile(BytesIO(export_response.body)) as archive:
+                    self.assertEqual(
+                        [name for name in archive.namelist() if name != "manifest.md"],
+                        [chunk["filename"] for chunk in preview["chunks"]],
+                    )
+
+    def test_preview_profile_notebooklm_falls_back_without_outline(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            db_path = root / "index.db"
+            books_dir = root / "books"
+            books_dir.mkdir(parents=True)
+            pdf_path = books_dir / "a.pdf"
+
+            writer = PdfWriter()
+            for _ in range(5):
+                writer.add_blank_page(width=72, height=72)
+            with pdf_path.open("wb") as handle:
+                writer.write(handle)
+
+            with (
+                patch("tsundokensaku.web.get_db_path", return_value=db_path),
+                patch("tsundokensaku.web.get_books_dir", return_value=books_dir),
+                patch.dict(os.environ, {"TSUNDOKENSAKU_NOTEBOOKLM_MAX_PAGES_PER_FILE": "2"}),
+            ):
+                created = self._payload(api_create_pack({"name": "資料"}))
+                self._payload(api_replace_pack_items(created["id"], {"items": [
+                    {"pdf_path": "a.pdf", "title": "本A", "pages": "1-5", "collapsed": False, "position": 0},
+                ]}))
+
+                preview = self._payload(api_preview_pack_export(created["id"], profile="notebooklm"))
+
+                self.assertEqual(preview["file_count"], 3)
+                self.assertEqual(preview["chunks"][0]["items"][0]["label"], "part1")
+                self.assertEqual(preview["chunks"][1]["items"][0]["label"], "part2")
+                codes = [warning["code"] for warning in preview["warnings"]]
+                self.assertIn("no_outline_fallback", codes)
 
 
 class _FakeUploadRequest:

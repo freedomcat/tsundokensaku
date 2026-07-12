@@ -92,10 +92,14 @@
   .ws-export-content { overflow-y: auto; padding: 16px; display: grid; gap: 18px; }
   .ws-export-content h3 { margin: 0 0 8px; font-size: 1rem; }
   .ws-export-destinations { margin: 0; padding: 12px; border: 1px solid var(--border); border-radius: 8px; }
-  .ws-export-destinations label { display: flex; align-items: center; gap: 8px; }
+  .ws-export-destinations label { display: flex; align-items: flex-start; gap: 8px; }
+  .ws-export-destination-copy { display: grid; gap: 2px; }
+  .ws-export-destination-copy strong { font-weight: 600; }
+  .ws-export-destination-copy span { color: var(--muted); font-size: 0.92rem; }
   .ws-export-summary { margin: 0 0 10px; }
   .ws-export-chunks { margin: 0; padding-left: 1.5rem; display: grid; gap: 8px; }
   .ws-export-chunks strong { overflow-wrap: anywhere; }
+  .ws-export-chunk-items { margin: 6px 0 0; padding-left: 1.25rem; display: grid; gap: 4px; }
   #ws-export-warnings { margin: 0; padding-left: 1.5rem; }
 </style>
 
@@ -144,7 +148,9 @@
     const exportStatus = document.getElementById('ws-export-status');
     const outlineCache = new Map();
     const EXPORT_DESTINATIONS = [
-      { profile: 'chat', label: 'ChatGPT / Claude' }
+      { id: 'chatgpt', profile: 'chat', label: 'ChatGPT', description: 'Markdownに分冊して書き出します。' },
+      { id: 'claude', profile: 'chat', label: 'Claude', description: 'Markdownに分冊して書き出します。' },
+      { id: 'notebooklm', profile: 'notebooklm', label: 'NotebookLM', description: '大きな資料項目を章などの単位に分割し、PDFとして書き出します。' }
     ];
     const BLOCKING_EXPORT_WARNINGS = new Set(['empty_pack', 'missing_pdf', 'missing_pages', 'invalid_pages']);
     let exportPreviewRequestToken = 0;
@@ -694,8 +700,13 @@
       exportStatus.classList.toggle('is-error', Boolean(isError && message));
     }
 
+    function selectedExportDestination() {
+      const destinationId = exportDestinationList.querySelector('input[name="ws-export-destination"]:checked')?.value || '';
+      return EXPORT_DESTINATIONS.find((destination) => destination.id === destinationId) || null;
+    }
+
     function selectedExportProfile() {
-      return exportDestinationList.querySelector('input[name="ws-export-destination"]:checked')?.value || '';
+      return selectedExportDestination()?.profile || '';
     }
 
     function renderExportDestinations() {
@@ -705,9 +716,16 @@
         const input = document.createElement('input');
         input.type = 'radio';
         input.name = 'ws-export-destination';
-        input.value = destination.profile;
+        input.value = destination.id;
         input.checked = index === 0;
-        label.append(input, document.createTextNode(destination.label));
+        const copy = document.createElement('span');
+        copy.className = 'ws-export-destination-copy';
+        const strong = document.createElement('strong');
+        strong.textContent = destination.label;
+        const description = document.createElement('span');
+        description.textContent = destination.description;
+        copy.append(strong, description);
+        label.append(input, copy);
         exportDestinationList.appendChild(label);
       }
     }
@@ -726,6 +744,20 @@
         const filename = document.createElement('strong');
         filename.textContent = chunk.filename;
         item.append(filename, document.createTextNode(` / 推定トークン数: ${chunk.estimated_tokens.toLocaleString('ja-JP')}`));
+        if (chunk.pages) {
+          item.append(document.createTextNode(` / ${chunk.pages}ページ`));
+        }
+        if (Array.isArray(chunk.items) && chunk.items.length > 0) {
+          const items = document.createElement('ul');
+          items.className = 'ws-export-chunk-items';
+          for (const source of chunk.items) {
+            const sourceItem = document.createElement('li');
+            const label = source.label ? `${source.label} — p.${source.pages}` : `p.${source.pages}`;
+            sourceItem.textContent = `${source.title} / ${label}`;
+            items.appendChild(sourceItem);
+          }
+          item.appendChild(items);
+        }
         chunks.appendChild(item);
       }
       exportDetail.appendChild(chunks);
