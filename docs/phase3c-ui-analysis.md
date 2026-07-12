@@ -5,6 +5,8 @@
 前提: [ai-export-optimization-design.md](ai-export-optimization-design.md) §11・§12 / [phase3c-3d-design-review.md](phase3c-3d-design-review.md) §3.4
 対象コード: `templates/workspace.html` / `templates/base.html` / `static/pack-store.js` / `static/pdf-modal.js` / `static/pages-spec.js`
 
+> **位置付け**: 本文書は C-5 の分析・判断経緯であり、現行仕様の正本ではない。現行仕様は [ai-export-optimization-design.md](ai-export-optimization-design.md) と該当する個別設計書を参照。
+
 対象時点: C-4 コミット（`5c888b9` エクスポートプレビューのプロファイル対応）まで実装済みの状態。
 
 ## 1. UIフロー分析

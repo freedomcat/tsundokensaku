@@ -4,6 +4,8 @@
 状態: レビュー結果（実装前）
 前提: [ai-export-optimization-design.md](ai-export-optimization-design.md) / Phase 3A・3B 実装済みコード
 
+> **位置付け**: 本文書は Phase 3C / 3D の設計監査と判断経緯であり、現行仕様の正本ではない。監査結果を反映した現行仕様は [ai-export-optimization-design.md](ai-export-optimization-design.md) と該当する個別設計書を参照。
+
 ## 1. 監査の範囲
 
 Phase 3B までの実装（`export_profiles.py` / `export_stats.py` / `token_estimate.py` / `web.py` のエクスポート経路）と設計書を照合し、Phase 3C（ChatProfile）・3D（NotebookLMProfile）を現在の基盤に載せたときに壊れる箇所・設計書に不足している決定を洗い出した。

@@ -4,6 +4,8 @@
 状態: 調査・要求整理（実装なし・設計確定前）
 前提: [ROADMAP.md](../ROADMAP.md) Phase 4 / [ai-export-optimization-design.md](ai-export-optimization-design.md) / [phase3c-3d-design-review.md](phase3c-3d-design-review.md)
 
+> **位置付け**: 本文書は Phase 4 に向けた調査・要求整理の記録であり、エクスポート履歴の現行仕様の正本ではない。確定仕様は [export-events-design.md](export-events-design.md) を参照。
+
 ## 1. 目的
 
 Phase 4 は「AI から得た回答・ノートを取り込み、生成元の資料に紐づけて保存し、蔵書横断検索の対象にする」段階。ここで初めて「積読 → 資料 → AI → 知識」のループが閉じる。本文書は実装前に、取り込み方法・データモデル候補・既存機構との責務境界・Phase 3 側で先に仕込むべきことを整理する。
@@ -61,7 +63,7 @@ Phase 4 は「AI から得た回答・ノートを取り込み、生成元の資
 - 資料は使い回す（項目の追加・削除・範囲変更が日常操作）。成果物が生成された時点の「AI に何を渡したか」は、現在の pack_items からは復元できない
 - 同じ資料から複数回生成した場合の履歴比較（3.4）にもスナップショットが要る
 
-スナップショットの発生点はエクスポート実行時が自然（そこが「AI に渡した」事実の発生点）。**[usage-history-discovery.md](usage-history-discovery.md) のエクスポートイベント記録と同一のデータで満たせる**ため、テーブルを分けず共用する（§5）。
+スナップショットの発生点はエクスポート実行時が自然である。これは「書き出した」事実を記録するもので、AI に実際に渡したかどうかは示さない。**[export-events-design.md](export-events-design.md) のエクスポート履歴と同一のデータで満たせる**ため、テーブルを分けず共用する（§5）。
 
 ### 3.4 同一資料からの複数成果物
 
@@ -77,7 +79,7 @@ Phase 4 は「AI から得た回答・ノートを取り込み、生成元の資
 
 ### 4.1 新規テーブル案
 
-export_events は [export-events-design.md](export-events-design.md) で仕様確定済み（items_json に version フィールドを含む等、確定版が正）。以下は本調査時点の案として残す。
+`export_events` は [export-events-design.md](export-events-design.md) で仕様確定済みであり、同文書を正本とする。以下の `export_events` 定義は、Phase 4 の候補モデルとの関係を検討した当時の案であり、`items_json` の `version` などを欠くため現在の確定仕様ではない。
 
 ```sql
 -- エクスポートイベント（Phase 5 の利用履歴と共用。usage-history-discovery.md 参照）
