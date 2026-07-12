@@ -88,6 +88,17 @@ class PackItemRecord:
 
 
 @dataclass(frozen=True)
+class ExportEventRecord:
+    id: int
+    exported_at: str
+    pack_id: int | None
+    pack_name: str
+    profile: str
+    format: str
+    items_json: str
+
+
+@dataclass(frozen=True)
 class SearchResult:
     title: str
     path: str | None
@@ -1424,6 +1435,48 @@ def ensure_pack_schema(connection: sqlite3.Connection) -> None:
     connection.commit()
 
 
+def record_export_event(
+    connection: sqlite3.Connection,
+    *,
+    pack_id: int | None,
+    pack_name: str,
+    profile: str,
+    format: str,
+    items: list[PackItemRecord],
+) -> None:
+    """エクスポート成功時に export_events テーブルへ1行記録する（設計書 C-6）。
+
+    呼び出し側（web.py）はこの関数を try/except で包み、INSERT の失敗を
+    ログ出力のみで握り潰すこと（ベストエフォート）。エクスポート本体のレスポンスには
+    影響を与えない（設計書 export-events-design.md §6）。
+
+    items_json は position 順のスナップショット（§3）。
+    """
+    import json
+    exported_at = datetime.now(timezone.utc).isoformat()
+    items_payload = {
+        "version": 1,
+        "items": [
+            {
+                "pdf_path": item.pdf_path,
+                "title": item.title,
+                "pages": item.pages,
+                "position": item.position,
+            }
+            for item in items
+        ],
+    }
+    items_json = json.dumps(items_payload, ensure_ascii=False)
+    connection.execute(
+        """
+        INSERT INTO export_events (exported_at, pack_id, pack_name, profile, format, items_json)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (exported_at, pack_id, pack_name, profile, format, items_json),
+    )
+    connection.commit()
+
+
 def _ensure_pack_schema(connection: sqlite3.Connection) -> None:
     connection.executescript(
         """
@@ -1451,6 +1504,16 @@ def _ensure_pack_schema(connection: sqlite3.Connection) -> None:
         CREATE TABLE IF NOT EXISTS app_state (
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS export_events (
+            id INTEGER PRIMARY KEY,
+            exported_at TEXT NOT NULL,
+            pack_id INTEGER,
+            pack_name TEXT NOT NULL,
+            profile TEXT NOT NULL,
+            format TEXT NOT NULL,
+            items_json TEXT NOT NULL
         );
         """
     )

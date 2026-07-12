@@ -38,6 +38,7 @@ from tsundokensaku.database import (
     pack_items_as_cart,
     pack_items_as_items,
     parse_query,
+    record_export_event,
     replace_pack_item_entries,
     replace_pack_items,
     resolve_active_pack_id,
@@ -1534,9 +1535,28 @@ def api_export_pack(pack_id: int, profile: str | None = None, format: str | None
         connection.close()
 
     if format == "json":
-        return _export_pack_json(pack, items)
+        response = _export_pack_json(pack, items)
+    else:
+        response = _export_pack_archive(pack, items, format=format, profile=resolved_profile)
 
-    return _export_pack_archive(pack, items, format=format, profile=resolved_profile)
+    # エクスポート成功後にイベントを記録する（ベストエフォート。設計書 C-6 / export-events-design.md §6）
+    try:
+        connection = _pack_connection()
+        try:
+            record_export_event(
+                connection,
+                pack_id=pack_id,
+                pack_name=pack.name,
+                profile=resolved_profile.name,
+                format=format,
+                items=list(items),
+            )
+        finally:
+            connection.close()
+    except Exception:
+        logging.exception("export_events の記録に失敗しました（エクスポート本体は正常）")
+
+    return response
 
 
 @app.post("/api/packs/import")

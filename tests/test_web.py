@@ -2609,5 +2609,205 @@ class DemoModeUploadTest(unittest.TestCase):
         mock_update_env.assert_not_called()
 
 
+
+class ExportEventRecordingTest(unittest.TestCase):
+    """C-6: export_events テーブルへの記録（設計書 export-events-design.md §10）。"""
+
+    def _make_pdf(self, path: Path, page_count: int = 2) -> None:
+        writer = PdfWriter()
+        for i in range(page_count):
+            writer.add_blank_page(width=72, height=100 + i + 1)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("wb") as handle:
+            writer.write(handle)
+
+    def _payload(self, response):
+        return json.loads(response.body)
+
+    def _count_events(self, db_path: Path) -> int:
+        import sqlite3
+        conn = sqlite3.connect(str(db_path))
+        try:
+            return conn.execute("SELECT COUNT(*) FROM export_events").fetchone()[0]
+        finally:
+            conn.close()
+
+    def test_schema_is_idempotent(self) -> None:
+        """ensure_pack_schema を2回呼んでもエラーにならない（冪等）。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "index.db"
+            from tsundokensaku.database import connect as db_connect, ensure_pack_schema
+            conn = db_connect(db_path)
+            try:
+                ensure_pack_schema(conn)
+                ensure_pack_schema(conn)  # 2回目もエラーなし
+            finally:
+                conn.close()
+
+    def test_successful_export_records_event(self) -> None:
+        """エクスポート成功後に export_events へ1行増える（pdf format）。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            db_path = root / "index.db"
+            books_dir = root / "books"
+            self._make_pdf(books_dir / "a.pdf")
+
+            with (
+                patch("tsundokensaku.web.get_db_path", return_value=db_path),
+                patch("tsundokensaku.web.get_books_dir", return_value=books_dir),
+            ):
+                created = self._payload(api_create_pack({"name": "記録テスト資料"}))
+                items = [{"pdf_path": "a.pdf", "title": "本A", "pages": "1-2", "collapsed": False, "position": 0}]
+                self._payload(api_replace_pack_items(created["id"], {"items": items}))
+
+                before = self._count_events(db_path)
+                response = api_export_pack(created["id"], format="pdf")
+                self.assertEqual(response.status_code, 200)
+                after = self._count_events(db_path)
+
+            self.assertEqual(after - before, 1)
+
+    def test_successful_json_export_also_records(self) -> None:
+        """json format でもエクスポートイベントが記録される（設計書 §4: 全format記録）。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            db_path = root / "index.db"
+            books_dir = root / "books"
+
+            with (
+                patch("tsundokensaku.web.get_db_path", return_value=db_path),
+                patch("tsundokensaku.web.get_books_dir", return_value=books_dir),
+            ):
+                created = self._payload(api_create_pack({"name": "JSON記録テスト"}))
+                items = [{"pdf_path": "a.pdf", "title": "本A", "pages": "1", "collapsed": False, "position": 0}]
+                self._payload(api_replace_pack_items(created["id"], {"items": items}))
+
+                before = self._count_events(db_path)
+                response = api_export_pack(created["id"], format="json")
+                self.assertEqual(response.status_code, 200)
+                after = self._count_events(db_path)
+
+            self.assertEqual(after - before, 1)
+
+    def test_failed_export_does_not_record(self) -> None:
+        """空資料（400エラー）ではイベントが記録されない。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            db_path = root / "index.db"
+            books_dir = root / "books"
+
+            with (
+                patch("tsundokensaku.web.get_db_path", return_value=db_path),
+                patch("tsundokensaku.web.get_books_dir", return_value=books_dir),
+            ):
+                created = self._payload(api_create_pack({"name": "空資料"}))
+
+                before = self._count_events(db_path)
+                with self.assertRaises(HTTPException):
+                    api_export_pack(created["id"], format="pdf")
+                after = self._count_events(db_path)
+
+            self.assertEqual(after, before)
+
+    def test_record_failure_does_not_break_export(self) -> None:
+        """record_export_event の失敗はエクスポートのレスポンスに影響しない（ベストエフォート）。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            db_path = root / "index.db"
+            books_dir = root / "books"
+            self._make_pdf(books_dir / "a.pdf")
+
+            with (
+                patch("tsundokensaku.web.get_db_path", return_value=db_path),
+                patch("tsundokensaku.web.get_books_dir", return_value=books_dir),
+                patch("tsundokensaku.web.record_export_event", side_effect=RuntimeError("DB失敗")),
+            ):
+                created = self._payload(api_create_pack({"name": "エラー耐性テスト"}))
+                items = [{"pdf_path": "a.pdf", "title": "本A", "pages": "1-2", "collapsed": False, "position": 0}]
+                self._payload(api_replace_pack_items(created["id"], {"items": items}))
+
+                # record_export_event が例外を出しても 200 が返ること
+                response = api_export_pack(created["id"], format="pdf")
+            self.assertEqual(response.status_code, 200)
+
+    def test_profile_unspecified_records_as_standard(self) -> None:
+        """profile 未指定でも export_events には 'standard' が記録される（設計書 §5）。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            db_path = root / "index.db"
+            books_dir = root / "books"
+            self._make_pdf(books_dir / "a.pdf")
+
+            with (
+                patch("tsundokensaku.web.get_db_path", return_value=db_path),
+                patch("tsundokensaku.web.get_books_dir", return_value=books_dir),
+            ):
+                created = self._payload(api_create_pack({"name": "standard記録テスト"}))
+                items = [{"pdf_path": "a.pdf", "title": "本A", "pages": "1-2", "collapsed": False, "position": 0}]
+                self._payload(api_replace_pack_items(created["id"], {"items": items}))
+                api_export_pack(created["id"])  # profile 省略
+
+            import sqlite3
+            conn = sqlite3.connect(str(db_path))
+            try:
+                row = conn.execute("SELECT profile FROM export_events ORDER BY id DESC LIMIT 1").fetchone()
+            finally:
+                conn.close()
+            self.assertIsNotNone(row)
+            self.assertEqual(row[0], "standard")
+
+    def test_items_json_schema_version_and_fields(self) -> None:
+        """items_json に version:1 と 4フィールド（pdf_path/title/pages/position）が含まれる（設計書 §3）。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            db_path = root / "index.db"
+            books_dir = root / "books"
+            self._make_pdf(books_dir / "a.pdf")
+
+            with (
+                patch("tsundokensaku.web.get_db_path", return_value=db_path),
+                patch("tsundokensaku.web.get_books_dir", return_value=books_dir),
+            ):
+                created = self._payload(api_create_pack({"name": "スキーマテスト"}))
+                items = [{"pdf_path": "a.pdf", "title": "本A", "pages": "1-2", "collapsed": False, "position": 3}]
+                self._payload(api_replace_pack_items(created["id"], {"items": items}))
+                api_export_pack(created["id"], format="pdf")
+
+            import sqlite3
+            conn = sqlite3.connect(str(db_path))
+            try:
+                row = conn.execute("SELECT items_json FROM export_events ORDER BY id DESC LIMIT 1").fetchone()
+            finally:
+                conn.close()
+            payload = json.loads(row[0])
+            self.assertEqual(payload["version"], 1)
+            self.assertIn("items", payload)
+            item = payload["items"][0]
+            self.assertEqual(item["pdf_path"], "a.pdf")
+            self.assertEqual(item["title"], "本A")
+            self.assertEqual(item["pages"], "1-2")
+            self.assertIn("position", item)
+
+    def test_re_export_records_twice(self) -> None:
+        """同一資料を2回エクスポートすると2行になる（去重しない。設計書 §8）。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            db_path = root / "index.db"
+            books_dir = root / "books"
+            self._make_pdf(books_dir / "a.pdf")
+
+            with (
+                patch("tsundokensaku.web.get_db_path", return_value=db_path),
+                patch("tsundokensaku.web.get_books_dir", return_value=books_dir),
+            ):
+                created = self._payload(api_create_pack({"name": "再エクスポートテスト"}))
+                items = [{"pdf_path": "a.pdf", "title": "本A", "pages": "1-2", "collapsed": False, "position": 0}]
+                self._payload(api_replace_pack_items(created["id"], {"items": items}))
+                api_export_pack(created["id"], format="pdf")
+                api_export_pack(created["id"], format="pdf")
+
+            self.assertEqual(self._count_events(db_path), 2)
+
+
 if __name__ == "__main__":
     unittest.main()
