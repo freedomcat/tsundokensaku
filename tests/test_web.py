@@ -1865,6 +1865,16 @@ class ExportProfileParameterTest(unittest.TestCase):
                 self.assertEqual(ctx.exception.status_code, 400)
                 self.assertEqual(ctx.exception.detail, "不明なエクスポートプロファイルです: unknown")
 
+    def test_notebooklm_profile_is_not_yet_available_from_export_api(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "index.db"
+            with patch("tsundokensaku.web.get_db_path", return_value=db_path):
+                created = self._payload(api_create_pack({"name": "資料"}))
+                with self.assertRaises(HTTPException) as ctx:
+                    api_export_pack(created["id"], profile="notebooklm", format="pdf")
+                self.assertEqual(ctx.exception.status_code, 400)
+                self.assertEqual(ctx.exception.detail, "不明なエクスポートプロファイルです: notebooklm")
+
     def test_invalid_format_still_returns_400_with_standard_profile(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / "index.db"
@@ -2422,6 +2432,16 @@ class PackExportPreviewTest(unittest.TestCase):
                     api_preview_pack_export(created["id"], profile="unknown")
                 self.assertEqual(ctx.exception.status_code, 400)
                 self.assertEqual(ctx.exception.detail, "不明なエクスポートプロファイルです: unknown")
+
+    def test_preview_notebooklm_profile_is_not_yet_available(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "index.db"
+            with patch("tsundokensaku.web.get_db_path", return_value=db_path):
+                created = self._payload(api_create_pack({"name": "資料"}))
+                with self.assertRaises(HTTPException) as ctx:
+                    api_preview_pack_export(created["id"], profile="notebooklm")
+                self.assertEqual(ctx.exception.status_code, 400)
+                self.assertEqual(ctx.exception.detail, "不明なエクスポートプロファイルです: notebooklm")
 
     def test_preview_unknown_profile_checked_before_pack_lookup(self) -> None:
         # エクスポートAPIと同じ検証順序（profile解決が先）。存在しないpack_idでも

@@ -1,9 +1,13 @@
 import unittest
 from datetime import datetime
 from pathlib import Path
+from unittest.mock import patch
 
 from tsundokensaku.database import PackItemRecord
 from tsundokensaku.export_profiles import (
+    NOTEBOOKLM_ESTIMATED_CHARS_WARNING_GUIDELINE,
+    NOTEBOOKLM_MAX_PAGES_PER_FILE_DEFAULT,
+    NOTEBOOKLM_MAX_SOURCES_DEFAULT,
     PROFILES,
     ChatProfile,
     ExportChunk,
@@ -11,6 +15,7 @@ from tsundokensaku.export_profiles import (
     ExportProfile,
     ExportWarning,
     ItemFragment,
+    NotebookLMProfile,
     RenderContext,
     StandardProfile,
     resolve_profile,
@@ -345,11 +350,306 @@ class ProfilesRegistryTest(unittest.TestCase):
         self.assertIsInstance(profile, StandardProfile)
         self.assertEqual(profile.name, "standard")
 
+    def test_notebooklm_is_registered(self) -> None:
+        profile = PROFILES["notebooklm"]
+        self.assertIsInstance(profile, NotebookLMProfile)
+        self.assertEqual(profile.name, "notebooklm")
+        self.assertEqual(profile.primary_format, "pdf")
+
     def test_chat_is_registered(self) -> None:
         profile = PROFILES["chat"]
         self.assertIsInstance(profile, ChatProfile)
         self.assertEqual(profile.name, "chat")
         self.assertEqual(profile.primary_format, "md")
+
+
+class NotebookLMProfileTest(unittest.TestCase):
+    def test_basic_attributes(self) -> None:
+        profile = NotebookLMProfile()
+        self.assertEqual(profile.name, "notebooklm")
+        self.assertEqual(profile.primary_format, "pdf")
+        self.assertIsInstance(PROFILES["notebooklm"], NotebookLMProfile)
+
+    def test_item_weight_uses_page_count_not_tokens(self) -> None:
+        stats = _item_stats(1, page_count=5, cjk_chars=999_999, title="本A")
+        fragment = NotebookLMProfile().split_items([stats])[0]
+        self.assertEqual(NotebookLMProfile().item_weight(fragment), 5)
+
+    def test_adjacent_same_pdf_items_merge_within_limit(self) -> None:
+        items = [
+            _item_stats(1, page_count=3, pdf_path="same.pdf", title="前半", position=0),
+            _item_stats(2, page_count=4, pdf_path="same.pdf", title="後半", position=1),
+        ]
+        with patch.dict("os.environ", {"TSUNDOKENSAKU_NOTEBOOKLM_MAX_PAGES_PER_FILE": "10"}):
+            plan = NotebookLMProfile().plan(items)
+
+        self.assertEqual(len(plan.chunks), 1)
+        self.assertEqual([fragment.item.title for fragment in plan.chunks[0].fragments], ["前半", "後半"])
+        self.assertEqual(plan.chunks[0].total_pages, 7)
+
+    def test_different_pdf_items_do_not_merge_even_within_limit(self) -> None:
+        items = [
+            _item_stats(1, page_count=3, pdf_path="a.pdf", title="A", position=0),
+            _item_stats(2, page_count=3, pdf_path="b.pdf", title="B", position=1),
+        ]
+        with patch.dict("os.environ", {"TSUNDOKENSAKU_NOTEBOOKLM_MAX_PAGES_PER_FILE": "10"}):
+            plan = NotebookLMProfile().plan(items)
+
+        self.assertEqual(len(plan.chunks), 2)
+        self.assertEqual([chunk.fragments[0].item.pdf_path for chunk in plan.chunks], ["a.pdf", "b.pdf"])
+
+    def test_non_adjacent_same_pdf_items_do_not_merge_across_other_pdf(self) -> None:
+        items = [
+            _item_stats(1, page_count=2, pdf_path="a.pdf", title="A1", position=0),
+            _item_stats(2, page_count=2, pdf_path="b.pdf", title="B", position=1),
+            _item_stats(3, page_count=2, pdf_path="a.pdf", title="A2", position=2),
+        ]
+        with patch.dict("os.environ", {"TSUNDOKENSAKU_NOTEBOOKLM_MAX_PAGES_PER_FILE": "10"}):
+            plan = NotebookLMProfile().plan(items)
+
+        self.assertEqual(len(plan.chunks), 3)
+        self.assertEqual([chunk.fragments[0].item.title for chunk in plan.chunks], ["A1", "B", "A2"])
+
+    def test_page_limit_exactly_fits_but_one_page_over_splits(self) -> None:
+        exact_items = [
+            _item_stats(1, page_count=3, pdf_path="same.pdf", position=0),
+            _item_stats(2, page_count=2, pdf_path="same.pdf", position=1),
+        ]
+        over_items = [
+            _item_stats(1, page_count=3, pdf_path="same.pdf", position=0),
+            _item_stats(2, page_count=3, pdf_path="same.pdf", position=1),
+        ]
+        with patch.dict("os.environ", {"TSUNDOKENSAKU_NOTEBOOKLM_MAX_PAGES_PER_FILE": "5"}):
+            exact_plan = NotebookLMProfile().plan(exact_items)
+            over_plan = NotebookLMProfile().plan(over_items)
+
+        self.assertEqual(len(exact_plan.chunks), 1)
+        self.assertEqual(exact_plan.chunks[0].total_pages, 5)
+        self.assertEqual(len(over_plan.chunks), 2)
+
+    def test_duplicate_pages_are_counted_without_deduplication(self) -> None:
+        first = _item_stats(1, page_count=10, pdf_path="same.pdf", title="前", position=0)
+        second = _item_stats(2, page_count=4, pdf_path="same.pdf", title="後", position=1)
+        second = ItemStats(
+            item=_pack_item(2, pdf_path="same.pdf", title="後", pages="5-8", position=1),
+            page_numbers=[5, 6, 7, 8],
+            stats=second.stats,
+            unindexed_pages=0,
+            missing_pdf=False,
+        )
+        with patch.dict("os.environ", {"TSUNDOKENSAKU_NOTEBOOKLM_MAX_PAGES_PER_FILE": "20"}):
+            plan = NotebookLMProfile().plan([first, second])
+
+        self.assertEqual(len(plan.chunks), 1)
+        self.assertEqual(plan.chunks[0].total_pages, 14)
+        self.assertEqual(plan.chunks[0].fragments[0].page_numbers, tuple(range(1, 11)))
+        self.assertEqual(plan.chunks[0].fragments[1].page_numbers, (5, 6, 7, 8))
+        self.assertEqual([fragment.page_spec for fragment in plan.chunks[0].fragments], ["1-10", "5-8"])
+
+    def test_single_fragment_exceeding_limit_warns_but_plan_is_generated(self) -> None:
+        items = [_item_stats(1, page_count=6, pdf_path="same.pdf", title="巨大本", position=0)]
+        with patch.dict("os.environ", {"TSUNDOKENSAKU_NOTEBOOKLM_MAX_PAGES_PER_FILE": "5"}):
+            plan = NotebookLMProfile().plan(items)
+
+        self.assertEqual(len(plan.chunks), 1)
+        self.assertEqual(plan.warnings[0].code, "item_exceeds_limit")
+        self.assertEqual(plan.warnings[0].item_id, 1)
+
+    def test_source_count_warning_only_when_threshold_is_exceeded(self) -> None:
+        items = [
+            _item_stats(1, page_count=1, pdf_path="a.pdf", position=0),
+            _item_stats(2, page_count=1, pdf_path="b.pdf", position=1),
+            _item_stats(3, page_count=1, pdf_path="c.pdf", position=2),
+        ]
+        with patch.dict("os.environ", {
+            "TSUNDOKENSAKU_NOTEBOOKLM_MAX_PAGES_PER_FILE": "10",
+            "TSUNDOKENSAKU_NOTEBOOKLM_MAX_SOURCES": "3",
+        }):
+            no_warning = NotebookLMProfile().plan(items)
+        with patch.dict("os.environ", {
+            "TSUNDOKENSAKU_NOTEBOOKLM_MAX_PAGES_PER_FILE": "10",
+            "TSUNDOKENSAKU_NOTEBOOKLM_MAX_SOURCES": "2",
+        }):
+            warning = NotebookLMProfile().plan(items)
+
+        self.assertFalse(any(entry.code == "too_many_sources" for entry in no_warning.warnings))
+        source_warnings = [entry for entry in warning.warnings if entry.code == "too_many_sources"]
+        self.assertEqual(len(source_warnings), 1)
+        self.assertIsNone(source_warnings[0].item_id)
+        self.assertEqual(len(warning.chunks), 3)
+
+    def test_environment_values_are_read_at_call_time(self) -> None:
+        profile = PROFILES["notebooklm"]
+        items = [
+            _item_stats(1, page_count=2, pdf_path="same.pdf", position=0),
+            _item_stats(2, page_count=2, pdf_path="same.pdf", position=1),
+        ]
+        with patch.dict("os.environ", {
+            "TSUNDOKENSAKU_NOTEBOOKLM_MAX_PAGES_PER_FILE": "10",
+            "TSUNDOKENSAKU_NOTEBOOKLM_MAX_SOURCES": "10",
+        }):
+            merged = profile.plan(items)
+        with patch.dict("os.environ", {
+            "TSUNDOKENSAKU_NOTEBOOKLM_MAX_PAGES_PER_FILE": "3",
+            "TSUNDOKENSAKU_NOTEBOOKLM_MAX_SOURCES": "1",
+        }):
+            split = profile.plan(items)
+
+        self.assertEqual(len(merged.chunks), 1)
+        self.assertEqual(len(split.chunks), 2)
+        self.assertTrue(any(entry.code == "too_many_sources" for entry in split.warnings))
+
+    def test_invalid_environment_values_fall_back_to_defaults(self) -> None:
+        profile = NotebookLMProfile()
+
+        with patch.dict("os.environ", {
+            "TSUNDOKENSAKU_NOTEBOOKLM_MAX_PAGES_PER_FILE": "",
+            "TSUNDOKENSAKU_NOTEBOOKLM_MAX_SOURCES": "abc",
+        }):
+            self.assertEqual(profile.chunk_limit(), NOTEBOOKLM_MAX_PAGES_PER_FILE_DEFAULT)
+            self.assertEqual(profile.extra_warnings(ExportPlan(profile_name="notebooklm", chunks=(), warnings=())), ())
+
+        with patch.dict("os.environ", {
+            "TSUNDOKENSAKU_NOTEBOOKLM_MAX_PAGES_PER_FILE": "0",
+            "TSUNDOKENSAKU_NOTEBOOKLM_MAX_SOURCES": "-1",
+        }):
+            self.assertEqual(profile.chunk_limit(), NOTEBOOKLM_MAX_PAGES_PER_FILE_DEFAULT)
+            warning = profile.extra_warnings(
+                ExportPlan(
+                    profile_name="notebooklm",
+                    chunks=tuple(ExportChunk(index=i, fragments=(), total_pages=0, estimated_tokens=0) for i in range(1, NOTEBOOKLM_MAX_SOURCES_DEFAULT + 2)),
+                    warnings=(),
+                )
+            )
+            self.assertEqual(len([entry for entry in warning if entry.code == "too_many_sources"]), 1)
+
+    def test_estimated_chars_warning_is_not_emitted_below_guideline(self) -> None:
+        items = [
+            _item_stats(
+                1,
+                page_count=10,
+                pdf_path="same.pdf",
+                position=0,
+                cjk_chars=NOTEBOOKLM_ESTIMATED_CHARS_WARNING_GUIDELINE - 1,
+            ),
+        ]
+        with patch.dict("os.environ", {
+            "TSUNDOKENSAKU_NOTEBOOKLM_MAX_PAGES_PER_FILE": "100",
+            "TSUNDOKENSAKU_NOTEBOOKLM_MAX_SOURCES": "10",
+        }):
+            plan = NotebookLMProfile().plan(items)
+
+        self.assertFalse(any(entry.code == "estimated_chars_exceed_guideline" for entry in plan.warnings))
+
+    def test_estimated_chars_warning_is_not_emitted_at_guideline(self) -> None:
+        items = [
+            _item_stats(
+                1,
+                page_count=10,
+                pdf_path="same.pdf",
+                position=0,
+                cjk_chars=NOTEBOOKLM_ESTIMATED_CHARS_WARNING_GUIDELINE,
+            ),
+        ]
+        with patch.dict("os.environ", {
+            "TSUNDOKENSAKU_NOTEBOOKLM_MAX_PAGES_PER_FILE": "100",
+            "TSUNDOKENSAKU_NOTEBOOKLM_MAX_SOURCES": "10",
+        }):
+            plan = NotebookLMProfile().plan(items)
+
+        self.assertFalse(any(entry.code == "estimated_chars_exceed_guideline" for entry in plan.warnings))
+
+    def test_estimated_chars_warning_is_emitted_one_char_over_guideline(self) -> None:
+        items = [
+            _item_stats(
+                1,
+                page_count=10,
+                pdf_path="same.pdf",
+                position=0,
+                cjk_chars=NOTEBOOKLM_ESTIMATED_CHARS_WARNING_GUIDELINE + 1,
+            ),
+        ]
+        with patch.dict("os.environ", {
+            "TSUNDOKENSAKU_NOTEBOOKLM_MAX_PAGES_PER_FILE": "100",
+            "TSUNDOKENSAKU_NOTEBOOKLM_MAX_SOURCES": "10",
+        }):
+            plan = NotebookLMProfile().plan(items)
+
+        self.assertEqual(len(plan.chunks), 1)
+        char_warnings = [entry for entry in plan.warnings if entry.code == "estimated_chars_exceed_guideline"]
+        self.assertEqual(len(char_warnings), 1)
+        self.assertIsNone(char_warnings[0].item_id)
+
+    def test_estimated_chars_warning_uses_sum_of_cjk_and_other_chars_across_fragments(self) -> None:
+        items = [
+            _item_stats(
+                1,
+                page_count=10,
+                pdf_path="same.pdf",
+                position=0,
+                cjk_chars=NOTEBOOKLM_ESTIMATED_CHARS_WARNING_GUIDELINE - 2,
+            ),
+            _item_stats(
+                2,
+                page_count=10,
+                pdf_path="same.pdf",
+                position=1,
+                other_chars=2,
+            ),
+        ]
+        with patch.dict("os.environ", {
+            "TSUNDOKENSAKU_NOTEBOOKLM_MAX_PAGES_PER_FILE": "100",
+            "TSUNDOKENSAKU_NOTEBOOKLM_MAX_SOURCES": "10",
+        }):
+            at_guideline = NotebookLMProfile().plan(items)
+        with patch.dict("os.environ", {
+            "TSUNDOKENSAKU_NOTEBOOKLM_MAX_PAGES_PER_FILE": "100",
+            "TSUNDOKENSAKU_NOTEBOOKLM_MAX_SOURCES": "10",
+        }):
+            over_guideline = NotebookLMProfile().plan([
+                items[0],
+                _item_stats(
+                    2,
+                    page_count=10,
+                    pdf_path="same.pdf",
+                    position=1,
+                    other_chars=3,
+                ),
+            ])
+
+        self.assertEqual(len(at_guideline.chunks), 1)
+        self.assertFalse(any(entry.code == "estimated_chars_exceed_guideline" for entry in at_guideline.warnings))
+        over_warnings = [entry for entry in over_guideline.warnings if entry.code == "estimated_chars_exceed_guideline"]
+        self.assertEqual(len(over_warnings), 1)
+
+    def test_estimated_chars_warning_does_not_change_chunking(self) -> None:
+        items = [
+            _item_stats(
+                1,
+                page_count=10,
+                pdf_path="same.pdf",
+                position=0,
+                cjk_chars=NOTEBOOKLM_ESTIMATED_CHARS_WARNING_GUIDELINE - 1,
+            ),
+            _item_stats(
+                2,
+                page_count=10,
+                pdf_path="same.pdf",
+                position=1,
+                other_chars=2,
+            ),
+        ]
+        with patch.dict("os.environ", {
+            "TSUNDOKENSAKU_NOTEBOOKLM_MAX_PAGES_PER_FILE": "100",
+            "TSUNDOKENSAKU_NOTEBOOKLM_MAX_SOURCES": "10",
+        }):
+            plan = NotebookLMProfile().plan(items)
+
+        self.assertEqual(len(plan.chunks), 1)
+        self.assertEqual(plan.chunks[0].total_pages, 20)
+        char_warnings = [entry for entry in plan.warnings if entry.code == "estimated_chars_exceed_guideline"]
+        self.assertEqual(len(char_warnings), 1)
+        self.assertIsNone(char_warnings[0].item_id)
 
 
 class ChatProfileTest(unittest.TestCase):
