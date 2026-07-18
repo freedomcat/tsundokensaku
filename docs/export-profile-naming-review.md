@@ -118,12 +118,12 @@ description: '大きな資料項目を章などの単位に分割したPDF。Not
 
 変更不要: `submission.md`（提出済み文書）、`ARCHITECTURE.md`・`scripts/README.md`・`scripts/export_pdf_pages.py`（例示形）、discovery / notes 系 docs（歴史的記録）。
 
-## 未決事項
+## 決定事項
 
-最終的なprofile名は実装開始前に確定する。
+新しい profile 名は **`chapter`** に決定（2026-07-19）。
 
-候補
-- chapter
-- section
-- outline
-- segmented
+- profile 名（API・ZIP名・環境変数）: `chapter`
+- 日本語表示名: 章単位PDF
+- 英語名: Chapter Split Export
+
+検討した候補: chapter / section / outline / segmented（選定理由は §3 を参照）。
