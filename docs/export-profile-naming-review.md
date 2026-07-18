@@ -127,3 +127,17 @@ description: '大きな資料項目を章などの単位に分割したPDF。Not
 - 英語名: Chapter Split Export
 
 検討した候補: chapter / section / outline / segmented（選定理由は §3 を参照）。
+
+## 実装後レビュー（2026-07-19）
+
+- レビュー実施日: 2026-07-19
+- レビュー対象ブランチ: `feature/export-profile-capability-flags`（Step1〜5、5コミット）
+- レビュー結果:
+  - Critical: なし
+  - Major:
+    - `templates/workspace.html` の `EXPORT_DESTINATIONS` で、chapter行の内部識別子 `id` が `'notebooklm'` のまま未改名
+    - `docs/export-events-design.md` の `export_events.profile` 列コメントが `'standard' | 'chat' | 'notebooklm'` のまま未更新
+  - Minor（要約）: 旧profile値・旧環境変数名を明示的に拒否/無効化するテストの不足、`uses_plan_output`フラグの二重否定気味の命名、`build_chunk_filename`とメソッド`chunk_filename`の名前重複、`ItemFragment` docstringの記述の陳腐化、`ARCHITECTURE.md`のNotebookLM表現の軽微な不揃い
+  - Overall: Yes with Minor Issues
+
+Major については別コミットで対応予定。
