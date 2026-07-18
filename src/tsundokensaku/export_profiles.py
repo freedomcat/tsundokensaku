@@ -13,8 +13,8 @@ from tsundokensaku.markdown_export import render_chat_chunk_header
 from tsundokensaku.pdf_export import compact_page_selection, merge_rendered_pdfs
 from tsundokensaku.token_estimate import TextStats, TokenEstimator, estimate_tokens
 from tsundokensaku.zip_export import (
+    build_chunk_filename,
     build_entry_filename,
-    build_notebooklm_filename,
     build_pack_zip_filename,
     build_sequenced_filename,
     sanitize_filename_component,
@@ -458,7 +458,7 @@ class NotebookLMProfile(ExportProfile):
 
     def chunk_filename(self, chunk: ExportChunk, *, pack_name: str, format: str | None = None) -> str:
         primary_fragment = chunk.fragments[0]
-        return build_notebooklm_filename(
+        return build_chunk_filename(
             chunk.index,
             primary_fragment.item.title,
             [fragment.page_spec for fragment in chunk.fragments],

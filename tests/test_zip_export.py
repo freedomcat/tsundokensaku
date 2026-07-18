@@ -8,8 +8,8 @@ from tsundokensaku.zip_export import (
     PackExportEntry,
     PlanManifestChunk,
     PlanManifestFragment,
+    build_chunk_filename,
     build_entry_filename,
-    build_notebooklm_filename,
     build_pack_zip,
     build_pack_zip_filename,
     build_pack_zip_with_manifest,
@@ -138,21 +138,21 @@ class BuildSequencedFilenameTest(unittest.TestCase):
         self.assertEqual(name, "短い資料_chat_01.md")
 
 
-class BuildNotebookLMFilenameTest(unittest.TestCase):
+class BuildChunkFilenameTest(unittest.TestCase):
     def test_uses_title_and_pages_for_single_fragment(self) -> None:
-        self.assertEqual(build_notebooklm_filename(1, "本A", ["1-20"]), "01_本A_p1-20.pdf")
+        self.assertEqual(build_chunk_filename(1, "本A", ["1-20"]), "01_本A_p1-20.pdf")
 
     def test_uses_label_when_single_fragment_has_label(self) -> None:
-        self.assertEqual(build_notebooklm_filename(1, "本A", ["1-20"], label="第1章"), "01_本A_第1章_p1-20.pdf")
+        self.assertEqual(build_chunk_filename(1, "本A", ["1-20"], label="第1章"), "01_本A_第1章_p1-20.pdf")
 
     def test_uses_joined_ranges_for_multiple_fragments(self) -> None:
-        self.assertEqual(build_notebooklm_filename(3, "本A", ["1-10", "5-8"]), "03_本A_p1-10_5-8.pdf")
+        self.assertEqual(build_chunk_filename(3, "本A", ["1-10", "5-8"]), "03_本A_p1-10_5-8.pdf")
 
     def test_sanitizes_label_and_page_ranges(self) -> None:
-        self.assertEqual(build_notebooklm_filename(1, "本A", ["3-7,20-35"], label="第1章/導入"), "01_本A_第1章_導入_p3-7_20-35.pdf")
+        self.assertEqual(build_chunk_filename(1, "本A", ["3-7,20-35"], label="第1章/導入"), "01_本A_第1章_導入_p3-7_20-35.pdf")
 
     def test_shortens_long_name_to_fit_255_bytes(self) -> None:
-        name = build_notebooklm_filename(1, "非常に長い書名" * 30, ["1-300"], label="非常に長い章名" * 30)
+        name = build_chunk_filename(1, "非常に長い書名" * 30, ["1-300"], label="非常に長い章名" * 30)
         self.assertLessEqual(len(name.encode("utf-8")), MAX_FILENAME_BYTES)
         self.assertTrue(name.startswith("01_"))
         self.assertTrue(name.endswith(".pdf"))

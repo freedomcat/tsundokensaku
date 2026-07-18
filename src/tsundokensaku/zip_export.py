@@ -116,7 +116,7 @@ def _build_capped_filename(index: int, title: str, detail_candidates: list[str],
     return f"{prefix}{truncated_title}{FILENAME_ELLIPSIS}_{fallback_detail}{suffix}"
 
 
-def build_notebooklm_filename(
+def build_chunk_filename(
     index: int,
     title: str,
     page_specs: list[str],
