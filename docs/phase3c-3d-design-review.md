@@ -5,6 +5,8 @@
 前提: [ai-export-optimization-design.md](ai-export-optimization-design.md) / Phase 3A・3B 実装済みコード
 
 > **位置付け**: 本文書は Phase 3C / 3D の設計監査と判断経緯であり、現行仕様の正本ではない。監査結果を反映した現行仕様は [ai-export-optimization-design.md](ai-export-optimization-design.md) と該当する個別設計書を参照。
+>
+> **注記（2026-07-19）**: 本文書中の profile 名「notebooklm」（`NotebookLMProfile`）は、後に `chapter`（`ChapterProfile`）へ改名した（[export-profile-naming-review.md](export-profile-naming-review.md)）。本文は当時の判断記録として書き換えていない。
 
 ## 1. 監査の範囲
 
