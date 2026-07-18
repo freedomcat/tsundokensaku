@@ -834,14 +834,14 @@ class ChapterProfileTest(unittest.TestCase):
         reader = PdfReader(BytesIO(rendered))
         self.assertEqual(len(reader.pages), 4)
 
-    def test_manifest_header_lines_describe_notebooklm_export(self) -> None:
+    def test_manifest_header_lines_describe_chapter_export(self) -> None:
         plan = ExportPlan(
             profile_name="chapter",
             chunks=(ExportChunk(index=1, fragments=(_fragment(1),), total_pages=1, estimated_tokens=0),),
             warnings=(),
         )
         lines = ChapterProfile().manifest_header_lines(plan)
-        self.assertIn("- NotebookLM向けのPDFです", lines)
+        self.assertIn("- 章などの単位で分割したPDFです", lines)
         self.assertIn("- 出力ファイル数: 1", lines)
 
 

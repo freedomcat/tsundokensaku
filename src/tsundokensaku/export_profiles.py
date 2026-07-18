@@ -435,7 +435,7 @@ class ChapterProfile(ExportProfile):
                 ExportWarning(
                     code="too_many_sources",
                     item_id=None,
-                    message=f"出力ファイル数がNotebookLMのソース数目安（{max_sources}件）を超えています",
+                    message=f"出力ファイル数が上限目安（{max_sources}件）を超えています。読み込み先サービス（NotebookLM無料枠など）の上限を確認してください",
                 )
             )
 
@@ -473,7 +473,7 @@ class ChapterProfile(ExportProfile):
 
     def manifest_header_lines(self, plan: ExportPlan) -> list[str]:
         return [
-            "- NotebookLM向けのPDFです",
+            "- 章などの単位で分割したPDFです",
             f"- 出力ファイル数: {len(plan.chunks)}",
             "- 分割・結合は出力時の最適化であり、資料棚の構成自体は変更していません",
         ]
