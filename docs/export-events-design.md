@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS export_events (
     exported_at TEXT NOT NULL,            -- UTC ISO8601（§7）
     pack_id INTEGER,                      -- 参照補助。FK制約は張らない（§9）
     pack_name TEXT NOT NULL,              -- エクスポート時点のスナップショット
-    profile TEXT NOT NULL,                -- 'standard' | 'chat' | 'notebooklm'
+    profile TEXT NOT NULL,                -- 'standard' | 'chat' | 'chapter'
     format TEXT NOT NULL,                 -- 'pdf' | 'md' | 'json'
     items_json TEXT NOT NULL              -- §3 のスキーマ
 );

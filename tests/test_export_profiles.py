@@ -558,6 +558,29 @@ class ChapterProfileTest(unittest.TestCase):
         self.assertEqual(len(split.chunks), 2)
         self.assertTrue(any(entry.code == "too_many_sources" for entry in split.warnings))
 
+    def test_old_environment_variable_name_notebooklm_has_no_effect(self) -> None:
+        # TSUNDOKENSAKU_NOTEBOOKLM_MAX_PAGES_PER_FILE は改名済みの旧名。
+        # 設定してもデフォルト値のまま（無視される）ことを明示的に確認する
+        # （docs/export-profile-naming-review.md）
+        profile = ChapterProfile()
+
+        with patch.dict("os.environ", {
+            "TSUNDOKENSAKU_NOTEBOOKLM_MAX_PAGES_PER_FILE": "10",
+            "TSUNDOKENSAKU_NOTEBOOKLM_MAX_SOURCES": "10",
+        }):
+            self.assertEqual(profile.chunk_limit(), CHAPTER_MAX_PAGES_PER_FILE_DEFAULT)
+            # 旧名の値(10)を超えデフォルト(50)は超えないチャンク数にする。
+            # 旧名が誤って効いていれば10件超で警告が出てしまうため、
+            # 「警告が出ない」ことがデフォルト適用の証拠になる
+            no_warning = profile.extra_warnings(
+                ExportPlan(
+                    profile_name="chapter",
+                    chunks=tuple(ExportChunk(index=i, fragments=(), total_pages=0, estimated_tokens=0) for i in range(1, 21)),
+                    warnings=(),
+                )
+            )
+            self.assertFalse(any(entry.code == "too_many_sources" for entry in no_warning))
+
     def test_invalid_environment_values_fall_back_to_defaults(self) -> None:
         profile = ChapterProfile()
 

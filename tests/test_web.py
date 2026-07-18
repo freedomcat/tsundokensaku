@@ -1909,6 +1909,18 @@ class ExportProfileParameterTest(unittest.TestCase):
                 self.assertEqual(ctx.exception.status_code, 400)
                 self.assertEqual(ctx.exception.detail, "不明なエクスポートプロファイルです: unknown")
 
+    def test_old_profile_name_notebooklm_is_rejected(self) -> None:
+        # notebooklm は chapter へ改名済み。旧名を受理しないことを明示的に確認する
+        # （docs/export-profile-naming-review.md）
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "index.db"
+            with patch("tsundokensaku.web.get_db_path", return_value=db_path):
+                created = self._payload(api_create_pack({"name": "資料"}))
+                with self.assertRaises(HTTPException) as ctx:
+                    api_export_pack(created["id"], profile="notebooklm", format="pdf")
+                self.assertEqual(ctx.exception.status_code, 400)
+                self.assertEqual(ctx.exception.detail, "不明なエクスポートプロファイルです: notebooklm")
+
     def test_profile_chapter_format_omitted_resolves_to_pdf(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
