@@ -206,11 +206,11 @@ class RenderPlanManifestTest(unittest.TestCase):
         )
         self.assertNotIn("## 警告", manifest)
 
-    def test_renders_notebooklm_single_fragment_hierarchy(self) -> None:
+    def test_renders_chapter_single_fragment_hierarchy(self) -> None:
         manifest = render_plan_manifest(
             pack_name="資料",
             exported_at=datetime(2026, 7, 12, 9, 30),
-            profile_name="notebooklm",
+            profile_name="chapter",
             chunks=[
                 PlanManifestChunk(
                     filename="01_本A_第1章_p1-20.pdf",
@@ -225,11 +225,11 @@ class RenderPlanManifestTest(unittest.TestCase):
         self.assertIn("   - 本A", manifest)
         self.assertIn("     - 第1章 — p.1-20", manifest)
 
-    def test_renders_notebooklm_multiple_fragment_hierarchy(self) -> None:
+    def test_renders_chapter_multiple_fragment_hierarchy(self) -> None:
         manifest = render_plan_manifest(
             pack_name="資料",
             exported_at=datetime(2026, 7, 12, 9, 30),
-            profile_name="notebooklm",
+            profile_name="chapter",
             chunks=[
                 PlanManifestChunk(
                     filename="02_本A_p21-30_31-40.pdf",
@@ -248,11 +248,11 @@ class RenderPlanManifestTest(unittest.TestCase):
         self.assertIn("     - 第2章 — p.21-30", manifest)
         self.assertIn("     - 第3章 — p.31-40", manifest)
 
-    def test_renders_notebooklm_fragment_without_label_with_pages_only(self) -> None:
+    def test_renders_chapter_fragment_without_label_with_pages_only(self) -> None:
         manifest = render_plan_manifest(
             pack_name="資料",
             exported_at=datetime(2026, 7, 12, 9, 30),
-            profile_name="notebooklm",
+            profile_name="chapter",
             chunks=[
                 PlanManifestChunk(
                     filename="01_本A_p1-20.pdf",

@@ -8,17 +8,17 @@ from pypdf import PdfReader, PdfWriter
 
 from tsundokensaku.database import PackItemRecord
 from tsundokensaku.export_profiles import (
-    NOTEBOOKLM_ESTIMATED_CHARS_WARNING_GUIDELINE,
-    NOTEBOOKLM_MAX_PAGES_PER_FILE_DEFAULT,
-    NOTEBOOKLM_MAX_SOURCES_DEFAULT,
+    CHAPTER_ESTIMATED_CHARS_WARNING_GUIDELINE,
+    CHAPTER_MAX_PAGES_PER_FILE_DEFAULT,
+    CHAPTER_MAX_SOURCES_DEFAULT,
     PROFILES,
+    ChapterProfile,
     ChatProfile,
     ExportChunk,
     ExportPlan,
     ExportProfile,
     ExportWarning,
     ItemFragment,
-    NotebookLMProfile,
     RenderContext,
     StandardProfile,
     resolve_profile,
@@ -407,10 +407,10 @@ class ProfilesRegistryTest(unittest.TestCase):
         self.assertIsInstance(profile, StandardProfile)
         self.assertEqual(profile.name, "standard")
 
-    def test_notebooklm_is_registered(self) -> None:
-        profile = PROFILES["notebooklm"]
-        self.assertIsInstance(profile, NotebookLMProfile)
-        self.assertEqual(profile.name, "notebooklm")
+    def test_chapter_is_registered(self) -> None:
+        profile = PROFILES["chapter"]
+        self.assertIsInstance(profile, ChapterProfile)
+        self.assertEqual(profile.name, "chapter")
         self.assertEqual(profile.primary_format, "pdf")
 
     def test_chat_is_registered(self) -> None:
@@ -420,25 +420,25 @@ class ProfilesRegistryTest(unittest.TestCase):
         self.assertEqual(profile.primary_format, "md")
 
 
-class NotebookLMProfileTest(unittest.TestCase):
+class ChapterProfileTest(unittest.TestCase):
     def test_basic_attributes(self) -> None:
-        profile = NotebookLMProfile()
-        self.assertEqual(profile.name, "notebooklm")
+        profile = ChapterProfile()
+        self.assertEqual(profile.name, "chapter")
         self.assertEqual(profile.primary_format, "pdf")
-        self.assertIsInstance(PROFILES["notebooklm"], NotebookLMProfile)
+        self.assertIsInstance(PROFILES["chapter"], ChapterProfile)
 
     def test_item_weight_uses_page_count_not_tokens(self) -> None:
         stats = _item_stats(1, page_count=5, cjk_chars=999_999, title="本A")
-        fragment = NotebookLMProfile().split_items([stats])[0]
-        self.assertEqual(NotebookLMProfile().item_weight(fragment), 5)
+        fragment = ChapterProfile().split_items([stats])[0]
+        self.assertEqual(ChapterProfile().item_weight(fragment), 5)
 
     def test_adjacent_same_pdf_items_merge_within_limit(self) -> None:
         items = [
             _item_stats(1, page_count=3, pdf_path="same.pdf", title="前半", position=0),
             _item_stats(2, page_count=4, pdf_path="same.pdf", title="後半", position=1),
         ]
-        with patch.dict("os.environ", {"TSUNDOKENSAKU_NOTEBOOKLM_MAX_PAGES_PER_FILE": "10"}):
-            plan = NotebookLMProfile().plan(items)
+        with patch.dict("os.environ", {"TSUNDOKENSAKU_CHAPTER_MAX_PAGES_PER_FILE": "10"}):
+            plan = ChapterProfile().plan(items)
 
         self.assertEqual(len(plan.chunks), 1)
         self.assertEqual([fragment.item.title for fragment in plan.chunks[0].fragments], ["前半", "後半"])
@@ -449,8 +449,8 @@ class NotebookLMProfileTest(unittest.TestCase):
             _item_stats(1, page_count=3, pdf_path="a.pdf", title="A", position=0),
             _item_stats(2, page_count=3, pdf_path="b.pdf", title="B", position=1),
         ]
-        with patch.dict("os.environ", {"TSUNDOKENSAKU_NOTEBOOKLM_MAX_PAGES_PER_FILE": "10"}):
-            plan = NotebookLMProfile().plan(items)
+        with patch.dict("os.environ", {"TSUNDOKENSAKU_CHAPTER_MAX_PAGES_PER_FILE": "10"}):
+            plan = ChapterProfile().plan(items)
 
         self.assertEqual(len(plan.chunks), 2)
         self.assertEqual([chunk.fragments[0].item.pdf_path for chunk in plan.chunks], ["a.pdf", "b.pdf"])
@@ -461,8 +461,8 @@ class NotebookLMProfileTest(unittest.TestCase):
             _item_stats(2, page_count=2, pdf_path="b.pdf", title="B", position=1),
             _item_stats(3, page_count=2, pdf_path="a.pdf", title="A2", position=2),
         ]
-        with patch.dict("os.environ", {"TSUNDOKENSAKU_NOTEBOOKLM_MAX_PAGES_PER_FILE": "10"}):
-            plan = NotebookLMProfile().plan(items)
+        with patch.dict("os.environ", {"TSUNDOKENSAKU_CHAPTER_MAX_PAGES_PER_FILE": "10"}):
+            plan = ChapterProfile().plan(items)
 
         self.assertEqual(len(plan.chunks), 3)
         self.assertEqual([chunk.fragments[0].item.title for chunk in plan.chunks], ["A1", "B", "A2"])
@@ -476,9 +476,9 @@ class NotebookLMProfileTest(unittest.TestCase):
             _item_stats(1, page_count=3, pdf_path="same.pdf", position=0),
             _item_stats(2, page_count=3, pdf_path="same.pdf", position=1),
         ]
-        with patch.dict("os.environ", {"TSUNDOKENSAKU_NOTEBOOKLM_MAX_PAGES_PER_FILE": "5"}):
-            exact_plan = NotebookLMProfile().plan(exact_items)
-            over_plan = NotebookLMProfile().plan(over_items)
+        with patch.dict("os.environ", {"TSUNDOKENSAKU_CHAPTER_MAX_PAGES_PER_FILE": "5"}):
+            exact_plan = ChapterProfile().plan(exact_items)
+            over_plan = ChapterProfile().plan(over_items)
 
         self.assertEqual(len(exact_plan.chunks), 1)
         self.assertEqual(exact_plan.chunks[0].total_pages, 5)
@@ -494,8 +494,8 @@ class NotebookLMProfileTest(unittest.TestCase):
             unindexed_pages=0,
             missing_pdf=False,
         )
-        with patch.dict("os.environ", {"TSUNDOKENSAKU_NOTEBOOKLM_MAX_PAGES_PER_FILE": "20"}):
-            plan = NotebookLMProfile().plan([first, second])
+        with patch.dict("os.environ", {"TSUNDOKENSAKU_CHAPTER_MAX_PAGES_PER_FILE": "20"}):
+            plan = ChapterProfile().plan([first, second])
 
         self.assertEqual(len(plan.chunks), 1)
         self.assertEqual(plan.chunks[0].total_pages, 14)
@@ -505,8 +505,8 @@ class NotebookLMProfileTest(unittest.TestCase):
 
     def test_single_fragment_exceeding_limit_warns_but_plan_is_generated(self) -> None:
         items = [_item_stats(1, page_count=6, pdf_path="same.pdf", title="巨大本", position=0)]
-        with patch.dict("os.environ", {"TSUNDOKENSAKU_NOTEBOOKLM_MAX_PAGES_PER_FILE": "5"}):
-            plan = NotebookLMProfile().plan(items)
+        with patch.dict("os.environ", {"TSUNDOKENSAKU_CHAPTER_MAX_PAGES_PER_FILE": "5"}):
+            plan = ChapterProfile().plan(items)
 
         self.assertEqual(len(plan.chunks), 2)
         self.assertEqual(plan.chunks[0].total_pages, 5)
@@ -521,15 +521,15 @@ class NotebookLMProfileTest(unittest.TestCase):
             _item_stats(3, page_count=1, pdf_path="c.pdf", position=2),
         ]
         with patch.dict("os.environ", {
-            "TSUNDOKENSAKU_NOTEBOOKLM_MAX_PAGES_PER_FILE": "10",
-            "TSUNDOKENSAKU_NOTEBOOKLM_MAX_SOURCES": "3",
+            "TSUNDOKENSAKU_CHAPTER_MAX_PAGES_PER_FILE": "10",
+            "TSUNDOKENSAKU_CHAPTER_MAX_SOURCES": "3",
         }):
-            no_warning = NotebookLMProfile().plan(items)
+            no_warning = ChapterProfile().plan(items)
         with patch.dict("os.environ", {
-            "TSUNDOKENSAKU_NOTEBOOKLM_MAX_PAGES_PER_FILE": "10",
-            "TSUNDOKENSAKU_NOTEBOOKLM_MAX_SOURCES": "2",
+            "TSUNDOKENSAKU_CHAPTER_MAX_PAGES_PER_FILE": "10",
+            "TSUNDOKENSAKU_CHAPTER_MAX_SOURCES": "2",
         }):
-            warning = NotebookLMProfile().plan(items)
+            warning = ChapterProfile().plan(items)
 
         self.assertFalse(any(entry.code == "too_many_sources" for entry in no_warning.warnings))
         source_warnings = [entry for entry in warning.warnings if entry.code == "too_many_sources"]
@@ -538,19 +538,19 @@ class NotebookLMProfileTest(unittest.TestCase):
         self.assertEqual(len(warning.chunks), 3)
 
     def test_environment_values_are_read_at_call_time(self) -> None:
-        profile = PROFILES["notebooklm"]
+        profile = PROFILES["chapter"]
         items = [
             _item_stats(1, page_count=2, pdf_path="same.pdf", position=0),
             _item_stats(2, page_count=2, pdf_path="same.pdf", position=1),
         ]
         with patch.dict("os.environ", {
-            "TSUNDOKENSAKU_NOTEBOOKLM_MAX_PAGES_PER_FILE": "10",
-            "TSUNDOKENSAKU_NOTEBOOKLM_MAX_SOURCES": "10",
+            "TSUNDOKENSAKU_CHAPTER_MAX_PAGES_PER_FILE": "10",
+            "TSUNDOKENSAKU_CHAPTER_MAX_SOURCES": "10",
         }):
             merged = profile.plan(items)
         with patch.dict("os.environ", {
-            "TSUNDOKENSAKU_NOTEBOOKLM_MAX_PAGES_PER_FILE": "3",
-            "TSUNDOKENSAKU_NOTEBOOKLM_MAX_SOURCES": "1",
+            "TSUNDOKENSAKU_CHAPTER_MAX_PAGES_PER_FILE": "3",
+            "TSUNDOKENSAKU_CHAPTER_MAX_SOURCES": "1",
         }):
             split = profile.plan(items)
 
@@ -559,24 +559,24 @@ class NotebookLMProfileTest(unittest.TestCase):
         self.assertTrue(any(entry.code == "too_many_sources" for entry in split.warnings))
 
     def test_invalid_environment_values_fall_back_to_defaults(self) -> None:
-        profile = NotebookLMProfile()
+        profile = ChapterProfile()
 
         with patch.dict("os.environ", {
-            "TSUNDOKENSAKU_NOTEBOOKLM_MAX_PAGES_PER_FILE": "",
-            "TSUNDOKENSAKU_NOTEBOOKLM_MAX_SOURCES": "abc",
+            "TSUNDOKENSAKU_CHAPTER_MAX_PAGES_PER_FILE": "",
+            "TSUNDOKENSAKU_CHAPTER_MAX_SOURCES": "abc",
         }):
-            self.assertEqual(profile.chunk_limit(), NOTEBOOKLM_MAX_PAGES_PER_FILE_DEFAULT)
-            self.assertEqual(profile.extra_warnings(ExportPlan(profile_name="notebooklm", chunks=(), warnings=())), ())
+            self.assertEqual(profile.chunk_limit(), CHAPTER_MAX_PAGES_PER_FILE_DEFAULT)
+            self.assertEqual(profile.extra_warnings(ExportPlan(profile_name="chapter", chunks=(), warnings=())), ())
 
         with patch.dict("os.environ", {
-            "TSUNDOKENSAKU_NOTEBOOKLM_MAX_PAGES_PER_FILE": "0",
-            "TSUNDOKENSAKU_NOTEBOOKLM_MAX_SOURCES": "-1",
+            "TSUNDOKENSAKU_CHAPTER_MAX_PAGES_PER_FILE": "0",
+            "TSUNDOKENSAKU_CHAPTER_MAX_SOURCES": "-1",
         }):
-            self.assertEqual(profile.chunk_limit(), NOTEBOOKLM_MAX_PAGES_PER_FILE_DEFAULT)
+            self.assertEqual(profile.chunk_limit(), CHAPTER_MAX_PAGES_PER_FILE_DEFAULT)
             warning = profile.extra_warnings(
                 ExportPlan(
-                    profile_name="notebooklm",
-                    chunks=tuple(ExportChunk(index=i, fragments=(), total_pages=0, estimated_tokens=0) for i in range(1, NOTEBOOKLM_MAX_SOURCES_DEFAULT + 2)),
+                    profile_name="chapter",
+                    chunks=tuple(ExportChunk(index=i, fragments=(), total_pages=0, estimated_tokens=0) for i in range(1, CHAPTER_MAX_SOURCES_DEFAULT + 2)),
                     warnings=(),
                 )
             )
@@ -589,14 +589,14 @@ class NotebookLMProfileTest(unittest.TestCase):
                 page_count=10,
                 pdf_path="same.pdf",
                 position=0,
-                cjk_chars=NOTEBOOKLM_ESTIMATED_CHARS_WARNING_GUIDELINE - 1,
+                cjk_chars=CHAPTER_ESTIMATED_CHARS_WARNING_GUIDELINE - 1,
             ),
         ]
         with patch.dict("os.environ", {
-            "TSUNDOKENSAKU_NOTEBOOKLM_MAX_PAGES_PER_FILE": "100",
-            "TSUNDOKENSAKU_NOTEBOOKLM_MAX_SOURCES": "10",
+            "TSUNDOKENSAKU_CHAPTER_MAX_PAGES_PER_FILE": "100",
+            "TSUNDOKENSAKU_CHAPTER_MAX_SOURCES": "10",
         }):
-            plan = NotebookLMProfile().plan(items)
+            plan = ChapterProfile().plan(items)
 
         self.assertFalse(any(entry.code == "estimated_chars_exceed_guideline" for entry in plan.warnings))
 
@@ -607,14 +607,14 @@ class NotebookLMProfileTest(unittest.TestCase):
                 page_count=10,
                 pdf_path="same.pdf",
                 position=0,
-                cjk_chars=NOTEBOOKLM_ESTIMATED_CHARS_WARNING_GUIDELINE,
+                cjk_chars=CHAPTER_ESTIMATED_CHARS_WARNING_GUIDELINE,
             ),
         ]
         with patch.dict("os.environ", {
-            "TSUNDOKENSAKU_NOTEBOOKLM_MAX_PAGES_PER_FILE": "100",
-            "TSUNDOKENSAKU_NOTEBOOKLM_MAX_SOURCES": "10",
+            "TSUNDOKENSAKU_CHAPTER_MAX_PAGES_PER_FILE": "100",
+            "TSUNDOKENSAKU_CHAPTER_MAX_SOURCES": "10",
         }):
-            plan = NotebookLMProfile().plan(items)
+            plan = ChapterProfile().plan(items)
 
         self.assertFalse(any(entry.code == "estimated_chars_exceed_guideline" for entry in plan.warnings))
 
@@ -625,14 +625,14 @@ class NotebookLMProfileTest(unittest.TestCase):
                 page_count=10,
                 pdf_path="same.pdf",
                 position=0,
-                cjk_chars=NOTEBOOKLM_ESTIMATED_CHARS_WARNING_GUIDELINE + 1,
+                cjk_chars=CHAPTER_ESTIMATED_CHARS_WARNING_GUIDELINE + 1,
             ),
         ]
         with patch.dict("os.environ", {
-            "TSUNDOKENSAKU_NOTEBOOKLM_MAX_PAGES_PER_FILE": "100",
-            "TSUNDOKENSAKU_NOTEBOOKLM_MAX_SOURCES": "10",
+            "TSUNDOKENSAKU_CHAPTER_MAX_PAGES_PER_FILE": "100",
+            "TSUNDOKENSAKU_CHAPTER_MAX_SOURCES": "10",
         }):
-            plan = NotebookLMProfile().plan(items)
+            plan = ChapterProfile().plan(items)
 
         self.assertEqual(len(plan.chunks), 1)
         char_warnings = [entry for entry in plan.warnings if entry.code == "estimated_chars_exceed_guideline"]
@@ -646,7 +646,7 @@ class NotebookLMProfileTest(unittest.TestCase):
                 page_count=10,
                 pdf_path="same.pdf",
                 position=0,
-                cjk_chars=NOTEBOOKLM_ESTIMATED_CHARS_WARNING_GUIDELINE - 2,
+                cjk_chars=CHAPTER_ESTIMATED_CHARS_WARNING_GUIDELINE - 2,
             ),
             _item_stats(
                 2,
@@ -657,15 +657,15 @@ class NotebookLMProfileTest(unittest.TestCase):
             ),
         ]
         with patch.dict("os.environ", {
-            "TSUNDOKENSAKU_NOTEBOOKLM_MAX_PAGES_PER_FILE": "100",
-            "TSUNDOKENSAKU_NOTEBOOKLM_MAX_SOURCES": "10",
+            "TSUNDOKENSAKU_CHAPTER_MAX_PAGES_PER_FILE": "100",
+            "TSUNDOKENSAKU_CHAPTER_MAX_SOURCES": "10",
         }):
-            at_guideline = NotebookLMProfile().plan(items)
+            at_guideline = ChapterProfile().plan(items)
         with patch.dict("os.environ", {
-            "TSUNDOKENSAKU_NOTEBOOKLM_MAX_PAGES_PER_FILE": "100",
-            "TSUNDOKENSAKU_NOTEBOOKLM_MAX_SOURCES": "10",
+            "TSUNDOKENSAKU_CHAPTER_MAX_PAGES_PER_FILE": "100",
+            "TSUNDOKENSAKU_CHAPTER_MAX_SOURCES": "10",
         }):
-            over_guideline = NotebookLMProfile().plan([
+            over_guideline = ChapterProfile().plan([
                 items[0],
                 _item_stats(
                     2,
@@ -688,7 +688,7 @@ class NotebookLMProfileTest(unittest.TestCase):
                 page_count=10,
                 pdf_path="same.pdf",
                 position=0,
-                cjk_chars=NOTEBOOKLM_ESTIMATED_CHARS_WARNING_GUIDELINE - 1,
+                cjk_chars=CHAPTER_ESTIMATED_CHARS_WARNING_GUIDELINE - 1,
             ),
             _item_stats(
                 2,
@@ -699,10 +699,10 @@ class NotebookLMProfileTest(unittest.TestCase):
             ),
         ]
         with patch.dict("os.environ", {
-            "TSUNDOKENSAKU_NOTEBOOKLM_MAX_PAGES_PER_FILE": "100",
-            "TSUNDOKENSAKU_NOTEBOOKLM_MAX_SOURCES": "10",
+            "TSUNDOKENSAKU_CHAPTER_MAX_PAGES_PER_FILE": "100",
+            "TSUNDOKENSAKU_CHAPTER_MAX_SOURCES": "10",
         }):
-            plan = NotebookLMProfile().plan(items)
+            plan = ChapterProfile().plan(items)
 
         self.assertEqual(len(plan.chunks), 1)
         self.assertEqual(plan.chunks[0].total_pages, 20)
@@ -717,7 +717,7 @@ class NotebookLMProfileTest(unittest.TestCase):
             total_pages=20,
             estimated_tokens=0,
         )
-        filename = NotebookLMProfile().chunk_filename(chunk, pack_name="資料")
+        filename = ChapterProfile().chunk_filename(chunk, pack_name="資料")
         self.assertEqual(filename, "01_本A_第1章_p1-20.pdf")
 
     def test_chunk_filename_uses_pages_when_single_fragment_has_no_label(self) -> None:
@@ -727,7 +727,7 @@ class NotebookLMProfileTest(unittest.TestCase):
             total_pages=10,
             estimated_tokens=0,
         )
-        filename = NotebookLMProfile().chunk_filename(chunk, pack_name="資料")
+        filename = ChapterProfile().chunk_filename(chunk, pack_name="資料")
         self.assertEqual(filename, "02_本A_p21-30.pdf")
 
     def test_chunk_filename_uses_joined_page_ranges_for_merged_fragments(self) -> None:
@@ -740,7 +740,7 @@ class NotebookLMProfileTest(unittest.TestCase):
             total_pages=14,
             estimated_tokens=0,
         )
-        filename = NotebookLMProfile().chunk_filename(chunk, pack_name="資料")
+        filename = ChapterProfile().chunk_filename(chunk, pack_name="資料")
         self.assertEqual(filename, "03_本A_p1-10_5-8.pdf")
 
     def test_chunk_filename_stays_within_255_bytes_for_long_japanese_title_and_label(self) -> None:
@@ -752,7 +752,7 @@ class NotebookLMProfileTest(unittest.TestCase):
             total_pages=300,
             estimated_tokens=0,
         )
-        filename = NotebookLMProfile().chunk_filename(chunk, pack_name="資料")
+        filename = ChapterProfile().chunk_filename(chunk, pack_name="資料")
         self.assertLessEqual(len(filename.encode("utf-8")), 255)
         self.assertTrue(filename.startswith("01_"))
         self.assertTrue(filename.endswith(".pdf"))
@@ -775,7 +775,7 @@ class NotebookLMProfileTest(unittest.TestCase):
             render_markdown=lambda path, pages: ("", "x.md"),
         )
 
-        rendered = NotebookLMProfile().render_chunk(chunk, ctx)
+        rendered = ChapterProfile().render_chunk(chunk, ctx)
         self.assertEqual(rendered, expected_pdf)
         self.assertEqual(calls, [("a.pdf", "1-2")])
         self.assertEqual(len(PdfReader(BytesIO(rendered)).pages), 2)
@@ -804,7 +804,7 @@ class NotebookLMProfileTest(unittest.TestCase):
             render_markdown=lambda path, pages: ("", "x.md"),
         )
 
-        rendered = NotebookLMProfile().render_chunk(chunk, ctx)
+        rendered = ChapterProfile().render_chunk(chunk, ctx)
         reader = PdfReader(BytesIO(rendered))
         self.assertEqual(calls, ["1-10", "5-8"])
         self.assertEqual(len(reader.pages), 14)
@@ -830,22 +830,22 @@ class NotebookLMProfileTest(unittest.TestCase):
             render_markdown=lambda path, pages: ("", "x.md"),
         )
 
-        rendered = NotebookLMProfile().render_chunk(chunk, ctx)
+        rendered = ChapterProfile().render_chunk(chunk, ctx)
         reader = PdfReader(BytesIO(rendered))
         self.assertEqual(len(reader.pages), 4)
 
     def test_manifest_header_lines_describe_notebooklm_export(self) -> None:
         plan = ExportPlan(
-            profile_name="notebooklm",
+            profile_name="chapter",
             chunks=(ExportChunk(index=1, fragments=(_fragment(1),), total_pages=1, estimated_tokens=0),),
             warnings=(),
         )
-        lines = NotebookLMProfile().manifest_header_lines(plan)
+        lines = ChapterProfile().manifest_header_lines(plan)
         self.assertIn("- NotebookLM向けのPDFです", lines)
         self.assertIn("- 出力ファイル数: 1", lines)
 
 
-class NotebookLMChapterSplitTest(unittest.TestCase):
+class ChapterSplitTest(unittest.TestCase):
     """chapter_loaderを直接モックして章分割ロジックを検証する純粋ユニットテスト。
 
     fitz / PDF ファイルへの依存なしに実行できる。
@@ -873,8 +873,8 @@ class NotebookLMChapterSplitTest(unittest.TestCase):
             return []
 
         items = [_item_stats(1, page_count=3, pdf_path="a.pdf", title="本", position=0)]
-        with patch.dict("os.environ", {"TSUNDOKENSAKU_NOTEBOOKLM_MAX_PAGES_PER_FILE": "5"}):
-            NotebookLMProfile().plan(items, chapter_loader=loader)
+        with patch.dict("os.environ", {"TSUNDOKENSAKU_CHAPTER_MAX_PAGES_PER_FILE": "5"}):
+            ChapterProfile().plan(items, chapter_loader=loader)
 
         self.assertEqual(called, [])
 
@@ -900,8 +900,8 @@ class NotebookLMChapterSplitTest(unittest.TestCase):
             unindexed_pages=0,
             missing_pdf=False,
         )
-        with patch.dict("os.environ", {"TSUNDOKENSAKU_NOTEBOOKLM_MAX_PAGES_PER_FILE": "3"}):
-            fragments, warnings = NotebookLMProfile().split_items_with_warnings(
+        with patch.dict("os.environ", {"TSUNDOKENSAKU_CHAPTER_MAX_PAGES_PER_FILE": "3"}):
+            fragments, warnings = ChapterProfile().split_items_with_warnings(
                 [item_custom], chapter_loader=self._chapter_loader(chapters)
             )
 
@@ -918,8 +918,8 @@ class NotebookLMChapterSplitTest(unittest.TestCase):
         chapters = [self._make_chapter("章A", 3, 8)]
         # 1-10 選択、章Aは 3-8 なので 1,2,9,10 は除外
         items = [_item_stats(1, page_count=10, pdf_path="a.pdf", title="本", position=0)]
-        with patch.dict("os.environ", {"TSUNDOKENSAKU_NOTEBOOKLM_MAX_PAGES_PER_FILE": "5"}):
-            fragments, warnings = NotebookLMProfile().split_items_with_warnings(
+        with patch.dict("os.environ", {"TSUNDOKENSAKU_CHAPTER_MAX_PAGES_PER_FILE": "5"}):
+            fragments, warnings = ChapterProfile().split_items_with_warnings(
                 items, chapter_loader=self._chapter_loader(chapters)
             )
 
@@ -934,8 +934,8 @@ class NotebookLMChapterSplitTest(unittest.TestCase):
     def test_no_outline_fallback_when_chapter_loader_returns_empty(self) -> None:
         """chapter_loader が空リストを返すと no_outline_fallback 警告で連続ページ分割。"""
         items = [_item_stats(1, page_count=8, pdf_path="a.pdf", title="本", position=0)]
-        with patch.dict("os.environ", {"TSUNDOKENSAKU_NOTEBOOKLM_MAX_PAGES_PER_FILE": "5"}):
-            fragments, warnings = NotebookLMProfile().split_items_with_warnings(
+        with patch.dict("os.environ", {"TSUNDOKENSAKU_CHAPTER_MAX_PAGES_PER_FILE": "5"}):
+            fragments, warnings = ChapterProfile().split_items_with_warnings(
                 items, chapter_loader=self._chapter_loader([])
             )
 
@@ -949,8 +949,8 @@ class NotebookLMChapterSplitTest(unittest.TestCase):
     def test_no_outline_fallback_when_chapter_loader_is_none(self) -> None:
         """chapter_loader=None のとき超過項目は no_outline_fallback になる。"""
         items = [_item_stats(1, page_count=6, pdf_path="a.pdf", title="本", position=0)]
-        with patch.dict("os.environ", {"TSUNDOKENSAKU_NOTEBOOKLM_MAX_PAGES_PER_FILE": "4"}):
-            fragments, warnings = NotebookLMProfile().split_items_with_warnings(items, chapter_loader=None)
+        with patch.dict("os.environ", {"TSUNDOKENSAKU_CHAPTER_MAX_PAGES_PER_FILE": "4"}):
+            fragments, warnings = ChapterProfile().split_items_with_warnings(items, chapter_loader=None)
 
         codes = [w.code for w in warnings]
         self.assertIn("no_outline_fallback", codes)
@@ -963,8 +963,8 @@ class NotebookLMChapterSplitTest(unittest.TestCase):
         """章ページ数が上限を超えるとページブロック再分割と chapter_exceeds_limit 警告。"""
         chapters = [self._make_chapter("大章", 1, 12)]
         items = [_item_stats(1, page_count=12, pdf_path="a.pdf", title="本", position=0)]
-        with patch.dict("os.environ", {"TSUNDOKENSAKU_NOTEBOOKLM_MAX_PAGES_PER_FILE": "5"}):
-            fragments, warnings = NotebookLMProfile().split_items_with_warnings(
+        with patch.dict("os.environ", {"TSUNDOKENSAKU_CHAPTER_MAX_PAGES_PER_FILE": "5"}):
+            fragments, warnings = ChapterProfile().split_items_with_warnings(
                 items, chapter_loader=self._chapter_loader(chapters)
             )
 
@@ -984,8 +984,8 @@ class NotebookLMChapterSplitTest(unittest.TestCase):
             self._make_chapter("第2章", 6, 11),
         ]
         items = [_item_stats(1, page_count=11, pdf_path="a.pdf", title="本", position=0)]
-        with patch.dict("os.environ", {"TSUNDOKENSAKU_NOTEBOOKLM_MAX_PAGES_PER_FILE": "6"}):
-            fragments, warnings = NotebookLMProfile().split_items_with_warnings(
+        with patch.dict("os.environ", {"TSUNDOKENSAKU_CHAPTER_MAX_PAGES_PER_FILE": "6"}):
+            fragments, warnings = ChapterProfile().split_items_with_warnings(
                 items, chapter_loader=self._chapter_loader(chapters)
             )
 
@@ -998,8 +998,8 @@ class NotebookLMChapterSplitTest(unittest.TestCase):
         chapters = [self._make_chapter("第1章", 1, 5)]
         items = [_item_stats(1, page_count=10, pdf_path="a.pdf", title="本", position=0)]
         # 第1章: 1-5 ページが交差, 6-10 は章外 → 第1章のみで上限6以内
-        with patch.dict("os.environ", {"TSUNDOKENSAKU_NOTEBOOKLM_MAX_PAGES_PER_FILE": "6"}):
-            fragments, warnings = NotebookLMProfile().split_items_with_warnings(
+        with patch.dict("os.environ", {"TSUNDOKENSAKU_CHAPTER_MAX_PAGES_PER_FILE": "6"}):
+            fragments, warnings = ChapterProfile().split_items_with_warnings(
                 items, chapter_loader=self._chapter_loader(chapters)
             )
 
@@ -1018,8 +1018,8 @@ class NotebookLMChapterSplitTest(unittest.TestCase):
             self._make_chapter("第2章", 6, 10),
         ]
         items = [_item_stats(1, page_count=10, pdf_path="a.pdf", title="本", position=0)]
-        with patch.dict("os.environ", {"TSUNDOKENSAKU_NOTEBOOKLM_MAX_PAGES_PER_FILE": "6"}):
-            fragments, _ = NotebookLMProfile().split_items_with_warnings(
+        with patch.dict("os.environ", {"TSUNDOKENSAKU_CHAPTER_MAX_PAGES_PER_FILE": "6"}):
+            fragments, _ = ChapterProfile().split_items_with_warnings(
                 items, chapter_loader=self._chapter_loader(chapters)
             )
 
@@ -1041,8 +1041,8 @@ class NotebookLMChapterSplitTest(unittest.TestCase):
             unindexed_pages=0,
             missing_pdf=False,
         )
-        with patch.dict("os.environ", {"TSUNDOKENSAKU_NOTEBOOKLM_MAX_PAGES_PER_FILE": "4"}):
-            fragments, warnings = NotebookLMProfile().split_items_with_warnings(
+        with patch.dict("os.environ", {"TSUNDOKENSAKU_CHAPTER_MAX_PAGES_PER_FILE": "4"}):
+            fragments, warnings = ChapterProfile().split_items_with_warnings(
                 [item], chapter_loader=self._chapter_loader(chapters)
             )
 
@@ -1060,8 +1060,8 @@ class NotebookLMChapterSplitTest(unittest.TestCase):
             self._make_chapter("第3章", 8, 10),
         ]
         items = [_item_stats(1, page_count=10, pdf_path="a.pdf", title="本", position=0)]
-        with patch.dict("os.environ", {"TSUNDOKENSAKU_NOTEBOOKLM_MAX_PAGES_PER_FILE": "4"}):
-            fragments, _ = NotebookLMProfile().split_items_with_warnings(
+        with patch.dict("os.environ", {"TSUNDOKENSAKU_CHAPTER_MAX_PAGES_PER_FILE": "4"}):
+            fragments, _ = ChapterProfile().split_items_with_warnings(
                 items, chapter_loader=self._chapter_loader(chapters)
             )
 
@@ -1073,8 +1073,8 @@ class NotebookLMChapterSplitTest(unittest.TestCase):
     def test_fragment_index_and_count_are_correct_after_fallback_split(self) -> None:
         """フォールバック分割後も fragment_index と fragment_count が正確。"""
         items = [_item_stats(1, page_count=11, pdf_path="a.pdf", title="本", position=0)]
-        with patch.dict("os.environ", {"TSUNDOKENSAKU_NOTEBOOKLM_MAX_PAGES_PER_FILE": "5"}):
-            fragments, _ = NotebookLMProfile().split_items_with_warnings(
+        with patch.dict("os.environ", {"TSUNDOKENSAKU_CHAPTER_MAX_PAGES_PER_FILE": "5"}):
+            fragments, _ = ChapterProfile().split_items_with_warnings(
                 items, chapter_loader=self._chapter_loader([])
             )
 
@@ -1093,8 +1093,8 @@ class NotebookLMChapterSplitTest(unittest.TestCase):
             self._make_chapter("第1章 概要", 6, 10),
         ]
         items = [_item_stats(1, page_count=10, pdf_path="a.pdf", title="本", position=0)]
-        with patch.dict("os.environ", {"TSUNDOKENSAKU_NOTEBOOKLM_MAX_PAGES_PER_FILE": "6"}):
-            fragments, _ = NotebookLMProfile().split_items_with_warnings(
+        with patch.dict("os.environ", {"TSUNDOKENSAKU_CHAPTER_MAX_PAGES_PER_FILE": "6"}):
+            fragments, _ = ChapterProfile().split_items_with_warnings(
                 items, chapter_loader=self._chapter_loader(chapters)
             )
 
@@ -1104,8 +1104,8 @@ class NotebookLMChapterSplitTest(unittest.TestCase):
     def test_label_is_partN_when_fallback_split(self) -> None:
         """フォールバック分割フラグメントの label は 'part1', 'part2' ... になる。"""
         items = [_item_stats(1, page_count=9, pdf_path="a.pdf", title="本", position=0)]
-        with patch.dict("os.environ", {"TSUNDOKENSAKU_NOTEBOOKLM_MAX_PAGES_PER_FILE": "5"}):
-            fragments, _ = NotebookLMProfile().split_items_with_warnings(
+        with patch.dict("os.environ", {"TSUNDOKENSAKU_CHAPTER_MAX_PAGES_PER_FILE": "5"}):
+            fragments, _ = ChapterProfile().split_items_with_warnings(
                 items, chapter_loader=self._chapter_loader([])
             )
 
@@ -1117,8 +1117,8 @@ class NotebookLMChapterSplitTest(unittest.TestCase):
         """巨大章のページブロック分割では label に章名が含まれる（'章名 part1' 形式）。"""
         chapters = [self._make_chapter("巨大章", 1, 15)]
         items = [_item_stats(1, page_count=15, pdf_path="a.pdf", title="本", position=0)]
-        with patch.dict("os.environ", {"TSUNDOKENSAKU_NOTEBOOKLM_MAX_PAGES_PER_FILE": "6"}):
-            fragments, _ = NotebookLMProfile().split_items_with_warnings(
+        with patch.dict("os.environ", {"TSUNDOKENSAKU_CHAPTER_MAX_PAGES_PER_FILE": "6"}):
+            fragments, _ = ChapterProfile().split_items_with_warnings(
                 items, chapter_loader=self._chapter_loader(chapters)
             )
 
@@ -1184,8 +1184,8 @@ class NotebookLMChapterSplitTest(unittest.TestCase):
             _item_stats(1, page_count=3, pdf_path="small.pdf", title="小さい本", position=0),
             _item_stats(2, page_count=12, pdf_path="big.pdf", title="大きい本", position=1),
         ]
-        with patch.dict("os.environ", {"TSUNDOKENSAKU_NOTEBOOKLM_MAX_PAGES_PER_FILE": "5"}):
-            fragments, warnings = NotebookLMProfile().split_items_with_warnings(
+        with patch.dict("os.environ", {"TSUNDOKENSAKU_CHAPTER_MAX_PAGES_PER_FILE": "5"}):
+            fragments, warnings = ChapterProfile().split_items_with_warnings(
                 items, chapter_loader=loader
             )
 

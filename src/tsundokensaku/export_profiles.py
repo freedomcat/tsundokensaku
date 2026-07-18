@@ -32,7 +32,7 @@ class ExportWarning:
 class ItemFragment:
     """D-0: plan/render の中間単位。
 
-    現時点では 1資料項目 = 1フラグメントだが、将来の NotebookLM 向け細分化では
+    現時点では 1資料項目 = 1フラグメントだが、chapter プロファイルの細分化では
     ItemStats を壊さずにページ範囲や章名などのラベルを持てるよう、この層を挟む。
     """
 
@@ -124,9 +124,9 @@ def _page_spec_from_numbers(page_numbers: tuple[int, ...]) -> str:
     return compact_page_selection(list(page_numbers)).replace("_", ",")
 
 
-NOTEBOOKLM_MAX_PAGES_PER_FILE_DEFAULT = 300
-NOTEBOOKLM_MAX_SOURCES_DEFAULT = 50
-NOTEBOOKLM_ESTIMATED_CHARS_WARNING_GUIDELINE = 400_000
+CHAPTER_MAX_PAGES_PER_FILE_DEFAULT = 300
+CHAPTER_MAX_SOURCES_DEFAULT = 50
+CHAPTER_ESTIMATED_CHARS_WARNING_GUIDELINE = 400_000
 
 
 def _read_positive_int_env(name: str, default: int) -> int:
@@ -148,7 +148,7 @@ def _read_positive_int_env(name: str, default: int) -> int:
 class ExportProfile(ABC):
     name: str
     # standard は format=pdf|md|json を実行時に選べるため固定値を持たない（None）。
-    # chat/notebooklm は将来それぞれ "md"/"pdf" を固定値として持つ想定
+    # chat/chapter は将来それぞれ "md"/"pdf" を固定値として持つ想定
     # （設計書7.3/7.4）。固定値を持たないプロファイルは、実際に使う形式を
     # RenderContext.format 経由で実行時に受け取る
     primary_format: str | None
@@ -190,7 +190,7 @@ class ExportProfile(ABC):
     # --- 分割判断（plan の基底実装から呼ばれるフック） ---
     @abstractmethod
     def item_weight(self, fragment: ItemFragment) -> int:
-        """分割判断に使う重み（chat=トークン数, notebooklm=ページ数）。"""
+        """分割判断に使う重み（chat=トークン数, chapter=ページ数）。"""
 
     @abstractmethod
     def chunk_limit(self) -> int | None:
@@ -269,7 +269,7 @@ class ExportProfile(ABC):
         return plan
 
     def extra_warnings(self, plan: ExportPlan) -> tuple[ExportWarning, ...]:
-        """プロファイル固有の追加警告（notebooklmのソース数警告等）。既定はなし。"""
+        """プロファイル固有の追加警告（chapterのソース数警告等）。既定はなし。"""
         return ()
 
     # --- 命名 ---
@@ -370,8 +370,8 @@ class ChatProfile(ExportProfile):
         return full_md.encode("utf-8")
 
 
-class NotebookLMProfile(ExportProfile):
-    name = "notebooklm"
+class ChapterProfile(ExportProfile):
+    name = "chapter"
     primary_format = "pdf"
     needs_chapter_loader = True
     manifest_uses_fragment_labels = True
@@ -415,8 +415,8 @@ class NotebookLMProfile(ExportProfile):
 
     def chunk_limit(self) -> int | None:
         return _read_positive_int_env(
-            "TSUNDOKENSAKU_NOTEBOOKLM_MAX_PAGES_PER_FILE",
-            NOTEBOOKLM_MAX_PAGES_PER_FILE_DEFAULT,
+            "TSUNDOKENSAKU_CHAPTER_MAX_PAGES_PER_FILE",
+            CHAPTER_MAX_PAGES_PER_FILE_DEFAULT,
         )
 
     def can_merge(self, current: ExportChunk, fragment: ItemFragment) -> bool:
@@ -427,8 +427,8 @@ class NotebookLMProfile(ExportProfile):
     def extra_warnings(self, plan: ExportPlan) -> tuple[ExportWarning, ...]:
         warnings: list[ExportWarning] = []
         max_sources = _read_positive_int_env(
-            "TSUNDOKENSAKU_NOTEBOOKLM_MAX_SOURCES",
-            NOTEBOOKLM_MAX_SOURCES_DEFAULT,
+            "TSUNDOKENSAKU_CHAPTER_MAX_SOURCES",
+            CHAPTER_MAX_SOURCES_DEFAULT,
         )
         if len(plan.chunks) > max_sources:
             warnings.append(
@@ -444,13 +444,13 @@ class NotebookLMProfile(ExportProfile):
                 fragment.stats.cjk_chars + fragment.stats.other_chars
                 for fragment in chunk.fragments
             )
-            if estimated_chars > NOTEBOOKLM_ESTIMATED_CHARS_WARNING_GUIDELINE:
+            if estimated_chars > CHAPTER_ESTIMATED_CHARS_WARNING_GUIDELINE:
                 warnings.append(
                     ExportWarning(
                         code="estimated_chars_exceed_guideline",
                         item_id=None,
                         message=(
-                            f"分冊 {chunk.index} は推定文字数が{NOTEBOOKLM_ESTIMATED_CHARS_WARNING_GUIDELINE:,}字の目安を超えています"
+                            f"分冊 {chunk.index} は推定文字数が{CHAPTER_ESTIMATED_CHARS_WARNING_GUIDELINE:,}字の目安を超えています"
                         ),
                     )
                 )
@@ -593,7 +593,7 @@ class NotebookLMProfile(ExportProfile):
 
 PROFILES: dict[str, ExportProfile] = {
     profile.name: profile
-    for profile in (StandardProfile(), NotebookLMProfile(), ChatProfile())
+    for profile in (StandardProfile(), ChapterProfile(), ChatProfile())
 }
 
 

@@ -84,7 +84,7 @@ DEFAULT_BOOKS_DIR = Path("data/books")
 CONTAINER_BOOKS_DIRS = (Path("/data/books"), Path("/books/tech"))
 DEFAULT_DB_PATH = Path("data/index.db")
 PDF_EXPORT_SAVE_DIR_ENV = "PDF_EXPORT_SAVE_DIR"
-EXTERNALLY_AVAILABLE_EXPORT_PROFILES = frozenset({"standard", "chat", "notebooklm"})
+EXTERNALLY_AVAILABLE_EXPORT_PROFILES = frozenset({"standard", "chat", "chapter"})
 
 
 def _find_project_root() -> Path:
@@ -1515,7 +1515,7 @@ def _export_pack_archive(pack, items: list, *, format: str, profile: ExportProfi
         # バイト互換を守る（設計書 10.3）
         zip_bytes = build_pack_zip(pack_name=pack.name, entries=entries, exported_at=exported_at)
     else:
-        # 複数項目チャンク（chat の分冊・notebooklm の結合）でも項目内訳が
+        # 複数項目チャンク（chat の分冊・chapter の結合）でも項目内訳が
         # 失われないよう、ExportPlan から組み立てた manifest を使う。
         # plan の警告（item_exceeds_limit 等）もここに記載する（設計書 14）
         manifest = render_plan_manifest(
@@ -1558,7 +1558,7 @@ def api_export_pack(pack_id: int, profile: str | None = None, format: str | None
         raise HTTPException(status_code=400, detail="format は pdf, md, または json を指定してください")
 
     # standard は primary_format=None（format を実行時に選べる）ため、この時点では
-    # 常にスキップされる。chat/notebooklm 追加時に固定形式との矛盾を弾く構造だけ
+    # 常にスキップされる。chat/chapter 追加時に固定形式との矛盾を弾く構造だけ
     # 用意しておく（B-3では仮実装や分岐を追加しない）
     if resolved_profile.primary_format is not None and format != resolved_profile.primary_format:
         raise HTTPException(
