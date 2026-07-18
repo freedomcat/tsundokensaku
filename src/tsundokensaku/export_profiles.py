@@ -153,6 +153,15 @@ class ExportProfile(ABC):
     # RenderContext.format 経由で実行時に受け取る
     primary_format: str | None
 
+    # --- 能力フラグ（web.py が profile 名の文字列比較で分岐しないための宣言） ---
+    # プレビュー・manifest を ExportPlan 由来で組み立てるか。False は現行の
+    # バイト互換経路（build_export_preview_payload / build_pack_zip）を使う
+    uses_plan_output: bool = True
+    # plan 時に PDF アウトライン（章）情報を必要とするか
+    needs_chapter_loader: bool = False
+    # manifest の項目内訳に章ラベル付きの形式（PlanManifestChunk）を使うか
+    manifest_uses_fragment_labels: bool = False
+
     # --- 概算 ---
     def estimator(self) -> TokenEstimator:
         return estimate_tokens
@@ -297,6 +306,8 @@ class StandardProfile(ExportProfile):
 
     name = "standard"
     primary_format = None
+    # バイト互換を守るため、プレビュー・ZIP とも現行経路を使う
+    uses_plan_output = False
 
     def item_weight(self, fragment: ItemFragment) -> int:
         return len(fragment.page_numbers)
@@ -362,6 +373,8 @@ class ChatProfile(ExportProfile):
 class NotebookLMProfile(ExportProfile):
     name = "notebooklm"
     primary_format = "pdf"
+    needs_chapter_loader = True
+    manifest_uses_fragment_labels = True
 
     def item_weight(self, fragment: ItemFragment) -> int:
         return len(fragment.page_numbers)

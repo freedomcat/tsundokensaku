@@ -1376,11 +1376,11 @@ def api_preview_pack_export(pack_id: int, profile: str | None = None) -> JSONRes
     finally:
         connection.close()
 
-    if resolved_profile.name == "standard":
+    if not resolved_profile.uses_plan_output:
         return JSONResponse(build_export_preview_payload(item_stats))
 
     chapter_loader = None
-    if resolved_profile.name == "notebooklm":
+    if resolved_profile.needs_chapter_loader:
         chapter_loader = lambda pdf_path: list_chapters(_resolve_pdf_file_or_404(str(pdf_path), get_books_dir()))
 
     return JSONResponse(
@@ -1463,7 +1463,7 @@ def _export_pack_archive(pack, items: list, *, format: str, profile: ExportProfi
         item_stats = [_placeholder_item_stats_for_export(item) for item in items]
 
     chapter_loader = None
-    if profile.name == "notebooklm":
+    if profile.needs_chapter_loader:
         chapter_loader = lambda pdf_path: list_chapters(_resolve_pdf_file_or_404(str(pdf_path), books_dir))
 
     plan = profile.plan(item_stats, chapter_loader=chapter_loader)
@@ -1493,7 +1493,7 @@ def _export_pack_archive(pack, items: list, *, format: str, profile: ExportProfi
                 content=profile.render_chunk(chunk, ctx),
             )
         )
-        if profile.name == "notebooklm":
+        if profile.manifest_uses_fragment_labels:
             manifest_chunks.append(
                 PlanManifestChunk(
                     filename=filename,
@@ -1510,7 +1510,7 @@ def _export_pack_archive(pack, items: list, *, format: str, profile: ExportProfi
         else:
             manifest_chunks.append((filename, [(fragment.item.title, fragment.page_spec) for fragment in chunk.fragments]))
 
-    if profile.name == "standard":
+    if not profile.uses_plan_output:
         # 現行 manifest（PackExportEntry 前提、1項目=1エントリ）をそのまま使い
         # バイト互換を守る（設計書 10.3）
         zip_bytes = build_pack_zip(pack_name=pack.name, entries=entries, exported_at=exported_at)
