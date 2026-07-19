@@ -1033,6 +1033,28 @@ class PackTest(unittest.TestCase):
             self.assertEqual([item.pages for item in items], ["1", "2"])
             connection.close()
 
+    def test_book_count_counts_distinct_pdf_path_not_item_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            connection = self._make_connection(temp_dir)
+            pack_id = create_pack(connection, name="重複PDFテスト")
+
+            # 同一pdf_pathを持つ項目2件+別pdf_path1件 → 冊数は2（項目数3とは異なる）
+            items_payload = [
+                {"pdf_path": "books/a.pdf", "title": "本A-前半", "pages": "1-5", "collapsed": False},
+                {"pdf_path": "books/a.pdf", "title": "本A-後半", "pages": "10-15", "collapsed": False},
+                {"pdf_path": "books/b.pdf", "title": "本B", "pages": "1-3", "collapsed": False},
+            ]
+            replace_pack_item_entries(connection, pack_id, items_payload)
+
+            pack = get_pack(connection, pack_id)
+            self.assertEqual(pack.book_count, 2)
+            self.assertEqual(len(get_pack_items(connection, pack_id)), 3)
+
+            packs = list_packs(connection)
+            listed = next(p for p in packs if p.id == pack_id)
+            self.assertEqual(listed.book_count, 2)
+            connection.close()
+
     def test_phase2_item_id_operations(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             connection = self._make_connection(temp_dir)

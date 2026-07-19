@@ -961,7 +961,7 @@ def get_pack(connection: sqlite3.Connection, pack_id: int) -> PackRecord | None:
     row = connection.execute(
         """
         SELECT p.id, p.name, p.note, p.created_at, p.updated_at, p.archived_at,
-               (SELECT COUNT(*) FROM pack_items i WHERE i.pack_id = p.id) AS book_count
+               (SELECT COUNT(DISTINCT i.pdf_path) FROM pack_items i WHERE i.pack_id = p.id) AS book_count
         FROM packs p
         WHERE p.id = ?
         """,
@@ -976,7 +976,7 @@ def list_packs(connection: sqlite3.Connection) -> list[PackRecord]:
     rows = connection.execute(
         """
         SELECT p.id, p.name, p.note, p.created_at, p.updated_at, p.archived_at,
-               (SELECT COUNT(*) FROM pack_items i WHERE i.pack_id = p.id) AS book_count
+               (SELECT COUNT(DISTINCT i.pdf_path) FROM pack_items i WHERE i.pack_id = p.id) AS book_count
         FROM packs p
         WHERE p.archived_at IS NULL
         ORDER BY p.updated_at DESC, p.id DESC
