@@ -28,9 +28,7 @@
     <span class="pill" id="ws-count"></span>
     <span class="pill" id="ws-export-preview" hidden></span>
     <button type="button" id="ws-add-open">ページを追加</button>
-    <button type="button" class="primary" id="ws-export-ai">AI向けに書き出す</button>
-    <button type="button" id="ws-export-pdf">PDF一式を書き出す</button>
-    <button type="button" id="ws-export-md">MD一式を書き出す</button>
+    <button type="button" class="primary" id="ws-export">書き出す</button>
     <span class="ws-status" id="ws-status"></span>
   </div>
 </section>
@@ -151,9 +149,7 @@
     const emptyMessage = document.getElementById('ws-empty');
     const countBadge = document.getElementById('ws-count');
     const exportPreviewBadge = document.getElementById('ws-export-preview');
-    const exportAiButton = document.getElementById('ws-export-ai');
-    const exportPdfButton = document.getElementById('ws-export-pdf');
-    const exportMdButton = document.getElementById('ws-export-md');
+    const exportButton = document.getElementById('ws-export');
     const exportJsonButton = document.getElementById('ws-export-json');
     const importJsonButton = document.getElementById('ws-import-json');
     const importFileInput = document.getElementById('ws-import-file-input');
@@ -195,6 +191,8 @@
 
     function refreshSummary() {
       const cart = TsundokuCart.load();
+      // hasPack は資料そのものが選択されているか、count は選択中資料の項目数を表す。
+      // 中身が空の資料でも書き出しモーダルは開け、実行はモーダル内の empty_pack 警告でブロックする。
       const hasPack = TsundokuCart.getActivePack() !== null;
       const count = TsundokuCart.bookCount(cart);
       countBadge.textContent = hasPack ? TsundokuCart.summaryLabel(cart) : '';
@@ -203,8 +201,8 @@
       countBadge.hidden = !hasPack || !exportPreviewBadge.hidden;
       emptyMessage.hidden = !hasPack || count > 0;
       // noPackSection / noActivePackSection の表示は資料一覧の有無が絡むため refreshPackBar 側で判定する
-      exportAiButton.disabled = !hasPack;
-      for (const button of [exportPdfButton, exportMdButton, exportJsonButton, clearButton, addOpenButton]) {
+      exportButton.disabled = !hasPack;
+      for (const button of [exportJsonButton, clearButton, addOpenButton]) {
         button.disabled = !hasPack || count === 0;
       }
       importJsonButton.disabled = !hasPack;
@@ -692,7 +690,7 @@
           return false;
         }
       }
-      const buttons = [exportAiButton, exportPdfButton, exportMdButton, exportJsonButton, clearButton];
+      const buttons = [exportButton, exportJsonButton, clearButton];
       for (const button of buttons) {
         button.disabled = true;
       }
@@ -860,7 +858,7 @@
       exportModalPackId = null;
       exportModal.classList.remove('open');
       exportModal.setAttribute('aria-hidden', 'true');
-      exportAiButton.focus();
+      exportButton.focus();
     }
 
     async function runProfileExport() {
@@ -1081,7 +1079,7 @@
     addResults.addEventListener('change', updateAddSubmitState);
     addSubmitButton.addEventListener('click', addSelectedPages);
 
-    exportAiButton.addEventListener('click', openExportModal);
+    exportButton.addEventListener('click', openExportModal);
     exportCloseButton.addEventListener('click', closeExportModal);
     exportCancelButton.addEventListener('click', closeExportModal);
     exportSubmitButton.addEventListener('click', () => void runProfileExport());
@@ -1107,14 +1105,6 @@
         event.preventDefault();
         first.focus();
       }
-    });
-
-    exportPdfButton.addEventListener('click', () => {
-      void exportPack({ format: 'pdf' });
-    });
-
-    exportMdButton.addEventListener('click', () => {
-      void exportPack({ format: 'md' });
     });
 
     exportJsonButton.addEventListener('click', () => {

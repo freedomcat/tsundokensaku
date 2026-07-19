@@ -11,7 +11,7 @@ async function exportWorkspaceAs(page, optionLabel) {
   const expected = EXPORT_OPTIONS[optionLabel];
   if (!expected) throw new Error(`未知の書き出し方式: ${optionLabel}`);
 
-  await page.locator('#ws-export-ai').click();
+  await page.getByRole('button', { name: '書き出す', exact: true }).click();
   const modal = page.locator('#ws-export-modal');
   await expect(modal).toHaveClass(/open/);
   await modal.getByRole('radio', { name: optionLabel, exact: false }).check();
