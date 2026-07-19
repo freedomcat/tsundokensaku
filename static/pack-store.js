@@ -375,7 +375,8 @@ window.TsundokuCart = (() => {
     if (!badge) {
       return;
     }
-    const count = bookCount(cache);
+    // 資料棚・資料一覧の「冊数」と揃え、同じPDFを複数項目に追加しても1冊と数える。
+    const count = new Set(normalizeCart(cache).items.map((item) => item.pdf_path)).size;
     badge.textContent = `${count}件`;
     badge.hidden = count === 0;
   }

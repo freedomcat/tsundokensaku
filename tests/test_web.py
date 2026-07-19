@@ -506,11 +506,18 @@ class HighlightQueryTest(unittest.TestCase):
         self.assertIn('class="card ws-controls-card"', body)
         self.assertIn('.ws-controls-card { position: relative; z-index: 1; overflow: visible; }', body)
         self.assertIn('id="ws-management"', body)
+        self.assertEqual(body.count('id="ws-management"'), 1)
+        self.assertIn("新しい資料", body)
+        self.assertIn("名前を変更", body)
         self.assertIn("バックアップ", body)
+        self.assertIn("危険な操作", body)
         self.assertIn("この資料を空にする", body)
+        self.assertNotIn('id="ws-pack-delete"', body)
         self.assertIn('id="ws-count"', body)
         self.assertIn('id="ws-export-preview"', body)
-        self.assertIn('href="/">検索画面で本を探す', body)
+        self.assertIn('id="ws-pack-list-link" href="/packs">資料一覧へ', body)
+        self.assertIn('id="ws-add-open">資料内からページを追加', body)
+        self.assertIn('id="ws-search-link" href="/">検索画面で本を探す', body)
         self.assertIn('id="ws-export"', body)
         self.assertNotIn("ws-export-pdf", body)
         self.assertNotIn("ws-export-md", body)
@@ -519,7 +526,6 @@ class HighlightQueryTest(unittest.TestCase):
         self.assertIn("章単位PDF", body)
         self.assertIn("PDF一式", body)
         self.assertIn("Markdown一式", body)
-        self.assertIn('href="/packs">資料一覧へ戻る', body)
 
     def test_pack_list_page_renders(self) -> None:
         from unittest.mock import MagicMock

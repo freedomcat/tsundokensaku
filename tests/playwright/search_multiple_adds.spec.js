@@ -52,6 +52,75 @@ test.describe('Search multiple additions (Phase 3A E2E)', () => {
     });
   });
 
+  test('uses workspace header links and management menu', async ({ page }) => {
+    await page.goto('http://localhost:8003/workspace');
+
+    await expect(page.locator('#ws-pack-list-link')).toBeVisible();
+    await expect(page.locator('#ws-add-open')).toBeVisible();
+    await expect(page.locator('#ws-search-link')).toBeVisible();
+    await expect(page.locator('#ws-pack-delete')).toHaveCount(0);
+    await expect(page.locator('details#ws-management')).toHaveCount(1);
+
+    await page.locator('#ws-pack-list-link').click();
+    await expect(page).toHaveURL(/\/packs$/);
+
+    await page.goto('http://localhost:8003/workspace');
+    await page.locator('#ws-management > summary').click();
+    page.once('dialog', (dialog) => dialog.accept('Phase2Dヘッダー資料'));
+    await page.locator('#ws-pack-new').click();
+    await expect(page.locator('#ws-pack-select')).toContainText('Phase2Dヘッダー資料');
+
+    page.once('dialog', (dialog) => dialog.accept('Phase2D改名資料'));
+    await page.locator('#ws-pack-rename').click();
+    await expect(page.locator('#ws-pack-select')).toContainText('Phase2D改名資料');
+  });
+
+  test('keeps the selected pack control within the viewport on narrow screens', async ({ page }) => {
+    const originalViewport = page.viewportSize();
+    await page.setViewportSize({ width: 375, height: 812 });
+    try {
+      await page.evaluate(async () => {
+        const name = 'Phase2D狭幅表示を確認するための非常に長い資料名です。横幅を超えずに選択できます';
+        const response = await fetch('/api/packs', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name }),
+        });
+        const pack = await response.json();
+        await window.TsundokuCart.activatePack(pack.id);
+      });
+      await page.goto('http://localhost:8003/workspace');
+
+      const dimensions = await page.locator('#ws-pack-select').evaluate((select) => {
+        const card = select.closest('.ws-controls-card');
+        const field = document.getElementById('ws-pack-select-field');
+        const label = field?.querySelector('span');
+        const rect = (element) => {
+          const box = element.getBoundingClientRect();
+          return { left: box.left, right: box.right, width: box.width, height: box.height };
+        };
+        return {
+          viewportWidth: window.innerWidth,
+          documentWidth: document.documentElement.scrollWidth,
+          card: rect(card),
+          field: rect(field),
+          select: rect(select),
+          label: rect(label),
+        };
+      });
+
+      expect(dimensions.select.right).toBeLessThanOrEqual(dimensions.card.right + 0.5);
+      expect(dimensions.select.right).toBeLessThanOrEqual(dimensions.viewportWidth + 0.5);
+      expect(dimensions.field.right).toBeLessThanOrEqual(dimensions.card.right + 0.5);
+      expect(dimensions.label.height).toBeLessThanOrEqual(dimensions.label.width);
+      expect(dimensions.documentWidth).toBeLessThanOrEqual(dimensions.viewportWidth);
+    } finally {
+      if (originalViewport) {
+        await page.setViewportSize(originalViewport);
+      }
+    }
+  });
+
   test('adds the same PDF multiple times from search results and verifies independent identities', async ({ page }) => {
     // 1. 検索画面へ遷移（確実にヒットする "バザール" で検索）
     await page.goto('http://localhost:8003/search?q=バザール');
@@ -90,6 +159,7 @@ test.describe('Search multiple additions (Phase 3A E2E)', () => {
 
     const cards = page.locator('.ws-book');
     await expect(cards).toHaveCount(2);
+    await expect(page.locator('#nav-workspace-count')).toHaveText('1件');
 
     const title1 = await cards.nth(0).locator('.ws-book-title').textContent();
     const title2 = await cards.nth(1).locator('.ws-book-title').textContent();
