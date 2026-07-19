@@ -12,18 +12,24 @@
     <button type="button" id="ws-pack-new">新しい資料</button>
     <button type="button" id="ws-pack-rename">名前を変更</button>
     <button type="button" id="ws-pack-delete">資料を削除</button>
+    <details class="ws-management" id="ws-management">
+      <summary>⋯ 管理</summary>
+      <div class="ws-management-menu">
+        <div class="ws-management-heading">バックアップ</div>
+        <button type="button" id="ws-export-json" title="PDF本体ではなく、資料の構成・ページ範囲・並び順をJSONで保存します">資料データを書き出す</button>
+        <button type="button" id="ws-import-json" title="つんどけんさくで書き出したJSONから資料を復元します">資料データを読み込む</button>
+        <hr>
+        <button type="button" class="ws-management-danger" id="ws-clear">この資料を空にする</button>
+      </div>
+    </details>
+    <input type="file" id="ws-import-file-input" accept=".json,application/json" style="display:none">
   </div>
   <div class="ws-toolbar">
-    <span class="pill" id="ws-count"></span>
-    <span class="pill" id="ws-export-preview" hidden></span>
+    <span class="pill" id="ws-summary" hidden></span>
     <button type="button" id="ws-add-open">ページを追加</button>
     <button type="button" class="primary" id="ws-export-ai">AI向けに書き出す</button>
-    <button type="button" class="primary" id="ws-export-pdf">PDF一式を書き出す</button>
+    <button type="button" id="ws-export-pdf">PDF一式を書き出す</button>
     <button type="button" id="ws-export-md">MD一式を書き出す</button>
-    <button type="button" id="ws-export-json" title="PDF本体ではなく、資料の構成・ページ範囲・並び順をJSONで保存します">資料データを書き出す</button>
-    <button type="button" id="ws-import-json" title="つんどけんさくで書き出したJSONから資料を復元します">資料データを読み込む</button>
-    <input type="file" id="ws-import-file-input" accept=".json,application/json" style="display:none">
-    <button type="button" id="ws-clear">この資料を空にする</button>
     <span class="ws-status" id="ws-status"></span>
   </div>
 </section>
@@ -101,11 +107,33 @@
   .ws-export-chunks strong { overflow-wrap: anywhere; }
   .ws-export-chunk-items { margin: 6px 0 0; padding-left: 1.25rem; display: grid; gap: 4px; }
   #ws-export-warnings { margin: 0; padding-left: 1.5rem; }
+  .ws-management { position: relative; }
+  .ws-management > summary { cursor: pointer; }
+  .ws-management-menu {
+    position: absolute;
+    z-index: 2;
+    top: calc(100% + 6px);
+    right: 0;
+    min-width: 220px;
+    padding: 10px;
+    display: grid;
+    gap: 8px;
+    background: var(--surface, white);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    box-shadow: 0 8px 20px rgba(0, 0, 0, 0.12);
+  }
+  .ws-management-heading { color: var(--muted); font-size: 0.82rem; }
+  .ws-management-menu hr { width: 100%; margin: 2px 0; border: 0; border-top: 1px solid var(--border); }
+  .ws-management-danger { color: #b91c1c; }
 </style>
 
 <section class="card">
   <div id="ws-books"></div>
-  <p class="muted" id="ws-empty" hidden>この資料は空です。検索結果の「資料に追加」からページを追加してください。</p>
+  <div class="muted" id="ws-empty" hidden>
+    <p style="margin: 0 0 10px;">この資料は空です。検索結果からページを追加してください。</p>
+    <a class="button" href="/">検索画面で本を探す</a>
+  </div>
   <div id="ws-no-pack" hidden>
     <p class="muted" style="margin: 0 0 10px;">資料はまだありません。</p>
     <button type="button" class="primary" id="ws-no-pack-new">＋ 新しい資料</button>
@@ -119,8 +147,7 @@
   (() => {
     const booksContainer = document.getElementById('ws-books');
     const emptyMessage = document.getElementById('ws-empty');
-    const countBadge = document.getElementById('ws-count');
-    const exportPreviewBadge = document.getElementById('ws-export-preview');
+    const summaryBadge = document.getElementById('ws-summary');
     const exportAiButton = document.getElementById('ws-export-ai');
     const exportPdfButton = document.getElementById('ws-export-pdf');
     const exportMdButton = document.getElementById('ws-export-md');
@@ -166,8 +193,8 @@
       const cart = TsundokuCart.load();
       const hasPack = TsundokuCart.getActivePack() !== null;
       const count = TsundokuCart.bookCount(cart);
-      countBadge.textContent = hasPack ? TsundokuCart.summaryLabel(cart) : '';
-      countBadge.hidden = !hasPack;
+      summaryBadge.textContent = hasPack ? TsundokuCart.summaryLabel(cart) : '';
+      summaryBadge.hidden = !hasPack;
       emptyMessage.hidden = !hasPack || count > 0;
       // noPackSection / noActivePackSection の表示は資料一覧の有無が絡むため refreshPackBar 側で判定する
       exportAiButton.disabled = !hasPack;
@@ -193,18 +220,18 @@
       const summary = `${preview.book_count}冊・${preview.item_count}項目・${preview.total_pages}ページ・${formatApproxTokenCount(preview.estimated_tokens)}`;
       // empty_pack は「0件」を表すだけで未集計の欠落ではないので、一部未集計扱いにしない
       const gapWarnings = (preview.warnings || []).filter((warning) => warning.code !== 'empty_pack');
-      exportPreviewBadge.textContent = gapWarnings.length > 0 ? `${summary}（一部未集計）` : summary;
-      exportPreviewBadge.title = gapWarnings.map((warning) => warning.message).join('\n');
-      exportPreviewBadge.classList.remove('muted');
-      exportPreviewBadge.hidden = false;
+      summaryBadge.textContent = gapWarnings.length > 0 ? `${summary}（一部未集計）` : summary;
+      summaryBadge.title = gapWarnings.map((warning) => warning.message).join('\n');
+      summaryBadge.classList.remove('muted');
+      summaryBadge.hidden = false;
     }
 
     function showExportPreviewError() {
       // 画面全体のエラーにはせず、この要約表示だけ控えめな状態にする
-      exportPreviewBadge.textContent = '概算を取得できませんでした';
-      exportPreviewBadge.title = '';
-      exportPreviewBadge.classList.add('muted');
-      exportPreviewBadge.hidden = false;
+      summaryBadge.textContent = '概算を取得できませんでした';
+      summaryBadge.title = '';
+      summaryBadge.classList.add('muted');
+      summaryBadge.hidden = false;
     }
 
     async function fetchExportPreview(profile) {
@@ -225,7 +252,7 @@
     async function refreshExportPreview() {
       const pack = TsundokuCart.getActivePack();
       if (!pack) {
-        exportPreviewBadge.hidden = true;
+        summaryBadge.hidden = true;
         return;
       }
       try {
@@ -1256,6 +1283,7 @@
 
     renderAll();
     void refreshPackBar();
+    void refreshExportPreview();
   })();
 </script>
 {% endblock %}
