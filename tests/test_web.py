@@ -12,6 +12,7 @@ import json
 from pypdf import PdfReader, PdfWriter
 
 from fastapi import HTTPException
+from fastapi.testclient import TestClient
 
 from tsundokensaku.web import (
     api_activate_pack,
@@ -20,6 +21,7 @@ from tsundokensaku.web import (
     api_export_pack,
     api_get_pack,
     api_import_pack,
+    api_list_pack_stats,
     api_list_packs,
     api_preview_pack_export,
     api_replace_pack_books,
@@ -52,8 +54,10 @@ from tsundokensaku.web import (
     update_pdf_export_save_dir,
     upload_pdf,
     upload_scrapbox_json,
+    pack_list_page,
     workspace_page,
 )
+from tsundokensaku.web import app as tsundokensaku_app
 from tsundokensaku.database import PackItemRecord, connect, initialize, upsert_book
 from tsundokensaku.export_stats import ItemStats
 from tsundokensaku.token_estimate import TextStats
@@ -515,6 +519,21 @@ class HighlightQueryTest(unittest.TestCase):
         self.assertIn("章単位PDF", body)
         self.assertIn("PDF一式", body)
         self.assertIn("Markdown一式", body)
+        self.assertIn('href="/packs">資料一覧へ戻る', body)
+
+    def test_pack_list_page_renders(self) -> None:
+        from unittest.mock import MagicMock
+
+        request = MagicMock()
+        request.url.path = "/packs"
+        response = pack_list_page(request)
+
+        self.assertEqual(response.status_code, 200)
+        body = response.body.decode("utf-8")
+        self.assertIn("資料一覧", body)
+        self.assertIn("/api/packs/stats", body)
+        self.assertIn('id="pl-list"', body)
+        self.assertIn('id="pl-delete-selected"', body)
 
     def test_search_pages_returns_matching_pages_with_snippets(self) -> None:
         from tsundokensaku.database import PageRecord, replace_pages
@@ -1458,6 +1477,161 @@ class PackApiTest(unittest.TestCase):
                 with self.assertRaises(HTTPException) as ctx:
                     api_export_pack(created["id"], format="pdf")
                 self.assertEqual(ctx.exception.status_code, 400)
+
+
+class PackStatsApiTest(unittest.TestCase):
+    """Phase 2C: GET /api/packs/stats の集計内容そのものの正しさ。"""
+
+    def _payload(self, response) -> dict:
+        return json.loads(response.body)
+
+    def _make_pdf(self, path: Path, page_count: int) -> None:
+        writer = PdfWriter()
+        for _ in range(page_count):
+            writer.add_blank_page(width=72, height=72)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("wb") as handle:
+            writer.write(handle)
+
+    def _index_pages(self, db_path: Path, pdf_path: Path, *, title: str, texts: list[str]) -> None:
+        from tsundokensaku.database import PageRecord, replace_pages
+
+        connection = connect(db_path)
+        initialize(connection)
+        book_id = upsert_book(
+            connection,
+            path=pdf_path,
+            title=title,
+            size_bytes=pdf_path.stat().st_size,
+            modified_at=pdf_path.stat().st_mtime,
+        )
+        replace_pages(
+            connection,
+            book_id=book_id,
+            title=title,
+            pages=[PageRecord(page_number=index, text=text) for index, text in enumerate(texts, start=1)],
+        )
+        connection.commit()
+        connection.close()
+
+    def test_returns_item_count_pages_and_estimated_tokens(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            db_path = root / "index.db"
+            books_dir = root / "books"
+            self._make_pdf(books_dir / "a.pdf", 5)
+            self._index_pages(
+                db_path, books_dir / "a.pdf", title="本A",
+                texts=["あ" * 10 for _ in range(5)],
+            )
+
+            with (
+                patch("tsundokensaku.web.get_db_path", return_value=db_path),
+                patch("tsundokensaku.web.get_books_dir", return_value=books_dir),
+            ):
+                created = self._payload(api_create_pack({"name": "統計テスト資料"}))
+                items = [{"pdf_path": "a.pdf", "title": "本A", "pages": "1-3", "collapsed": False, "position": 0}]
+                self._payload(api_replace_pack_items(created["id"], {"items": items}))
+
+                payload = self._payload(api_list_pack_stats())
+
+            pack = next(p for p in payload["packs"] if p["id"] == created["id"])
+            self.assertEqual(pack["book_count"], 1)
+            self.assertEqual(pack["item_count"], 1)
+            self.assertEqual(pack["total_pages"], 3)
+            self.assertGreater(pack["estimated_tokens"], 0)
+
+    def test_duplicate_pdf_path_counts_as_one_book_but_two_items(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            db_path = root / "index.db"
+            books_dir = root / "books"
+            self._make_pdf(books_dir / "a.pdf", 20)
+            self._index_pages(
+                db_path, books_dir / "a.pdf", title="本A",
+                texts=["あ" * 10 for _ in range(20)],
+            )
+
+            with (
+                patch("tsundokensaku.web.get_db_path", return_value=db_path),
+                patch("tsundokensaku.web.get_books_dir", return_value=books_dir),
+            ):
+                created = self._payload(api_create_pack({"name": "分冊資料"}))
+                items = [
+                    {"pdf_path": "a.pdf", "title": "本A-前半", "pages": "1-5", "collapsed": False, "position": 0},
+                    {"pdf_path": "a.pdf", "title": "本A-後半", "pages": "10-15", "collapsed": False, "position": 1},
+                ]
+                self._payload(api_replace_pack_items(created["id"], {"items": items}))
+
+                payload = self._payload(api_list_pack_stats())
+
+            pack = next(p for p in payload["packs"] if p["id"] == created["id"])
+            self.assertEqual(pack["book_count"], 1)
+            self.assertEqual(pack["item_count"], 2)
+            self.assertEqual(pack["total_pages"], 11)
+
+    def test_empty_pack_returns_zeroed_stats(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "index.db"
+            with patch("tsundokensaku.web.get_db_path", return_value=db_path):
+                created = self._payload(api_create_pack({"name": "空の資料"}))
+                payload = self._payload(api_list_pack_stats())
+
+            pack = next(p for p in payload["packs"] if p["id"] == created["id"])
+            self.assertEqual(pack["book_count"], 0)
+            self.assertEqual(pack["item_count"], 0)
+            self.assertEqual(pack["total_pages"], 0)
+            self.assertEqual(pack["estimated_tokens"], 0)
+
+
+class PackStatsRoutingTest(unittest.TestCase):
+    """Phase 2C: /api/packs/stats が /api/packs/{pack_id} と競合しないことをHTTPルーティング層で確認する。
+
+    他のテストはハンドラ関数を直接呼び出しているが、ルーティング競合は
+    FastAPIのルーター自体を経由しないと再現できないため、ここだけ
+    TestClient で実際のHTTPディスパッチを検証する。
+    """
+
+    def test_stats_route_is_not_shadowed_by_pack_id_route(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "index.db"
+            with patch("tsundokensaku.web.get_db_path", return_value=db_path):
+                client = TestClient(tsundokensaku_app)
+                response = client.get("/api/packs/stats")
+
+                self.assertEqual(response.status_code, 200)
+                body = response.json()
+                self.assertIn("packs", body)
+                self.assertIn("active_pack_id", body)
+
+    def test_numeric_pack_id_route_still_works_after_stats_route_added(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "index.db"
+            with patch("tsundokensaku.web.get_db_path", return_value=db_path):
+                client = TestClient(tsundokensaku_app)
+                created = client.post("/api/packs", json={"name": "ルーティング確認資料"}).json()
+
+                response = client.get(f"/api/packs/{created['id']}")
+
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.json()["id"], created["id"])
+                self.assertEqual(response.json()["name"], "ルーティング確認資料")
+
+    def test_nonexistent_pack_id_returns_404_as_before(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "index.db"
+            with patch("tsundokensaku.web.get_db_path", return_value=db_path):
+                client = TestClient(tsundokensaku_app)
+                response = client.get("/api/packs/999999")
+
+                self.assertEqual(response.status_code, 404)
+
+    def test_openapi_schema_includes_new_stats_endpoint(self) -> None:
+        client = TestClient(tsundokensaku_app)
+        schema = client.get("/openapi.json").json()
+
+        self.assertIn("/api/packs/stats", schema["paths"])
+        self.assertIn("get", schema["paths"]["/api/packs/stats"])
 
 
 class ExportArchiveBackwardCompatibilityTest(unittest.TestCase):

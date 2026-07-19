@@ -1082,6 +1082,11 @@ def workspace_page(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(request, "workspace.html", {"request": request})
 
 
+@app.get("/packs", response_class=HTMLResponse)
+def pack_list_page(request: Request) -> HTMLResponse:
+    return templates.TemplateResponse(request, "pack_list.html", {"request": request})
+
+
 def _pack_connection():
     connection = connect(get_db_path())
     ensure_pack_schema(connection)
@@ -1105,6 +1110,47 @@ def api_list_packs() -> JSONResponse:
     try:
         active_pack_id = resolve_active_pack_id(connection)
         packs = [_pack_to_json(pack) for pack in list_packs(connection)]
+    finally:
+        connection.close()
+    return JSONResponse({"packs": packs, "active_pack_id": active_pack_id})
+
+
+@app.get("/api/packs/stats")
+def api_list_pack_stats() -> JSONResponse:
+    """資料一覧画面専用。冊数に加え項目数・ページ数・推定トークン数を返す。
+
+    GET /api/packs は資料棚の資料切替がデバウンス保存完了のたびに呼ぶ
+    ホットパスのため、そちらのレスポンス形状は変えず本エンドポイントを
+    別に用意する（docs/workspace-ui-information-architecture.md Phase 2C）。
+    インデックス済みの本は collect_item_stats が PDF ファイルを開かず
+    SQLite のみで集計するため（export_stats.py の設計）、資料横断の集計
+    でも軽量に収まる想定。
+
+    ルーティング上、/api/packs/{pack_id} より先に定義する必要がある
+    （先に定義しないと "stats" が pack_id として解釈され 422 になる）。
+    """
+    books_dir = get_books_dir()
+    connection = _pack_connection()
+    try:
+        active_pack_id = resolve_active_pack_id(connection)
+        packs = []
+        for pack in list_packs(connection):
+            items = get_pack_items(connection, pack.id)
+            item_stats = collect_item_stats(connection, items, books_dir=books_dir)
+            stats = _preview_base_stats(item_stats)
+            packs.append(
+                {
+                    "id": pack.id,
+                    "name": pack.name,
+                    "note": pack.note,
+                    "created_at": pack.created_at,
+                    "updated_at": pack.updated_at,
+                    "book_count": stats["book_count"],
+                    "item_count": stats["item_count"],
+                    "total_pages": stats["total_pages"],
+                    "estimated_tokens": stats["estimated_tokens"],
+                }
+            )
     finally:
         connection.close()
     return JSONResponse({"packs": packs, "active_pack_id": active_pack_id})
