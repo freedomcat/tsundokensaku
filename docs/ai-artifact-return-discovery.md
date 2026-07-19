@@ -4,7 +4,7 @@
 状態: 調査・要求整理（実装なし・設計確定前）
 前提: [ROADMAP.md](../ROADMAP.md) Phase 4 / [ai-export-optimization-design.md](ai-export-optimization-design.md) / [phase3c-3d-design-review.md](phase3c-3d-design-review.md)
 
-> **位置付け**: 本文書は Phase 4 に向けた調査・要求整理の記録であり、エクスポート履歴の現行仕様の正本ではない。確定仕様は [export-events-design.md](export-events-design.md) を参照。
+> **位置付け**: 本文書は Phase 4 に向けた調査・要求整理の記録であり、確定仕様の正本ではない。Phase 4 の確定仕様は [phase4-artifact-return-design.md](phase4-artifact-return-design.md)、エクスポート履歴の確定仕様は [export-events-design.md](export-events-design.md) を参照。本文書の未決事項（§7）は設計確定時にすべて決定済み。
 
 ## 1. 目的
 
