@@ -532,6 +532,7 @@ class HighlightQueryTest(unittest.TestCase):
         self.assertIn("資料一覧", body)
         self.assertIn("/api/packs/stats", body)
         self.assertIn('id="pl-list"', body)
+        self.assertIn('id="pl-delete-selected"', body)
 
     def test_search_pages_returns_matching_pages_with_snippets(self) -> None:
         from tsundokensaku.database import PageRecord, replace_pages

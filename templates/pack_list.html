@@ -4,6 +4,9 @@
 <section class="card">
   <h2 style="margin: 0 0 6px;">資料一覧</h2>
   <p class="muted" style="margin: 0 0 14px;">作成済みの資料を比較・整理できます。編集は資料棚で行います。</p>
+  <div class="ws-toolbar" style="margin-bottom: 10px;">
+    <button type="button" id="pl-delete-selected" disabled>選択した資料を削除</button>
+  </div>
   <p class="muted" id="pl-status" role="status" aria-live="polite"></p>
   <div id="pl-list"></div>
   <p class="muted" id="pl-empty" hidden>資料はまだありません。</p>
@@ -28,10 +31,19 @@
     const listEl = document.getElementById('pl-list');
     const emptyEl = document.getElementById('pl-empty');
     const statusEl = document.getElementById('pl-status');
+    const deleteSelectedButton = document.getElementById('pl-delete-selected');
+    const selectedIds = new Set();
 
     function setStatus(message, isError = false) {
       statusEl.textContent = message || '';
       statusEl.classList.toggle('is-error', Boolean(isError && message));
+    }
+
+    function updateDeleteSelectedState() {
+      deleteSelectedButton.disabled = selectedIds.size === 0;
+      deleteSelectedButton.textContent = selectedIds.size > 0
+        ? `選択した資料を削除（${selectedIds.size}件）`
+        : '選択した資料を削除';
     }
 
     // トークン数は概算のため常に「約」を付ける（workspace.htmlのformatApproxTokenCountと同じ方針）
@@ -56,9 +68,46 @@
       }
     }
 
+    async function deleteSelectedPacks() {
+      const targetIds = [...selectedIds];
+      if (targetIds.length === 0) return;
+      if (!window.confirm(`選択した${targetIds.length}件の資料を削除します。集めたページの構成も削除されます。よろしいですか？`)) {
+        return;
+      }
+      deleteSelectedButton.disabled = true;
+      const failed = [];
+      for (const packId of targetIds) {
+        try {
+          await TsundokuCart.deletePack(packId);
+          selectedIds.delete(packId);
+        } catch (error) {
+          failed.push(packId);
+        }
+      }
+      if (failed.length > 0) {
+        setStatus(`${failed.length}件の削除に失敗しました`, true);
+      } else {
+        setStatus(`${targetIds.length}件の資料を削除しました`);
+      }
+      await refresh();
+    }
+
     function renderRow(pack) {
       const row = document.createElement('div');
       row.className = 'pl-row';
+
+      const checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.setAttribute('aria-label', `${pack.name}を選択`);
+      checkbox.checked = selectedIds.has(pack.id);
+      checkbox.addEventListener('change', () => {
+        if (checkbox.checked) {
+          selectedIds.add(pack.id);
+        } else {
+          selectedIds.delete(pack.id);
+        }
+        updateDeleteSelectedState();
+      });
 
       const main = document.createElement('div');
       main.className = 'pl-row-main';
@@ -76,7 +125,7 @@
       openButton.textContent = '開く';
       openButton.addEventListener('click', () => void openPack(pack.id));
 
-      row.append(main, openButton);
+      row.append(checkbox, main, openButton);
       return row;
     }
 
@@ -89,16 +138,22 @@
         }
         const payload = await response.json();
         const packs = Array.isArray(payload.packs) ? payload.packs : [];
+        const currentIds = new Set(packs.map((pack) => pack.id));
+        for (const id of [...selectedIds]) {
+          if (!currentIds.has(id)) selectedIds.delete(id);
+        }
         listEl.innerHTML = '';
         emptyEl.hidden = packs.length > 0;
         for (const pack of packs) {
           listEl.appendChild(renderRow(pack));
         }
+        updateDeleteSelectedState();
       } catch (error) {
         setStatus(error instanceof Error ? error.message : '資料一覧の取得に失敗しました', true);
       }
     }
 
+    deleteSelectedButton.addEventListener('click', () => void deleteSelectedPacks());
     document.addEventListener('tsundoku-cart-updated', refresh);
     refresh();
   })();
