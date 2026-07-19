@@ -499,6 +499,8 @@ class HighlightQueryTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         body = response.body.decode("utf-8")
         self.assertIn("資料棚", body)
+        self.assertIn('class="card ws-controls-card"', body)
+        self.assertIn('.ws-controls-card { position: relative; z-index: 1; overflow: visible; }', body)
         self.assertIn('id="ws-management"', body)
         self.assertIn("バックアップ", body)
         self.assertIn("この資料を空にする", body)
