@@ -519,6 +519,7 @@ class HighlightQueryTest(unittest.TestCase):
         self.assertIn("章単位PDF", body)
         self.assertIn("PDF一式", body)
         self.assertIn("Markdown一式", body)
+        self.assertIn('href="/packs">資料一覧へ戻る', body)
 
     def test_pack_list_page_renders(self) -> None:
         from unittest.mock import MagicMock
