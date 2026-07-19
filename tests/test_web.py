@@ -512,6 +512,7 @@ class HighlightQueryTest(unittest.TestCase):
         self.assertNotIn("ws-export-md", body)
         self.assertIn("/api/packs/${pack.id}/export/preview", body)
         self.assertIn("Markdown分冊", body)
+        self.assertIn("章単位PDF", body)
         self.assertIn("PDF一式", body)
         self.assertIn("Markdown一式", body)
 
