@@ -186,9 +186,9 @@
     const outlineCache = new Map();
     const EXPORT_DESTINATIONS = [
       { id: 'markdown-bundles', group: 'transformed', groupLabel: '変換して書き出す', profile: 'chat', format: 'md', label: 'Markdown分冊', description: '上限に合わせて複数ファイルに分割・結合します。ChatGPT・Claudeなどに。' },
-      { id: 'chapter-pdf', group: 'transformed', groupLabel: '変換して書き出す', profile: 'chapter', format: 'pdf', label: '章単位PDF', description: '大きな資料項目を章単位のPDFに分割します。NotebookLMなどに。' },
-      { id: 'pdf-archive', group: 'original', groupLabel: 'そのまま書き出す', profile: 'standard', format: 'pdf', label: 'PDF一式', description: '1項目を1ファイルとしてそのまま書き出します。' },
-      { id: 'markdown-archive', group: 'original', groupLabel: 'そのまま書き出す', profile: 'standard', format: 'md', label: 'Markdown一式', description: '1項目を1ファイルとしてそのまま書き出します。' },
+      { id: 'chapter-pdf', group: 'transformed', groupLabel: '変換して書き出す', profile: 'chapter', format: 'pdf', label: '章単位PDF', description: '大きな資料項目を章単位のPDFに分割します。NotebookLMなどに。ZIPを解凍し、中のPDFを個別に追加してください（ZIPファイル自体はアップロードできません）。' },
+      { id: 'pdf-archive', group: 'original', groupLabel: 'そのまま書き出す', profile: 'standard', format: 'pdf', label: 'PDF一式', description: '1項目を1ファイルとしてそのまま書き出します。Geminiなど大きな文脈を扱えるAIにもそのまま渡せます。' },
+      { id: 'markdown-archive', group: 'original', groupLabel: 'そのまま書き出す', profile: 'standard', format: 'md', label: 'Markdown一式', description: '1項目を1ファイルとしてそのまま書き出します。Geminiなど大きな文脈を扱えるAIにもそのまま渡せます。' },
     ];
     const BLOCKING_EXPORT_WARNINGS = new Set(['empty_pack', 'missing_pdf', 'missing_pages', 'invalid_pages']);
     let exportPreviewRequestToken = 0;
