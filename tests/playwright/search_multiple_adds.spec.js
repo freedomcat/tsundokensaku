@@ -113,7 +113,7 @@ test.describe('Search multiple additions (Phase 3A E2E)', () => {
     await expect(page.locator('.ws-book')).toHaveCount(2);
   });
 
-  test('adds the same PDF multiple times from PDF preview modal and verifies independent identities and edits', async ({ page }) => {
+  test('adds the same PDF multiple times from PDF preview modal and verifies independent identities and edits', async ({ page }, testInfo) => {
     // 1. 検索画面へ遷移し、モーダルを開くボタンを探す
     await page.goto('http://localhost:8003/search?q=バザール');
 
@@ -205,17 +205,17 @@ test.describe('Search multiple additions (Phase 3A E2E)', () => {
     expect(await cards.nth(1).locator('.ws-book-range').textContent()).toContain('6ページ');
 
     // 8.5 資料データを書き出す (JSONエクスポート)
-    const jsonDownloadPromise = page.waitForEvent('download');
+    const jsonExportResponse = page.waitForResponse((response) => (
+      response.url().includes('/export?format=json') && response.status() === 200
+    ));
+    await page.locator('#ws-management > summary').click();
     await page.locator('#ws-export-json').click();
-    const jsonDownload = await jsonDownloadPromise;
-    const jsonDownloadPath = await jsonDownload.path();
-    expect(jsonDownloadPath).not.toBeNull();
-    
-    // JSONファイルの内容をパースして検証
     const fs = require('fs');
     const path = require('path');
-    const jsonText = fs.readFileSync(jsonDownloadPath, 'utf-8');
-    const jsonPayload = JSON.parse(jsonText);
+    const jsonBytes = await (await jsonExportResponse).body();
+    const jsonPayload = JSON.parse(jsonBytes.toString('utf-8'));
+    const jsonExportPath = testInfo.outputPath('workspace-export.json');
+    fs.writeFileSync(jsonExportPath, jsonBytes);
     
     expect(jsonPayload.version).toBe(3);
     expect(jsonPayload.items).toHaveLength(2);
@@ -229,15 +229,15 @@ test.describe('Search multiple additions (Phase 3A E2E)', () => {
     expect(jsonPayload.items[1].pages).toBe('10-15');
     expect(jsonPayload.items[1].collapsed).toBe(false);
     expect(jsonPayload.items[1].position).toBe(1);
+    await page.locator('#ws-management > summary').click();
 
     // 9. PDF一式を書き出すボタンをクリックしてダウンロードする
-    const downloadPromise = page.waitForEvent('download');
+    const pdfExportResponse = page.waitForResponse((response) => (
+      response.url().includes('/export?format=pdf') && response.status() === 200
+    ));
     await page.locator('#ws-export-pdf').click();
-    const download = await downloadPromise;
-
-    // 一時フォルダに保存
-    const downloadPath = await download.path();
-    expect(downloadPath).not.toBeNull();
+    const downloadPath = testInfo.outputPath('workspace-export.zip');
+    fs.writeFileSync(downloadPath, await (await pdfExportResponse).body());
 
     // Node.js の child_process を使って ZIP 内のファイル名と各PDFのページ数を検証する
     const { execSync } = require('child_process');
@@ -276,9 +276,13 @@ test.describe('Search multiple additions (Phase 3A E2E)', () => {
 
     // 9.5. 資料データを読み込む (JSONインポートのUIテスト)
     const importFileInputLocator = page.locator('#ws-import-file-input');
-    await importFileInputLocator.setInputFiles(jsonDownloadPath);
-    
-    
+    const importResponse = page.waitForResponse((response) => (
+      response.url().endsWith('/api/packs/import') && response.status() === 201
+    ));
+    await importFileInputLocator.setInputFiles(jsonExportPath);
+    const importedPack = await (await importResponse).json();
+    await expect(page.locator('#ws-pack-select')).toHaveValue(String(importedPack.id));
+
     // インポート完了後の新しいワークスペースで、2つのカードが正しく復元されていることを確認
     const importedCards = page.locator('.ws-book');
     await expect(importedCards).toHaveCount(2);
@@ -296,10 +300,12 @@ test.describe('Search multiple additions (Phase 3A E2E)', () => {
     await expect(cards2).toHaveCount(1);
 
     // 再度エクスポート
-    const downloadPromise2 = page.waitForEvent('download');
+    const pdfExportResponse2 = page.waitForResponse((response) => (
+      response.url().includes('/export?format=pdf') && response.status() === 200
+    ));
     await page.locator('#ws-export-pdf').click();
-    const download2 = await downloadPromise2;
-    const downloadPath2 = await download2.path();
+    const downloadPath2 = testInfo.outputPath('workspace-export-after-delete.zip');
+    fs.writeFileSync(downloadPath2, await (await pdfExportResponse2).body());
 
     const fileList2 = execSync(`unzip -l "${downloadPath2}"`).toString();
     expect(fileList2).toContain('manifest.md');
