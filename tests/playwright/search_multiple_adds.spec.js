@@ -159,7 +159,8 @@ test.describe('Search multiple additions (Phase 3A E2E)', () => {
 
     const cards = page.locator('.ws-book');
     await expect(cards).toHaveCount(2);
-    await expect(page.locator('#nav-workspace-count')).toHaveText('1件');
+    await expect(page.locator('#nav-workspace-count')).toHaveText('1冊');
+    await expect(page.locator('#ws-pack-select')).toContainText('（1冊）');
 
     const title1 = await cards.nth(0).locator('.ws-book-title').textContent();
     const title2 = await cards.nth(1).locator('.ws-book-title').textContent();
@@ -179,8 +180,12 @@ test.describe('Search multiple additions (Phase 3A E2E)', () => {
       expect(clientId1).not.toEqual(clientId2);
     }
 
+    await page.goto('http://localhost:8003/');
+    await expect(page.locator('#home-pack-summary')).toContainText('1冊');
+
     // 9. チェック解除だけでは既存資料項目が削除されないことを検証
     await page.goto('http://localhost:8003/search?q=バザール');
+    await expect(page.locator('#cart-pack-select')).toContainText('（1冊）');
     await checkbox.check();
     await checkbox.uncheck();
     
@@ -210,6 +215,8 @@ test.describe('Search multiple additions (Phase 3A E2E)', () => {
     // 資料棚で2件表示されていることを確認
     await page.goto('http://localhost:8003/workspace');
     await expect(page.locator('.ws-book')).toHaveCount(2);
+    await expect(page.locator('#nav-workspace-count')).toHaveText('2冊');
+    await expect(page.locator('#ws-pack-select')).toContainText('（2冊）');
   });
 
   test('adds the same PDF multiple times from PDF preview modal and verifies independent identities and edits', async ({ page }, testInfo) => {

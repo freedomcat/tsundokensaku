@@ -55,7 +55,7 @@
       return `約${tokens.toLocaleString('ja-JP')}トークン`;
     }
 
-    function summaryLabel(pack) {
+    function packSummaryLabel(pack) {
       return `${pack.book_count}冊・${pack.item_count}項目・${pack.total_pages}ページ・${formatApproxTokenCount(pack.estimated_tokens)}`;
     }
 
@@ -116,7 +116,7 @@
       name.textContent = pack.name;
       const summary = document.createElement('div');
       summary.className = 'pl-row-summary';
-      summary.textContent = summaryLabel(pack);
+      summary.textContent = packSummaryLabel(pack);
       main.append(name, summary);
 
       const openButton = document.createElement('button');

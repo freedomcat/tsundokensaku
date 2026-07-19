@@ -349,7 +349,7 @@ window.TsundokuCart = (() => {
   }
 
   function bookCount(cart) {
-    return normalizeCart(cart).items.length;
+    return new Set(normalizeCart(cart).items.map((item) => item.pdf_path)).size;
   }
 
   function totalPages(cart) {
@@ -367,7 +367,7 @@ window.TsundokuCart = (() => {
   function summaryLabel(cart) {
     const books = bookCount(cart);
     const pages = totalPages(cart);
-    return pages === null ? `${books}件` : `${books}件 / ${pages}ページ`;
+    return pages === null ? `${books}冊` : `${books}冊 / ${pages}ページ`;
   }
 
   function updateBadge() {
@@ -375,9 +375,8 @@ window.TsundokuCart = (() => {
     if (!badge) {
       return;
     }
-    // 資料棚・資料一覧の「冊数」と揃え、同じPDFを複数項目に追加しても1冊と数える。
-    const count = new Set(normalizeCart(cache).items.map((item) => item.pdf_path)).size;
-    badge.textContent = `${count}件`;
+    const count = bookCount(cache);
+    badge.textContent = `${count}冊`;
     badge.hidden = count === 0;
   }
 
