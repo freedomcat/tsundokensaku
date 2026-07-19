@@ -1690,8 +1690,9 @@ def get_artifact(connection: sqlite3.Connection, artifact_id: int) -> ArtifactRe
 
 
 def delete_artifact(connection: sqlite3.Connection, artifact_id: int) -> bool:
-    """AIノートを削除する。出典明細はFKのON DELETE CASCADEで同時に消える。"""
+    """AIノートと出典明細を削除する。"""
     with connection:
+        connection.execute("DELETE FROM artifact_sources WHERE artifact_id = ?", (artifact_id,))
         cursor = connection.execute("DELETE FROM artifacts WHERE id = ?", (artifact_id,))
     return cursor.rowcount > 0
 

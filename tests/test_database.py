@@ -1403,6 +1403,25 @@ class ArtifactDatabaseTest(unittest.TestCase):
             self.assertFalse(delete_artifact(connection, artifact.id))
             connection.close()
 
+    def test_delete_artifact_removes_sources_when_foreign_keys_are_disabled(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            connection = self._make_connection(temp_dir)
+            event_id = self._insert_export_event(
+                connection,
+                exported_at="2026-07-19T00:00:00+00:00",
+                items=[{"pdf_path": "books/a.pdf", "title": "本A", "pages": "1", "position": 0}],
+            )
+            artifact = create_artifact(connection, title="削除するノート", body="本文", export_event_id=event_id)
+            connection.execute("PRAGMA foreign_keys = OFF")
+            self.assertEqual(connection.execute("PRAGMA foreign_keys").fetchone()[0], 0)
+
+            self.assertTrue(delete_artifact(connection, artifact.id))
+            self.assertEqual(
+                connection.execute("SELECT COUNT(*) FROM artifact_sources WHERE artifact_id = ?", (artifact.id,)).fetchone()[0],
+                0,
+            )
+            connection.close()
+
     def test_artifact_and_sources_survive_export_event_and_pack_deletion(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             connection = self._make_connection(temp_dir)
