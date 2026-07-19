@@ -874,10 +874,10 @@ class ChapterSplitTest(unittest.TestCase):
     fitz / PDF ファイルへの依存なしに実行できる。
     """
 
-    def _make_chapter(self, title: str, start_page: int, end_page: int):
+    def _make_chapter(self, title: str, start_page: int, end_page: int, *, level: int = 1):
         from types import SimpleNamespace
 
-        return SimpleNamespace(title=title, start_page=start_page, end_page=end_page)
+        return SimpleNamespace(title=title, start_page=start_page, end_page=end_page, level=level)
 
     def _chapter_loader(self, chapters):
         def loader(pdf_path):
@@ -935,6 +935,48 @@ class ChapterSplitTest(unittest.TestCase):
             self.assertLessEqual(p, 4, "選択ページ外のページが含まれている")
         self.assertNotIn(6, all_pages)
         self.assertNotIn(7, all_pages)
+
+    def test_hierarchical_outline_uses_only_top_level_chapters_without_overlap(self) -> None:
+        """親章だけを採用し、子節との重複出力を作らない。"""
+        chapters = [
+            self._make_chapter("第1章", 1, 6, level=1),
+            self._make_chapter("1.1 導入", 2, 4, level=2),
+            self._make_chapter("1.2 基礎", 4, 6, level=2),
+            self._make_chapter("第2章", 6, 10, level=1),
+            self._make_chapter("2.1 応用", 7, 10, level=2),
+        ]
+        items = [_item_stats(1, page_count=10, pdf_path="a.pdf", title="本", position=0)]
+
+        with patch.dict("os.environ", {"TSUNDOKENSAKU_CHAPTER_MAX_PAGES_PER_FILE": "6"}):
+            fragments, _ = ChapterProfile().split_items_with_warnings(
+                items, chapter_loader=self._chapter_loader(chapters)
+            )
+
+        self.assertEqual([fragment.label for fragment in fragments], ["第1章", "第2章"])
+        self.assertEqual([fragment.page_numbers for fragment in fragments], [tuple(range(1, 6)), tuple(range(6, 11))])
+        assigned_pages: set[int] = set()
+        for fragment in fragments:
+            fragment_pages = set(fragment.page_numbers)
+            self.assertTrue(assigned_pages.isdisjoint(fragment_pages))
+            assigned_pages.update(fragment_pages)
+
+    def test_outline_uses_smallest_level_when_top_level_is_not_one(self) -> None:
+        """最小levelが2なら、level 2の章だけを分割候補にする。"""
+        chapters = [
+            self._make_chapter("第1章", 1, 5, level=2),
+            self._make_chapter("1.1 導入", 2, 5, level=3),
+            self._make_chapter("第2章", 5, 8, level=2),
+        ]
+        items = [_item_stats(1, page_count=8, pdf_path="a.pdf", title="本", position=0)]
+
+        with patch.dict("os.environ", {"TSUNDOKENSAKU_CHAPTER_MAX_PAGES_PER_FILE": "5"}):
+            fragments, _ = ChapterProfile().split_items_with_warnings(
+                items, chapter_loader=self._chapter_loader(chapters)
+            )
+
+        self.assertEqual([fragment.label for fragment in fragments], ["第1章", "第2章"])
+        self.assertEqual([fragment.page_numbers for fragment in fragments], [tuple(range(1, 5)), tuple(range(5, 9))])
+        self.assertTrue(set(fragments[0].page_numbers).isdisjoint(fragments[1].page_numbers))
 
     def test_pages_outside_chapter_range_not_included(self) -> None:
         """選択ページのうち、どの章にも属さないページは出力されない。"""

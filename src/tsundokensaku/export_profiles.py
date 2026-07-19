@@ -491,11 +491,28 @@ class ChapterProfile(ExportProfile):
 
         if chapter_loader is not None:
             chapters = chapter_loader(Path(stats.item.pdf_path))
-            for chapter in chapters:
+            chapter_levels = [
+                level
+                for chapter in chapters
+                if isinstance((level := getattr(chapter, "level", None)), int)
+            ]
+            top_level = min(chapter_levels) if chapter_levels else None
+            split_chapters = [
+                chapter
+                for chapter in chapters
+                if top_level is None or getattr(chapter, "level", None) == top_level
+            ]
+            for index, chapter in enumerate(split_chapters):
+                # list_chapters() は次の同階層エントリの開始ページを前章の終端にも
+                # 含める。出力PDF間では重複させないため、次の採用章の開始ページは
+                # 次章側へ割り当てる。子階層は最小levelだけを採用して除外する。
+                end_page = chapter.end_page
+                if index + 1 < len(split_chapters):
+                    end_page = min(end_page, split_chapters[index + 1].start_page - 1)
                 chapter_pages = tuple(
                     page_number
                     for page_number in page_numbers
-                    if chapter.start_page <= page_number <= chapter.end_page
+                    if chapter.start_page <= page_number <= end_page
                 )
                 if not chapter_pages:
                     continue

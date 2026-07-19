@@ -2134,10 +2134,10 @@ class ExportProfileParameterTest(unittest.TestCase):
                 with zipfile.ZipFile(BytesIO(response.body)) as archive:
                     self.assertEqual(
                         archive.namelist(),
-                        ["manifest.md", "01_本A_第1章_p1-4.pdf", "02_本A_第2章_p4-6.pdf"],
+                        ["manifest.md", "01_本A_第1章_p1-3.pdf", "02_本A_第2章_p4-6.pdf"],
                     )
                     manifest = archive.read("manifest.md").decode("utf-8")
-                    self.assertIn("第1章 — p.1-4", manifest)
+                    self.assertIn("第1章 — p.1-3", manifest)
                     self.assertIn("第2章 — p.4-6", manifest)
                     self.assertIn("章単位に分割して出力します", manifest)
 
@@ -2906,7 +2906,13 @@ class PackExportPreviewTest(unittest.TestCase):
             doc = fitz.open()
             for _ in range(6):
                 doc.new_page(width=72, height=72)
-            doc.set_toc([[1, "第1章", 1], [1, "第2章", 4]])
+            doc.set_toc([
+                [1, "第1章", 1],
+                [2, "1.1 導入", 2],
+                [2, "1.2 基礎", 3],
+                [1, "第2章", 4],
+                [2, "2.1 応用", 5],
+            ])
             doc.save(str(pdf_path))
             doc.close()
 
@@ -2946,11 +2952,12 @@ class PackExportPreviewTest(unittest.TestCase):
                 self.assertEqual(preview["file_count"], 2)
                 self.assertEqual(
                     [chunk["filename"] for chunk in preview["chunks"]],
-                    ["01_本A_第1章_p1-4.pdf", "02_本A_第2章_p4-6.pdf"],
+                    ["01_本A_第1章_p1-3.pdf", "02_本A_第2章_p4-6.pdf"],
                 )
                 self.assertEqual(preview["chunks"][0]["items"][0]["label"], "第1章")
                 self.assertEqual(preview["chunks"][1]["items"][0]["label"], "第2章")
-                self.assertEqual(preview["chunks"][0]["items"][0]["pages"], "1-4")
+                self.assertEqual(preview["chunks"][0]["items"][0]["pages"], "1-3")
+                self.assertEqual(preview["chunks"][1]["items"][0]["pages"], "4-6")
                 codes = [warning["code"] for warning in preview["warnings"]]
                 self.assertIn("item_split_by_chapters", codes)
 
