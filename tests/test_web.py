@@ -54,6 +54,7 @@ from tsundokensaku.web import (
     update_pdf_export_save_dir,
     upload_pdf,
     upload_scrapbox_json,
+    pack_list_page,
     workspace_page,
 )
 from tsundokensaku.web import app as tsundokensaku_app
@@ -518,6 +519,19 @@ class HighlightQueryTest(unittest.TestCase):
         self.assertIn("章単位PDF", body)
         self.assertIn("PDF一式", body)
         self.assertIn("Markdown一式", body)
+
+    def test_pack_list_page_renders(self) -> None:
+        from unittest.mock import MagicMock
+
+        request = MagicMock()
+        request.url.path = "/packs"
+        response = pack_list_page(request)
+
+        self.assertEqual(response.status_code, 200)
+        body = response.body.decode("utf-8")
+        self.assertIn("資料一覧", body)
+        self.assertIn("/api/packs/stats", body)
+        self.assertIn('id="pl-list"', body)
 
     def test_search_pages_returns_matching_pages_with_snippets(self) -> None:
         from tsundokensaku.database import PageRecord, replace_pages

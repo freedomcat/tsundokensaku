@@ -1082,6 +1082,11 @@ def workspace_page(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(request, "workspace.html", {"request": request})
 
 
+@app.get("/packs", response_class=HTMLResponse)
+def pack_list_page(request: Request) -> HTMLResponse:
+    return templates.TemplateResponse(request, "pack_list.html", {"request": request})
+
+
 def _pack_connection():
     connection = connect(get_db_path())
     ensure_pack_schema(connection)
