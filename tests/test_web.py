@@ -507,12 +507,14 @@ class HighlightQueryTest(unittest.TestCase):
         self.assertIn('id="ws-count"', body)
         self.assertIn('id="ws-export-preview"', body)
         self.assertIn('href="/">検索画面で本を探す', body)
-        self.assertIn("ws-export-pdf", body)
-        self.assertIn("ws-export-md", body)
+        self.assertIn('id="ws-export"', body)
+        self.assertNotIn("ws-export-pdf", body)
+        self.assertNotIn("ws-export-md", body)
         self.assertIn("/api/packs/${pack.id}/export/preview", body)
-        self.assertIn("ChatGPT", body)
-        self.assertIn("Claude", body)
-        self.assertIn("NotebookLM", body)
+        self.assertIn("Markdown分冊", body)
+        self.assertIn("章単位PDF", body)
+        self.assertIn("PDF一式", body)
+        self.assertIn("Markdown一式", body)
 
     def test_search_pages_returns_matching_pages_with_snippets(self) -> None:
         from tsundokensaku.database import PageRecord, replace_pages
