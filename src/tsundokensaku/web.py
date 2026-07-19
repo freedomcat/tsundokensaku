@@ -84,7 +84,7 @@ DEFAULT_BOOKS_DIR = Path("data/books")
 CONTAINER_BOOKS_DIRS = (Path("/data/books"), Path("/books/tech"))
 DEFAULT_DB_PATH = Path("data/index.db")
 PDF_EXPORT_SAVE_DIR_ENV = "PDF_EXPORT_SAVE_DIR"
-EXTERNALLY_AVAILABLE_EXPORT_PROFILES = frozenset({"standard", "chat", "notebooklm"})
+EXTERNALLY_AVAILABLE_EXPORT_PROFILES = frozenset({"standard", "chat", "chapter"})
 
 
 def _find_project_root() -> Path:
@@ -1376,11 +1376,11 @@ def api_preview_pack_export(pack_id: int, profile: str | None = None) -> JSONRes
     finally:
         connection.close()
 
-    if resolved_profile.name == "standard":
+    if not resolved_profile.uses_plan_output:
         return JSONResponse(build_export_preview_payload(item_stats))
 
     chapter_loader = None
-    if resolved_profile.name == "notebooklm":
+    if resolved_profile.needs_chapter_loader:
         chapter_loader = lambda pdf_path: list_chapters(_resolve_pdf_file_or_404(str(pdf_path), get_books_dir()))
 
     return JSONResponse(
@@ -1463,7 +1463,7 @@ def _export_pack_archive(pack, items: list, *, format: str, profile: ExportProfi
         item_stats = [_placeholder_item_stats_for_export(item) for item in items]
 
     chapter_loader = None
-    if profile.name == "notebooklm":
+    if profile.needs_chapter_loader:
         chapter_loader = lambda pdf_path: list_chapters(_resolve_pdf_file_or_404(str(pdf_path), books_dir))
 
     plan = profile.plan(item_stats, chapter_loader=chapter_loader)
@@ -1493,7 +1493,7 @@ def _export_pack_archive(pack, items: list, *, format: str, profile: ExportProfi
                 content=profile.render_chunk(chunk, ctx),
             )
         )
-        if profile.name == "notebooklm":
+        if profile.manifest_uses_fragment_labels:
             manifest_chunks.append(
                 PlanManifestChunk(
                     filename=filename,
@@ -1510,12 +1510,12 @@ def _export_pack_archive(pack, items: list, *, format: str, profile: ExportProfi
         else:
             manifest_chunks.append((filename, [(fragment.item.title, fragment.page_spec) for fragment in chunk.fragments]))
 
-    if profile.name == "standard":
+    if not profile.uses_plan_output:
         # 現行 manifest（PackExportEntry 前提、1項目=1エントリ）をそのまま使い
         # バイト互換を守る（設計書 10.3）
         zip_bytes = build_pack_zip(pack_name=pack.name, entries=entries, exported_at=exported_at)
     else:
-        # 複数項目チャンク（chat の分冊・notebooklm の結合）でも項目内訳が
+        # 複数項目チャンク（chat の分冊・chapter の結合）でも項目内訳が
         # 失われないよう、ExportPlan から組み立てた manifest を使う。
         # plan の警告（item_exceeds_limit 等）もここに記載する（設計書 14）
         manifest = render_plan_manifest(
@@ -1558,7 +1558,7 @@ def api_export_pack(pack_id: int, profile: str | None = None, format: str | None
         raise HTTPException(status_code=400, detail="format は pdf, md, または json を指定してください")
 
     # standard は primary_format=None（format を実行時に選べる）ため、この時点では
-    # 常にスキップされる。chat/notebooklm 追加時に固定形式との矛盾を弾く構造だけ
+    # 常にスキップされる。chat/chapter 追加時に固定形式との矛盾を弾く構造だけ
     # 用意しておく（B-3では仮実装や分岐を追加しない）
     if resolved_profile.primary_format is not None and format != resolved_profile.primary_format:
         raise HTTPException(

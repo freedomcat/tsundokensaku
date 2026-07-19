@@ -116,7 +116,7 @@ def _build_capped_filename(index: int, title: str, detail_candidates: list[str],
     return f"{prefix}{truncated_title}{FILENAME_ELLIPSIS}_{fallback_detail}{suffix}"
 
 
-def build_notebooklm_filename(
+def build_chunk_filename(
     index: int,
     title: str,
     page_specs: list[str],
@@ -203,7 +203,7 @@ def render_plan_manifest(
     """profile 指定エクスポート用の manifest（設計書 10.3 / 14）。
 
     standard の render_pack_manifest は PackExportEntry（1項目=1エントリ）
-    前提のため、複数項目チャンク（chat の分冊・notebooklm の結合）の項目
+    前提のため、複数項目チャンク（chat の分冊・chapter の結合）の項目
     内訳を表現できない。ExportPlan から呼び出し側が組み立てた
     「チャンク（出力ファイル） → 収録項目（書名・ページ範囲）」の一覧と、
     plan の警告メッセージをそのまま並べる。export_profiles.py の型には

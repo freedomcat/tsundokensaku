@@ -150,7 +150,7 @@
     const EXPORT_DESTINATIONS = [
       { id: 'chatgpt', profile: 'chat', label: 'ChatGPT', description: 'Markdownに分冊して書き出します。' },
       { id: 'claude', profile: 'chat', label: 'Claude', description: 'Markdownに分冊して書き出します。' },
-      { id: 'notebooklm', profile: 'notebooklm', label: 'NotebookLM', description: '大きな資料項目を章などの単位に分割し、PDFとして書き出します。' }
+      { id: 'chapter', profile: 'chapter', label: '章単位PDF', description: '大きな資料項目を章などの単位に分割したPDFです。NotebookLMなどソース読み込み型AIに向いています。' }
     ];
     const BLOCKING_EXPORT_WARNINGS = new Set(['empty_pack', 'missing_pdf', 'missing_pages', 'invalid_pages']);
     let exportPreviewRequestToken = 0;

@@ -4,6 +4,8 @@
 状態: Phase 3A・3B・3C・3D 実装済み。Phase 3C 実装前監査（[phase3c-3d-design-review.md](phase3c-3d-design-review.md)）の確定事項を反映済み。Phase 3D は 2026-07-12 の設計改訂（主目的を隣接結合によるソース数削減から、上限を超える資料項目の章単位分割へ変更）を反映済み
 前提: [ROADMAP.md](../ROADMAP.md) Phase 3 / [docs/pack-design.md](pack-design.md) / [docs/pack-item-identity-design.md](pack-item-identity-design.md)
 
+> **注記（2026-07-19）**: 本文書中の profile 名「notebooklm」は、後に `chapter` へ改名した（[export-profile-naming-review.md](export-profile-naming-review.md)）。本文は当時の判断記録として書き換えていない。
+
 ## 1. 背景
 
 つんどけんさくの基本の流れは「検索 → 資料へ追加 → 並び替え → エクスポート」である。Phase 2 までで、資料（パック）を SQLite に永続化し、資料項目（ページ範囲）単位で並び替え、PDF / Markdown / JSON を ZIP 一括でエクスポートできるようになった。同一 PDF を複数の資料項目として扱う機能も実装済みである。

@@ -148,9 +148,9 @@ curl -s -D - -o /dev/null "http://localhost:8000/settings/pdf-import?source_dir=
 
 本文検索はSQLite FTS5を使います。日本語はSudachiで分かち書きし、部分一致の救済にはFTS5 trigramインデックスを使います。
 
-## NotebookLM用にページを抜き出す
+## 必要なページだけを小さなPDFに切り出す
 
-検索結果のPDFから、指定したページだけを抜き出した小さいPDFを作れます。NotebookLMなどに必要なページだけ渡したいときに使います。Web UIではPDFモーダルから「ダウンロード」または「指定フォルダへ保存」を選べます。直接保存を使う場合は、設定画面の「PDF切り出し保存先」か `.env` の `PDF_EXPORT_SAVE_DIR` に保存先フォルダを指定してください。
+検索結果のPDFから、指定したページだけを抜き出した小さいPDFを作れます。NotebookLMなどに渡したいときにも使えます。Web UIではPDFモーダルから「ダウンロード」または「指定フォルダへ保存」を選べます。直接保存を使う場合は、設定画面の「PDF切り出し保存先」か `.env` の `PDF_EXPORT_SAVE_DIR` に保存先フォルダを指定してください。
 
 ```bash
 PYTHONPATH=src python3 scripts/export_pdf_pages.py "data/books/cathedral.pdf" --pages 11-15
