@@ -1,5 +1,34 @@
 const { test, expect } = require('@playwright/test');
 
+const EXPORT_OPTIONS = {
+  'Markdown分冊': { profile: 'chat', format: 'md' },
+  '章単位PDF': { profile: 'chapter', format: 'pdf' },
+  'PDF一式': { profile: 'standard', format: 'pdf' },
+  'Markdown一式': { profile: 'standard', format: 'md' },
+};
+
+async function exportWorkspaceAs(page, optionLabel) {
+  const expected = EXPORT_OPTIONS[optionLabel];
+  if (!expected) throw new Error(`未知の書き出し方式: ${optionLabel}`);
+
+  await page.locator('#ws-export-ai').click();
+  const modal = page.locator('#ws-export-modal');
+  await expect(modal).toHaveClass(/open/);
+  await modal.getByRole('radio', { name: optionLabel, exact: false }).check();
+  await expect(modal.getByRole('button', { name: '書き出す', exact: true })).toBeEnabled();
+  await expect(modal.locator('#ws-export-detail')).not.toContainText('undefined');
+
+  const exportResponse = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname.endsWith('/export')
+      && url.searchParams.get('profile') === expected.profile
+      && url.searchParams.get('format') === expected.format
+      && response.status() === 200;
+  });
+  await modal.getByRole('button', { name: '書き出す', exact: true }).click();
+  return exportResponse;
+}
+
 test.describe('Search multiple additions (Phase 3A E2E)', () => {
   test.beforeEach(async ({ page }) => {
     page.on('console', msg => {
@@ -231,13 +260,10 @@ test.describe('Search multiple additions (Phase 3A E2E)', () => {
     expect(jsonPayload.items[1].position).toBe(1);
     await page.locator('#ws-management > summary').click();
 
-    // 9. PDF一式を書き出すボタンをクリックしてダウンロードする
-    const pdfExportResponse = page.waitForResponse((response) => (
-      response.url().includes('/export?format=pdf') && response.status() === 200
-    ));
-    await page.locator('#ws-export-pdf').click();
+    // 9. PDF一式を書き出す
+    const pdfExportResponse = await exportWorkspaceAs(page, 'PDF一式');
     const downloadPath = testInfo.outputPath('workspace-export.zip');
-    fs.writeFileSync(downloadPath, await (await pdfExportResponse).body());
+    fs.writeFileSync(downloadPath, await pdfExportResponse.body());
 
     // Node.js の child_process を使って ZIP 内のファイル名と各PDFのページ数を検証する
     const { execSync } = require('child_process');
@@ -274,6 +300,12 @@ test.describe('Search multiple additions (Phase 3A E2E)', () => {
     const pageCount2 = (pdfText2.match(/\/Type\s*\/Page\b/g) || []).length;
     expect(pageCount2).toBe(6);
 
+    // 各書き出し方式は、選択された profile / format をそのままHTTPクエリへ渡す。
+    for (const optionLabel of ['Markdown分冊', '章単位PDF', 'Markdown一式']) {
+      const response = await exportWorkspaceAs(page, optionLabel);
+      expect(response.headers()['content-type']).toContain('application/zip');
+    }
+
     // 9.5. 資料データを読み込む (JSONインポートのUIテスト)
     const importFileInputLocator = page.locator('#ws-import-file-input');
     const importResponse = page.waitForResponse((response) => (
@@ -300,12 +332,9 @@ test.describe('Search multiple additions (Phase 3A E2E)', () => {
     await expect(cards2).toHaveCount(1);
 
     // 再度エクスポート
-    const pdfExportResponse2 = page.waitForResponse((response) => (
-      response.url().includes('/export?format=pdf') && response.status() === 200
-    ));
-    await page.locator('#ws-export-pdf').click();
+    const pdfExportResponse2 = await exportWorkspaceAs(page, 'PDF一式');
     const downloadPath2 = testInfo.outputPath('workspace-export-after-delete.zip');
-    fs.writeFileSync(downloadPath2, await (await pdfExportResponse2).body());
+    fs.writeFileSync(downloadPath2, await pdfExportResponse2.body());
 
     const fileList2 = execSync(`unzip -l "${downloadPath2}"`).toString();
     expect(fileList2).toContain('manifest.md');

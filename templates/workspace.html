@@ -178,9 +178,10 @@
     const exportStatus = document.getElementById('ws-export-status');
     const outlineCache = new Map();
     const EXPORT_DESTINATIONS = [
-      { id: 'chatgpt', profile: 'chat', label: 'ChatGPT', description: 'Markdownに分冊して書き出します。' },
-      { id: 'claude', profile: 'chat', label: 'Claude', description: 'Markdownに分冊して書き出します。' },
-      { id: 'chapter', profile: 'chapter', label: '章単位PDF', description: '大きな資料項目を章などの単位に分割したPDFです。NotebookLMなどソース読み込み型AIに向いています。' }
+      { id: 'markdown-bundles', profile: 'chat', format: 'md', label: 'Markdown分冊', description: '上限に合わせて複数ファイルに分割・結合します。ChatGPT・Claudeなどに。' },
+      { id: 'chapter-pdf', profile: 'chapter', format: 'pdf', label: '章単位PDF', description: '大きな資料項目を章単位のPDFに分割します。NotebookLMなどに。' },
+      { id: 'pdf-archive', profile: 'standard', format: 'pdf', label: 'PDF一式', description: '1項目を1ファイルとしてそのまま書き出します。' },
+      { id: 'markdown-archive', profile: 'standard', format: 'md', label: 'Markdown一式', description: '1項目を1ファイルとしてそのまま書き出します。' },
     ];
     const BLOCKING_EXPORT_WARNINGS = new Set(['empty_pack', 'missing_pdf', 'missing_pages', 'invalid_pages']);
     let exportPreviewRequestToken = 0;
@@ -741,6 +742,10 @@
       return selectedExportDestination()?.profile || '';
     }
 
+    function selectedExportFormat() {
+      return selectedExportDestination()?.format || '';
+    }
+
     function renderExportDestinations() {
       exportDestinationList.innerHTML = '';
       for (const [index, destination] of EXPORT_DESTINATIONS.entries()) {
@@ -766,33 +771,39 @@
       exportDetail.innerHTML = '';
       const summary = document.createElement('p');
       summary.className = 'ws-export-summary';
-      summary.textContent = `推定トークン数: ${preview.estimated_tokens.toLocaleString('ja-JP')} / ファイル数: ${preview.file_count}`;
+      if (Array.isArray(preview.chunks)) {
+        summary.textContent = `推定トークン数: ${preview.estimated_tokens.toLocaleString('ja-JP')} / ファイル数: ${preview.file_count}`;
+      } else {
+        summary.textContent = `推定トークン数: ${preview.estimated_tokens.toLocaleString('ja-JP')} / ${preview.book_count}冊 / ${preview.total_pages}ページ`;
+      }
       exportDetail.appendChild(summary);
 
-      const chunks = document.createElement('ol');
-      chunks.className = 'ws-export-chunks';
-      for (const chunk of preview.chunks || []) {
-        const item = document.createElement('li');
-        const filename = document.createElement('strong');
-        filename.textContent = chunk.filename;
-        item.append(filename, document.createTextNode(` / 推定トークン数: ${chunk.estimated_tokens.toLocaleString('ja-JP')}`));
-        if (chunk.pages) {
-          item.append(document.createTextNode(` / ${chunk.pages}ページ`));
-        }
-        if (Array.isArray(chunk.items) && chunk.items.length > 0) {
-          const items = document.createElement('ul');
-          items.className = 'ws-export-chunk-items';
-          for (const source of chunk.items) {
-            const sourceItem = document.createElement('li');
-            const label = source.label ? `${source.label} — p.${source.pages}` : `p.${source.pages}`;
-            sourceItem.textContent = `${source.title} / ${label}`;
-            items.appendChild(sourceItem);
+      if (Array.isArray(preview.chunks)) {
+        const chunks = document.createElement('ol');
+        chunks.className = 'ws-export-chunks';
+        for (const chunk of preview.chunks) {
+          const item = document.createElement('li');
+          const filename = document.createElement('strong');
+          filename.textContent = chunk.filename;
+          item.append(filename, document.createTextNode(` / 推定トークン数: ${chunk.estimated_tokens.toLocaleString('ja-JP')}`));
+          if (chunk.pages) {
+            item.append(document.createTextNode(` / ${chunk.pages}ページ`));
           }
-          item.appendChild(items);
+          if (Array.isArray(chunk.items) && chunk.items.length > 0) {
+            const items = document.createElement('ul');
+            items.className = 'ws-export-chunk-items';
+            for (const source of chunk.items) {
+              const sourceItem = document.createElement('li');
+              const label = source.label ? `${source.label} — p.${source.pages}` : `p.${source.pages}`;
+              sourceItem.textContent = `${source.title} / ${label}`;
+              items.appendChild(sourceItem);
+            }
+            item.appendChild(items);
+          }
+          chunks.appendChild(item);
         }
-        chunks.appendChild(item);
+        exportDetail.appendChild(chunks);
       }
-      exportDetail.appendChild(chunks);
 
       const warnings = preview.warnings || [];
       exportWarnings.innerHTML = '';
@@ -859,7 +870,11 @@
       exportCancelButton.disabled = true;
       exportCloseButton.disabled = true;
       for (const input of exportDestinationList.querySelectorAll('input')) input.disabled = true;
-      const succeeded = await exportPack({ profile: selectedExportProfile(), reportStatus: setExportStatus });
+      const succeeded = await exportPack({
+        profile: selectedExportProfile(),
+        format: selectedExportFormat(),
+        reportStatus: setExportStatus,
+      });
       exportInProgress = false;
       exportCancelButton.disabled = false;
       exportCloseButton.disabled = false;
