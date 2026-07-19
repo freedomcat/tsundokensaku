@@ -2,23 +2,27 @@
 {% block title %}つんどけんさく | 資料棚{% endblock %}
 {% block content %}
 <section class="card ws-controls-card">
-  <h2 style="margin: 0 0 6px;">資料棚</h2>
-  <p class="muted" style="margin: 0 0 14px;">必要なページを集めて、AIへ渡す資料を組み立てます。資料ごとに保存されます。<a href="/packs">資料一覧へ戻る</a></p>
   <div class="ws-toolbar" style="margin-bottom: 10px;">
-    <label style="display:inline-flex; align-items:center; gap:6px;">
-      現在の資料：
+    <h2 style="margin: 0;">資料棚</h2>
+    <a class="button" id="ws-pack-list-link" href="/packs">資料一覧へ</a>
+  </div>
+  <div class="ws-toolbar" style="margin-bottom: 10px;">
+    <label id="ws-pack-select-field">
+      <span class="muted">現在の資料</span>
       <select id="ws-pack-select" aria-label="資料を選択"></select>
     </label>
-    <button type="button" id="ws-pack-new">新しい資料</button>
-    <button type="button" id="ws-pack-rename">名前を変更</button>
-    <button type="button" id="ws-pack-delete">資料を削除</button>
     <details class="ws-management" id="ws-management">
       <summary>⋯ 管理</summary>
       <div class="ws-management-menu">
+        <div class="ws-management-heading">資料</div>
+        <button type="button" id="ws-pack-new">新しい資料</button>
+        <button type="button" id="ws-pack-rename">名前を変更</button>
+        <hr>
         <div class="ws-management-heading">バックアップ</div>
         <button type="button" id="ws-export-json" title="PDF本体ではなく、資料の構成・ページ範囲・並び順をJSONで保存します">資料データを書き出す</button>
         <button type="button" id="ws-import-json" title="つんどけんさくで書き出したJSONから資料を復元します">資料データを読み込む</button>
         <hr>
+        <div class="ws-management-heading">危険な操作</div>
         <button type="button" class="ws-management-danger" id="ws-clear">この資料を空にする</button>
       </div>
     </details>
@@ -27,7 +31,10 @@
   <div class="ws-toolbar">
     <span class="pill" id="ws-count"></span>
     <span class="pill" id="ws-export-preview" hidden></span>
-    <button type="button" id="ws-add-open">ページを追加</button>
+  </div>
+  <div class="ws-toolbar" style="margin-top: 10px;">
+    <button type="button" id="ws-add-open">資料内からページを追加</button>
+    <a class="button" id="ws-search-link" href="/">検索画面で本を探す</a>
     <button type="button" class="primary" id="ws-export">書き出す</button>
     <span class="ws-status" id="ws-status"></span>
   </div>
@@ -109,6 +116,9 @@
   .ws-export-chunk-items { margin: 6px 0 0; padding-left: 1.25rem; display: grid; gap: 4px; }
   #ws-export-warnings { margin: 0; padding-left: 1.5rem; }
   .ws-controls-card { position: relative; z-index: 1; overflow: visible; }
+  #ws-pack-select-field { display: flex; align-items: center; gap: 6px; flex: 1 1 20rem; min-width: 0; max-width: 34rem; }
+  #ws-pack-select-field > span { flex: 0 0 auto; white-space: nowrap; }
+  #ws-pack-select { flex: 1 1 auto; width: 100%; min-width: 0; max-width: 100%; font-size: clamp(1.1rem, 3vw, 1.5rem); font-weight: 600; }
   .ws-management { position: relative; }
   .ws-management > summary { cursor: pointer; }
   .ws-management-menu {
@@ -133,8 +143,7 @@
 <section class="card">
   <div id="ws-books"></div>
   <div class="muted" id="ws-empty" hidden>
-    <p style="margin: 0 0 10px;">この資料は空です。検索結果からページを追加してください。</p>
-    <a class="button" href="/">検索画面で本を探す</a>
+    <p style="margin: 0;">この資料は空です。上の操作からページを追加してください。</p>
   </div>
   <div id="ws-no-pack" hidden>
     <p class="muted" style="margin: 0 0 10px;">資料はまだありません。</p>
@@ -209,7 +218,6 @@
       }
       importJsonButton.disabled = !hasPack;
       packRenameButton.disabled = !hasPack;
-      packDeleteButton.disabled = !hasPack;
     }
 
     // トークン数は概算（設計書 docs/ai-export-optimization-design.md 8.1）なので
@@ -1179,7 +1187,6 @@
     const packSelect = document.getElementById('ws-pack-select');
     const packNewButton = document.getElementById('ws-pack-new');
     const packRenameButton = document.getElementById('ws-pack-rename');
-    const packDeleteButton = document.getElementById('ws-pack-delete');
     const noPackSection = document.getElementById('ws-no-pack');
     const noPackNewButton = document.getElementById('ws-no-pack-new');
     const noActivePackSection = document.getElementById('ws-no-active-pack');
@@ -1261,23 +1268,6 @@
         setStatus('');
       } catch (error) {
         setStatus('名前の変更に失敗しました', true);
-      }
-      await refreshPackBar();
-    });
-
-    packDeleteButton.addEventListener('click', async () => {
-      const pack = TsundokuCart.getActivePack();
-      if (!pack) {
-        return;
-      }
-      if (!window.confirm(`資料「${pack.name}」を削除します。集めたページの構成も削除されます。よろしいですか？`)) {
-        return;
-      }
-      try {
-        await TsundokuCart.deletePack(pack.id);
-        setStatus('');
-      } catch (error) {
-        setStatus('資料の削除に失敗しました', true);
       }
       await refreshPackBar();
     });
