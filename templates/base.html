@@ -1040,7 +1040,7 @@
 
       .modal-thumb-grid {
         display: grid;
-        grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+        grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
         gap: 16px;
         width: 100%;
       }
@@ -1145,6 +1145,21 @@
         font-size: 1rem;
         box-shadow: 0 2px 8px rgba(15, 23, 42, 0.18);
         z-index: 2;
+      }
+
+      @media (hover: hover) {
+        .modal-thumb-zoom-button {
+          opacity: 0;
+          pointer-events: none;
+          transition: opacity 150ms ease;
+        }
+
+        .modal-thumb-item:hover .modal-thumb-zoom-button,
+        .modal-thumb-item:focus-within .modal-thumb-zoom-button,
+        .modal-thumb-zoom-button:focus-visible {
+          opacity: 1;
+          pointer-events: auto;
+        }
       }
 
       .modal-thumb-overlay {
@@ -1342,9 +1357,11 @@
             <div class="modal-thumb-scroll">
               <div class="modal-thumb-range-toggle">
                 <button type="button" id="pdf-modal-thumb-prev" hidden>前の10ページを表示</button>
+                <button type="button" id="pdf-modal-thumb-next-top" hidden>次の10ページを表示</button>
               </div>
               <div class="modal-thumb-grid" id="pdf-modal-thumb-grid"></div>
               <div class="modal-thumb-range-toggle">
+                <button type="button" id="pdf-modal-thumb-prev-bottom" hidden>前の10ページを表示</button>
                 <button type="button" id="pdf-modal-thumb-next" hidden>次の10ページを表示</button>
               </div>
             </div>
