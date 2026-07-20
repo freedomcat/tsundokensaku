@@ -9,18 +9,13 @@ from tsundokensaku.database import (
     PageRecord,
     BookNoteRecord,
     QueryTerm,
-    create_artifact,
     create_pack,
-    delete_artifact,
     delete_pack,
     get_active_pack_id,
-    get_artifact,
     get_export_event,
     get_pack,
     get_pack_items,
     import_cart_as_pack,
-    list_artifacts,
-    list_export_events,
     list_packs,
     pack_items_as_cart,
     parse_query,
@@ -1173,307 +1168,67 @@ class PackTest(unittest.TestCase):
 
             connection.close()
 
-class ArtifactDatabaseTest(unittest.TestCase):
-    def _make_connection(self, temp_dir: str):
-        connection = connect(Path(temp_dir) / "index.db")
-        initialize(connection)
-        return connection
+class ArtifactRemovalDatabaseTest(unittest.TestCase):
+    def _table_names(self, connection):
+        return {row["name"] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()}
 
-    def _insert_export_event(
-        self,
-        connection,
-        *,
-        exported_at: str,
-        pack_id: int | None = 7,
-        pack_name: str = "資料スナップショット",
-        profile: str = "standard",
-        format: str = "pdf",
-        items: list[dict[str, object]] | None = None,
-    ) -> int:
-        payload = {"version": 1, "items": items or []}
-        cursor = connection.execute(
-            """
-            INSERT INTO export_events(exported_at, pack_id, pack_name, profile, format, items_json)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (exported_at, pack_id, pack_name, profile, format, json.dumps(payload, ensure_ascii=False)),
-        )
-        connection.commit()
-        return int(cursor.lastrowid)
+    def _create_legacy_artifact_tables(self, connection):
+        connection.executescript("""
+            CREATE TABLE artifacts (id INTEGER PRIMARY KEY, title TEXT NOT NULL);
+            CREATE TABLE artifact_sources (id INTEGER PRIMARY KEY, artifact_id INTEGER NOT NULL, title TEXT NOT NULL);
+        """)
 
-    def test_initialize_creates_artifact_schema_idempotently_with_only_source_foreign_key(self) -> None:
+    def test_new_database_does_not_create_artifact_tables_and_keeps_export_events(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            connection = self._make_connection(temp_dir)
+            connection = connect(Path(temp_dir) / "index.db")
             initialize(connection)
-
-            tables = {
-                row["name"]
-                for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
-            }
-            self.assertTrue({"artifacts", "artifact_sources"}.issubset(tables))
-            self.assertEqual(connection.execute("PRAGMA foreign_key_list(artifacts)").fetchall(), [])
-            foreign_keys = connection.execute("PRAGMA foreign_key_list(artifact_sources)").fetchall()
-            self.assertEqual(len(foreign_keys), 1)
-            self.assertEqual(foreign_keys[0]["table"], "artifacts")
-            self.assertEqual(foreign_keys[0]["on_delete"], "CASCADE")
+            tables = self._table_names(connection)
+            self.assertNotIn("artifacts", tables)
+            self.assertNotIn("artifact_sources", tables)
+            self.assertIn("export_events", tables)
             connection.close()
 
-    def test_create_artifact_without_sources_and_get_detail(self) -> None:
+    def test_initialize_drops_empty_legacy_artifact_tables_and_keeps_export_events(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            connection = self._make_connection(temp_dir)
-
-            artifact = create_artifact(
-                connection,
-                title="  AIで整理した論点  ",
-                body="# 要点\n本文です",
-                source_service="ChatGPT",
-                source_model="gpt-test",
-                prompt="整理して",
-            )
-
-            self.assertEqual(artifact.title, "AIで整理した論点")
-            self.assertEqual(artifact.body, "# 要点\n本文です")
-            self.assertEqual(artifact.source_service, "ChatGPT")
-            self.assertIsNone(artifact.export_event_id)
-            self.assertIsNone(artifact.pack_id)
-            self.assertEqual(artifact.pack_name, "")
-            self.assertEqual(artifact.sources, ())
-            self.assertEqual(artifact.source_count, 0)
-            self.assertEqual(get_artifact(connection, artifact.id), artifact)
-            self.assertIsNone(get_artifact(connection, 9999))
-            connection.close()
-
-    def test_create_artifact_copies_export_event_sources_in_position_order(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            connection = self._make_connection(temp_dir)
-            event_id = self._insert_export_event(
-                connection,
-                exported_at="2026-07-19T00:00:00+00:00",
-                pack_id=42,
-                pack_name="書き出し時の資料",
-                profile="chapter",
-                items=[
-                    {"pdf_path": "books/b.pdf", "title": "本B", "pages": "11-20", "position": 3},
-                    {"pdf_path": "books/a.pdf", "title": "本A", "pages": "1-10", "position": 1},
-                ],
-            )
-
-            artifact = create_artifact(connection, title="章の要約", body="本文", export_event_id=event_id)
-
-            self.assertEqual(artifact.export_event_id, event_id)
-            self.assertEqual(artifact.pack_id, 42)
-            self.assertEqual(artifact.pack_name, "書き出し時の資料")
-            self.assertEqual([(source.title, source.position) for source in artifact.sources], [("本A", 1), ("本B", 3)])
-            self.assertEqual(artifact.source_count, 2)
-            connection.close()
-
-    def test_list_artifacts_is_newest_first_and_supports_limit_without_body(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            connection = self._make_connection(temp_dir)
-            first = create_artifact(connection, title="古いノート", body="本文")
-            second = create_artifact(connection, title="新しいノート", body="本文")
-            connection.execute("UPDATE artifacts SET created_at = ? WHERE id = ?", ("2026-07-01T00:00:00+00:00", first.id))
-            connection.execute("UPDATE artifacts SET created_at = ? WHERE id = ?", ("2026-07-02T00:00:00+00:00", second.id))
-            connection.commit()
-
-            summaries = list_artifacts(connection)
-            self.assertEqual([summary.title for summary in summaries], ["新しいノート", "古いノート"])
-            self.assertEqual([summary.title for summary in list_artifacts(connection, limit=1)], ["新しいノート"])
-            self.assertEqual(list_artifacts(connection, limit=0), [])
-            self.assertFalse(hasattr(summaries[0], "body"))
-            connection.close()
-
-    def test_list_export_events_restores_items_and_orders_newest_first(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            connection = self._make_connection(temp_dir)
-            older_id = self._insert_export_event(
-                connection,
-                exported_at="2026-07-01T00:00:00+00:00",
-                pack_name="古い資料",
-                format="md",
-                items=[{"pdf_path": "books/a.pdf", "title": "本A", "pages": "1-2", "position": 0}],
-            )
-            newer_id = self._insert_export_event(
-                connection,
-                exported_at="2026-07-02T00:00:00+00:00",
-                pack_name="新しい資料",
-                profile="chat",
-                format="pdf",
-                items=[{"pdf_path": "books/b.pdf", "title": "本B", "pages": "3-4", "position": 2}],
-            )
-
-            events = list_export_events(connection)
-            self.assertEqual([event.id for event in events], [newer_id, older_id])
-            self.assertEqual(events[0].profile, "chat")
-            self.assertEqual(events[0].format, "pdf")
-            self.assertEqual(events[0].items[0].pdf_path, "books/b.pdf")
-            self.assertEqual(list_export_events(connection, limit=1)[0].id, newer_id)
-            self.assertEqual(list_export_events(connection, limit=0), [])
-            self.assertEqual(get_export_event(connection, older_id).items[0].title, "本A")
-            self.assertIsNone(get_export_event(connection, 9999))
-            connection.close()
-
-    def test_invalid_or_legacy_export_event_json_is_safe_and_creates_no_sources(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            connection = self._make_connection(temp_dir)
-            cursor = connection.execute(
-                """
-                INSERT INTO export_events(exported_at, pack_id, pack_name, profile, format, items_json)
-                VALUES (?, NULL, ?, ?, ?, ?)
-                """,
-                ("2026-07-19T00:00:00+00:00", "壊れた資料", "standard", "pdf", "{not-json"),
-            )
+            connection = connect(Path(temp_dir) / "index.db")
+            self._create_legacy_artifact_tables(connection)
+            connection.execute("CREATE TABLE export_events (id INTEGER PRIMARY KEY, exported_at TEXT NOT NULL, pack_id INTEGER, pack_name TEXT NOT NULL, profile TEXT NOT NULL, format TEXT NOT NULL, items_json TEXT NOT NULL)")
             connection.execute(
-                """
-                INSERT INTO export_events(exported_at, pack_id, pack_name, profile, format, items_json)
-                VALUES (?, NULL, ?, ?, ?, ?)
-                """,
+                "INSERT INTO export_events(exported_at, pack_id, pack_name, profile, format, items_json) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
                 (
-                    "2026-07-18T00:00:00+00:00",
-                    "旧形式の資料",
+                    "2026-07-01T00:00:00+00:00",
+                    1,
+                    "既存資料",
                     "standard",
                     "pdf",
-                    json.dumps({"version": 0, "items": [{"pdf_path": "books/old.pdf"}]}),
+                    '{"version": 1, "items": []}',
                 ),
             )
             connection.commit()
 
-            events = list_export_events(connection)
-            self.assertEqual(len(events), 2)
-            self.assertEqual(events[0].items, ())
-            self.assertEqual(events[1].items, ())
-            artifact = create_artifact(connection, title="壊れた履歴からのノート", body="本文", export_event_id=int(cursor.lastrowid))
-            self.assertEqual(artifact.sources, ())
-            connection.close()
-
-    def test_invalid_input_or_missing_event_leaves_no_artifact(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            connection = self._make_connection(temp_dir)
-
-            with self.assertRaises(ValueError):
-                create_artifact(connection, title=" ", body="本文")
-            with self.assertRaises(ValueError):
-                create_artifact(connection, title="題", body="  ")
-            with self.assertRaises(ValueError):
-                create_artifact(connection, title="題", body="本文", export_event_id=9999)
-
-            count = connection.execute("SELECT COUNT(*) FROM artifacts").fetchone()[0]
-            self.assertEqual(count, 0)
-            connection.close()
-
-    def test_source_insert_failure_rolls_back_artifact_and_sources(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            connection = self._make_connection(temp_dir)
-            event_id = self._insert_export_event(
-                connection,
-                exported_at="2026-07-19T00:00:00+00:00",
-                items=[{"pdf_path": "books/a.pdf", "title": "本A", "pages": "1", "position": 0}],
-            )
-            connection.execute(
-                """
-                CREATE TRIGGER fail_artifact_source_insert
-                BEFORE INSERT ON artifact_sources
-                BEGIN
-                    SELECT RAISE(ABORT, 'source insert failed');
-                END
-                """
-            )
-            connection.commit()
-
-            with self.assertRaises(sqlite3.IntegrityError):
-                create_artifact(connection, title="失敗するノート", body="本文", export_event_id=event_id)
-
-            self.assertEqual(connection.execute("SELECT COUNT(*) FROM artifacts").fetchone()[0], 0)
-            self.assertEqual(connection.execute("SELECT COUNT(*) FROM artifact_sources").fetchone()[0], 0)
-            connection.close()
-
-    def test_delete_artifact_cascades_sources_and_missing_id_is_false(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            connection = self._make_connection(temp_dir)
-            event_id = self._insert_export_event(
-                connection,
-                exported_at="2026-07-19T00:00:00+00:00",
-                items=[{"pdf_path": "books/a.pdf", "title": "本A", "pages": "1", "position": 0}],
-            )
-            artifact = create_artifact(connection, title="削除するノート", body="本文", export_event_id=event_id)
-
-            self.assertTrue(delete_artifact(connection, artifact.id))
-            self.assertIsNone(get_artifact(connection, artifact.id))
-            self.assertEqual(connection.execute("SELECT COUNT(*) FROM artifact_sources").fetchone()[0], 0)
-            self.assertFalse(delete_artifact(connection, artifact.id))
-            connection.close()
-
-    def test_delete_artifact_removes_sources_when_foreign_keys_are_disabled(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            connection = self._make_connection(temp_dir)
-            event_id = self._insert_export_event(
-                connection,
-                exported_at="2026-07-19T00:00:00+00:00",
-                items=[{"pdf_path": "books/a.pdf", "title": "本A", "pages": "1", "position": 0}],
-            )
-            artifact = create_artifact(connection, title="削除するノート", body="本文", export_event_id=event_id)
-            connection.execute("PRAGMA foreign_keys = OFF")
-            self.assertEqual(connection.execute("PRAGMA foreign_keys").fetchone()[0], 0)
-
-            self.assertTrue(delete_artifact(connection, artifact.id))
-            self.assertEqual(
-                connection.execute("SELECT COUNT(*) FROM artifact_sources WHERE artifact_id = ?", (artifact.id,)).fetchone()[0],
-                0,
-            )
-            connection.close()
-
-    def test_artifact_and_sources_survive_export_event_and_pack_deletion(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            connection = self._make_connection(temp_dir)
-            pack_id = create_pack(connection, name="消える資料")
-            event_id = self._insert_export_event(
-                connection,
-                exported_at="2026-07-19T00:00:00+00:00",
-                pack_id=pack_id,
-                items=[{"pdf_path": "books/a.pdf", "title": "本A", "pages": "1", "position": 0}],
-            )
-            artifact = create_artifact(connection, title="残るノート", body="本文", export_event_id=event_id)
-
-            connection.execute("DELETE FROM export_events WHERE id = ?", (event_id,))
-            connection.commit()
-            self.assertTrue(delete_pack(connection, pack_id))
-
-            retained = get_artifact(connection, artifact.id)
-            self.assertIsNotNone(retained)
-            self.assertEqual(retained.export_event_id, event_id)
-            self.assertEqual(retained.pack_id, pack_id)
-            self.assertEqual([(source.pdf_path, source.pages) for source in retained.sources], [("books/a.pdf", "1")])
-            connection.close()
-
-    def test_initialize_preserves_pre_artifact_database_data(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            db_path = Path(temp_dir) / "index.db"
-            connection = connect(db_path)
-            connection.execute(
-                """
-                CREATE TABLE export_events (
-                    id INTEGER PRIMARY KEY,
-                    exported_at TEXT NOT NULL,
-                    pack_id INTEGER,
-                    pack_name TEXT NOT NULL,
-                    profile TEXT NOT NULL,
-                    format TEXT NOT NULL,
-                    items_json TEXT NOT NULL
-                )
-                """
-            )
-            connection.execute(
-                """
-                INSERT INTO export_events(exported_at, pack_id, pack_name, profile, format, items_json)
-                VALUES ('2026-07-01T00:00:00+00:00', 1, '既存資料', 'standard', 'pdf', '{"version": 1, "items": []}')
-                """
-            )
-            connection.commit()
-
             initialize(connection)
 
+            tables = self._table_names(connection)
+            self.assertNotIn("artifacts", tables)
+            self.assertNotIn("artifact_sources", tables)
+            self.assertIn("export_events", tables)
             self.assertEqual(get_export_event(connection, 1).pack_name, "既存資料")
-            self.assertEqual(connection.execute("SELECT COUNT(*) FROM artifacts").fetchone()[0], 0)
+            connection.close()
+
+    def test_initialize_keeps_legacy_artifact_tables_with_data_and_logs_warning(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            connection = connect(Path(temp_dir) / "index.db")
+            self._create_legacy_artifact_tables(connection)
+            connection.execute("INSERT INTO artifacts(title) VALUES ('残すAIノート')")
+            connection.commit()
+
+            with self.assertLogs(level="WARNING") as logs:
+                initialize(connection)
+
+            self.assertIn("artifacts=1", "\n".join(logs.output))
+            self.assertTrue({"artifacts", "artifact_sources", "export_events"}.issubset(self._table_names(connection)))
+            self.assertEqual(connection.execute("SELECT title FROM artifacts").fetchone()[0], "残すAIノート")
             connection.close()
 
 
