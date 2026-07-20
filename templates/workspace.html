@@ -43,15 +43,18 @@
 <div class="modal" id="ws-add-modal" aria-hidden="true">
   <div class="modal-panel ws-add-panel" role="dialog" aria-modal="true" aria-labelledby="ws-add-title">
     <div class="modal-bar">
-      <div class="modal-title" id="ws-add-title">ページを追加</div>
+      <div class="modal-title" id="ws-add-title">追加するページを選ぶ</div>
       <div class="modal-actions">
         <button type="button" id="ws-add-close">閉じる</button>
       </div>
     </div>
     <form class="ws-add-form" id="ws-add-form">
       <select id="ws-add-scope" aria-label="検索対象の本"></select>
-      <input type="search" id="ws-add-query" placeholder="キーワードでページを検索">
-      <button type="submit" class="primary">検索</button>
+      <div class="ws-add-search-actions">
+        <input type="search" id="ws-add-query" placeholder="キーワードでページを検索">
+        <button type="submit" class="primary">検索</button>
+        <button type="button" id="ws-add-open-pdf" disabled>PDFを開く</button>
+      </div>
     </form>
     <div class="ws-add-results" id="ws-add-results">
       <p class="muted" style="margin: 0;">この資料に入っているPDFの本文からページを検索します。</p>
@@ -171,6 +174,7 @@
     const addForm = document.getElementById('ws-add-form');
     const addScope = document.getElementById('ws-add-scope');
     const addQuery = document.getElementById('ws-add-query');
+    const addOpenPdfButton = document.getElementById('ws-add-open-pdf');
     const addResults = document.getElementById('ws-add-results');
     const addSubmitButton = document.getElementById('ws-add-submit');
     const addStatus = document.getElementById('ws-add-status');
@@ -446,7 +450,7 @@
       addPagesButton.addEventListener('click', (event) => {
         event.preventDefault();
         event.stopPropagation();
-        openAddModal(path);
+        openAddModal(key);
       });
       const removeButton = document.createElement('button');
       removeButton.type = 'button';
@@ -912,7 +916,21 @@
       addSubmitButton.disabled = addResults.querySelectorAll('input:checked').length === 0;
     }
 
-    function openAddModal(scopePath = '') {
+    function selectedAddEntry() {
+      const key = addScope.value;
+      if (!key) {
+        return null;
+      }
+      const cart = TsundokuCart.load();
+      const items = Array.isArray(cart.items) ? cart.items : [];
+      return items.find((item) => TsundokuCart.itemKey(item) === key) || null;
+    }
+
+    function updateAddOpenPdfState() {
+      addOpenPdfButton.disabled = selectedAddEntry() === null;
+    }
+
+    function openAddModal(scopeItemKey = '') {
       addQuery.value = '';
       addScope.innerHTML = '';
       const allOption = document.createElement('option');
@@ -923,11 +941,13 @@
       const items = Array.isArray(cart.items) ? cart.items : [];
       for (const item of items) {
         const option = document.createElement('option');
-        option.value = item.pdf_path;
-        option.textContent = item.title;
+        option.value = TsundokuCart.itemKey(item);
+        option.textContent = item.pages ? `${item.title}（p.${item.pages}）` : item.title;
         addScope.appendChild(option);
       }
-      addScope.value = scopePath && items.some((item) => item.pdf_path === scopePath) ? scopePath : '';
+      addScope.value = scopeItemKey && items.some((item) => TsundokuCart.itemKey(item) === scopeItemKey)
+        ? scopeItemKey
+        : '';
       const activePack = TsundokuCart.getActivePack();
       const guide = document.createElement('p');
       guide.className = 'muted';
@@ -939,6 +959,7 @@
       addResults.appendChild(guide);
       setAddStatus('');
       updateAddSubmitState();
+      updateAddOpenPdfState();
       addModal.classList.add('open');
       addModal.setAttribute('aria-hidden', 'false');
       addQuery.focus();
@@ -947,6 +968,26 @@
     function closeAddModal() {
       addModal.classList.remove('open');
       addModal.setAttribute('aria-hidden', 'true');
+    }
+
+    function openSelectedAddPdf() {
+      const entry = selectedAddEntry();
+      if (!entry) {
+        setAddStatus('本を選択してください', true);
+        updateAddOpenPdfState();
+        return;
+      }
+      const trigger = document.createElement('button');
+      trigger.type = 'button';
+      trigger.dataset.pdfModalUrl = `/pdf/${encodeURIComponent(entry.pdf_path)}`;
+      trigger.dataset.pdfModalTitle = entry.title;
+      trigger.dataset.pdfModalPath = entry.pdf_path;
+      trigger.dataset.pdfModalPages = entry.pages;
+      trigger.dataset.pdfModalItemKey = TsundokuCart.itemKey(entry);
+      document.body.appendChild(trigger);
+      closeAddModal();
+      trigger.click();
+      trigger.remove();
     }
 
     function renderSearchGroup(entry, payload, query) {
@@ -977,7 +1018,7 @@
         const checkbox = document.createElement('input');
         checkbox.type = 'checkbox';
         checkbox.value = String(hit.page_number);
-        checkbox.dataset.path = entry.path;
+        checkbox.dataset.itemKey = entry.itemKey;
         const text = document.createElement('span');
         const alreadyAdded = TsundokuPages.specContainsPages(entry.pages, [hit.page_number]);
         text.textContent = `p.${hit.page_number}  ${hit.snippet}${alreadyAdded ? '（追加済み）' : ''}`;
@@ -1000,8 +1041,8 @@
       }
       const cart = TsundokuCart.load();
       const items = Array.isArray(cart.items) ? cart.items : [];
-      const scopePath = addScope.value;
-      const entries = items.filter((item) => !scopePath || item.pdf_path === scopePath);
+      const selectedEntry = selectedAddEntry();
+      const entries = selectedEntry ? [selectedEntry] : items;
       addResults.innerHTML = '<p class="muted" style="margin: 0;">検索中...</p>';
       setAddStatus('');
       const groups = [];
@@ -1014,7 +1055,11 @@
             throw new Error(await errorMessageFromResponse(response));
           }
           const payload = await response.json();
-          groups.push(renderSearchGroup({ path: entry.pdf_path, title: entry.title, pages: entry.pages }, payload, query));
+          groups.push(renderSearchGroup({
+            itemKey: TsundokuCart.itemKey(entry),
+            title: entry.title,
+            pages: entry.pages,
+          }, payload, query));
         } catch (error) {
           const group = document.createElement('div');
           const heading = document.createElement('div');
@@ -1036,26 +1081,26 @@
     }
 
     function addSelectedPages() {
-      const selectedByPath = new Map();
+      const selectedByItemKey = new Map();
       for (const checkbox of addResults.querySelectorAll('input:checked')) {
-        const path = checkbox.dataset.path;
+        const key = checkbox.dataset.itemKey;
         const page = parseInt(checkbox.value, 10);
-        if (!path || !Number.isInteger(page)) {
+        if (!key || !Number.isInteger(page)) {
           continue;
         }
-        if (!selectedByPath.has(path)) {
-          selectedByPath.set(path, []);
+        if (!selectedByItemKey.has(key)) {
+          selectedByItemKey.set(key, []);
         }
-        selectedByPath.get(path).push(page);
+        selectedByItemKey.get(key).push(page);
       }
-      if (selectedByPath.size === 0) {
+      if (selectedByItemKey.size === 0) {
         return;
       }
       const cart = TsundokuCart.load();
       const items = Array.isArray(cart.items) ? cart.items : [];
       let addedCount = 0;
-      for (const [path, pages] of selectedByPath) {
-        const entry = items.find((item) => item.pdf_path === path);
+      for (const [key, pages] of selectedByItemKey) {
+        const entry = items.find((item) => TsundokuCart.itemKey(item) === key);
         if (!entry) {
           continue;
         }
@@ -1072,7 +1117,7 @@
       setStatus(addedCount > 0 ? `${addedCount}ページを追加しました` : '追加するページはありませんでした');
     }
 
-    addOpenButton.addEventListener('click', openAddModal);
+    addOpenButton.addEventListener('click', () => openAddModal());
     document.getElementById('ws-add-close').addEventListener('click', closeAddModal);
     document.getElementById('ws-add-cancel').addEventListener('click', closeAddModal);
     addModal.addEventListener('click', (event) => {
@@ -1090,10 +1135,12 @@
       void runPageSearch();
     });
     addScope.addEventListener('change', () => {
+      updateAddOpenPdfState();
       if (addQuery.value.trim()) {
         void runPageSearch();
       }
     });
+    addOpenPdfButton.addEventListener('click', openSelectedAddPdf);
     addResults.addEventListener('change', updateAddSubmitState);
     addSubmitButton.addEventListener('click', addSelectedPages);
 

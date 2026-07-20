@@ -518,6 +518,8 @@ class HighlightQueryTest(unittest.TestCase):
         self.assertIn('id="ws-export-preview"', body)
         self.assertIn('id="ws-pack-list-link" href="/packs">資料一覧へ', body)
         self.assertIn('id="ws-add-open">資料内からページを追加', body)
+        self.assertIn('id="ws-add-title">追加するページを選ぶ', body)
+        self.assertIn('id="ws-add-open-pdf" disabled>PDFを開く', body)
         self.assertIn('id="ws-search-link" href="/">検索画面で本を探す', body)
         self.assertIn('id="ws-export"', body)
         self.assertNotIn("ws-export-pdf", body)
