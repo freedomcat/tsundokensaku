@@ -597,14 +597,20 @@
       }
 
       .ws-add-form {
-        display: flex;
-        gap: 8px;
+        display: grid;
+        gap: 10px;
         padding: 12px;
         border-bottom: 1px solid var(--border);
       }
 
+      .ws-add-search-actions {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+
       .ws-add-form input[type="search"] {
-        flex: 1;
+        flex: 1 1 14rem;
         border: 1px solid var(--border);
         border-radius: 10px;
         padding: 10px 12px;
