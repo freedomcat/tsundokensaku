@@ -1482,6 +1482,12 @@ def ensure_pack_schema(connection: sqlite3.Connection) -> None:
     connection.commit()
 
 
+def ensure_artifact_schema(connection: sqlite3.Connection) -> None:
+    """artifact関連テーブルだけを保証する軽量版。APIリクエスト経路で使う。"""
+    _ensure_artifact_schema(connection)
+    connection.commit()
+
+
 def record_export_event(
     connection: sqlite3.Connection,
     *,
