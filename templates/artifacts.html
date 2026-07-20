@@ -1,0 +1,206 @@
+{% extends "base.html" %}
+{% block title %}つんどけんさく | AIノート{% endblock %}
+{% block content %}
+<section class="card">
+  <div class="artifact-heading">
+    <div>
+      <h2>AIノート</h2>
+      <p class="muted">AIサービスで得た回答や整理内容を、出典とともに保存します。</p>
+    </div>
+    {% if not is_demo_mode() %}
+      <button type="button" class="primary" id="artifact-create-open">AIノートを追加</button>
+    {% else %}
+      <p class="ws-error" id="artifact-demo-notice">デモモードのため、AIノートの追加と削除は無効です。</p>
+    {% endif %}
+  </div>
+  <p class="ws-status" id="artifact-status" role="status" aria-live="polite"></p>
+  <div id="artifact-list" aria-live="polite"></div>
+  <p class="muted" id="artifact-empty" hidden>AIノートはまだありません。AIサービスで得た内容を貼り付けて保存できます。</p>
+</section>
+
+<div class="modal" id="artifact-create-modal" aria-hidden="true">
+  <div class="modal-panel artifact-modal-panel" role="dialog" aria-modal="true" aria-labelledby="artifact-create-title">
+    <div class="modal-bar">
+      <div class="modal-title" id="artifact-create-title">AIノートを追加</div>
+      <div class="modal-actions"><button type="button" id="artifact-create-close">閉じる</button></div>
+    </div>
+    <form id="artifact-create-form" class="artifact-form">
+      <label>タイトル<input id="artifact-title" name="title" maxlength="200" required></label>
+      <label>本文<textarea id="artifact-body" name="body" rows="12" required></textarea></label>
+      <label>取り込み元サービス<input id="artifact-source-service" name="source_service" list="artifact-services"></label>
+      <datalist id="artifact-services"><option value="ChatGPT"><option value="Claude"><option value="Gemini"><option value="NotebookLM"></datalist>
+      <label>モデル名<input id="artifact-source-model" name="source_model"></label>
+      <label>プロンプト<textarea id="artifact-prompt" name="prompt" rows="3"></textarea></label>
+      <label>生成元のエクスポート<select id="artifact-export-event" name="export_event_id"><option value="">紐づけない</option></select></label>
+      <p class="ws-status" id="artifact-create-status" role="status" aria-live="polite"></p>
+      <div class="artifact-modal-footer"><button type="button" id="artifact-create-cancel">キャンセル</button><button type="submit" class="primary" id="artifact-create-submit">保存する</button></div>
+    </form>
+  </div>
+</div>
+
+<div class="modal" id="artifact-detail-modal" aria-hidden="true">
+  <div class="modal-panel artifact-modal-panel" role="dialog" aria-modal="true" aria-labelledby="artifact-detail-title">
+    <div class="modal-bar"><div class="modal-title" id="artifact-detail-title"></div><div class="modal-actions"><button type="button" id="artifact-detail-close">閉じる</button></div></div>
+    <div class="artifact-detail-body" id="artifact-detail-body"></div>
+    <div class="artifact-modal-footer">
+      {% if not is_demo_mode() %}<button type="button" id="artifact-delete" class="artifact-delete">削除する</button>{% endif %}
+      <button type="button" id="artifact-detail-done">閉じる</button>
+    </div>
+  </div>
+</div>
+
+<style>
+  .artifact-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; flex-wrap: wrap; }
+  .artifact-heading h2 { margin: 0 0 6px; }
+  .artifact-heading .muted { margin: 0; }
+  .artifact-row { display: flex; align-items: center; gap: 12px; padding: 14px 0; border-bottom: 1px solid var(--border); }
+  .artifact-row:last-child { border-bottom: 0; }
+  .artifact-row-main { flex: 1; min-width: 0; }
+  .artifact-row-title { font-weight: 600; overflow-wrap: anywhere; }
+  .artifact-row-meta { color: var(--muted); font-size: .9rem; margin-top: 4px; overflow-wrap: anywhere; }
+  .artifact-modal-panel { width: min(760px, 100%); height: auto; max-height: min(88vh, 920px); grid-template-rows: auto minmax(0, 1fr) auto; }
+  .artifact-form, .artifact-detail-body { overflow-y: auto; padding: 16px; display: grid; gap: 14px; }
+  .artifact-form label { display: grid; gap: 6px; font-weight: 600; }
+  .artifact-form input, .artifact-form textarea, .artifact-form select { width: 100%; font: inherit; padding: 9px; border: 1px solid var(--border); border-radius: 8px; background: white; }
+  .artifact-form textarea { resize: vertical; }
+  .artifact-modal-footer { display: flex; justify-content: flex-end; gap: 10px; flex-wrap: wrap; padding: 14px 16px; border-top: 1px solid var(--border); }
+  .artifact-detail-section { display: grid; gap: 6px; }
+  .artifact-detail-section h3 { margin: 0; font-size: 1rem; }
+  .artifact-detail-value { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; }
+  .artifact-source-list { margin: 0; padding-left: 1.4rem; display: grid; gap: 6px; }
+  .artifact-delete { color: #b91c1c; margin-right: auto; }
+  @media (max-width: 480px) { .artifact-row { align-items: flex-start; flex-direction: column; } .artifact-row > button { width: 100%; } }
+</style>
+
+<script>
+  (() => {
+    const listEl = document.getElementById('artifact-list');
+    const emptyEl = document.getElementById('artifact-empty');
+    const statusEl = document.getElementById('artifact-status');
+    const createModal = document.getElementById('artifact-create-modal');
+    const detailModal = document.getElementById('artifact-detail-modal');
+    const createForm = document.getElementById('artifact-create-form');
+    const createSubmitButton = document.getElementById('artifact-create-submit');
+    const createStatus = document.getElementById('artifact-create-status');
+    const eventSelect = document.getElementById('artifact-export-event');
+    const detailTitle = document.getElementById('artifact-detail-title');
+    const detailBody = document.getElementById('artifact-detail-body');
+    const deleteButton = document.getElementById('artifact-delete');
+    let selectedArtifactId = null;
+    let createInProgress = false;
+
+    function messageFor(error, fallback) { return error instanceof Error ? error.message : fallback; }
+    function setStatus(element, message, isError = false) { element.textContent = message || ''; element.classList.toggle('is-error', Boolean(message && isError)); }
+    async function responseError(response, fallback) { try { const payload = await response.json(); return payload.detail || fallback; } catch (_) { return fallback; } }
+    function openModal(modal, focusTarget) { modal.classList.add('open'); modal.setAttribute('aria-hidden', 'false'); focusTarget?.focus(); }
+    function closeModal(modal) { modal.classList.remove('open'); modal.setAttribute('aria-hidden', 'true'); }
+    function formatDate(value) { const date = new Date(value); return Number.isNaN(date.getTime()) ? value : date.toLocaleString('ja-JP'); }
+    function exportEventLabel(event) { return `${event.pack_name || '資料名なし'} / ${event.profile} / ${formatDate(event.exported_at)}`; }
+
+    function renderArtifactRow(artifact) {
+      const row = document.createElement('div'); row.className = 'artifact-row';
+      const main = document.createElement('div'); main.className = 'artifact-row-main';
+      const title = document.createElement('div'); title.className = 'artifact-row-title'; title.textContent = artifact.title;
+      const meta = document.createElement('div'); meta.className = 'artifact-row-meta';
+      const service = artifact.source_service || '取り込み元未指定';
+      const model = artifact.source_model || 'モデル未指定';
+      const source = artifact.pack_name || 'エクスポート履歴なし';
+      meta.textContent = `${service} / ${model} / ${source} / 出典${artifact.source_count}冊 / ${formatDate(artifact.created_at)}`;
+      const open = document.createElement('button'); open.type = 'button'; open.textContent = '詳細を開く'; open.addEventListener('click', () => void openDetail(artifact.id));
+      main.append(title, meta); row.append(main, open); return row;
+    }
+
+    async function refreshList() {
+      setStatus(statusEl, '一覧を取得中です。');
+      try {
+        const response = await fetch('/api/artifacts');
+        if (!response.ok) throw new Error(await responseError(response, 'AIノート一覧の取得に失敗しました'));
+        const payload = await response.json(); const artifacts = Array.isArray(payload.artifacts) ? payload.artifacts : [];
+        listEl.replaceChildren(); emptyEl.hidden = artifacts.length > 0;
+        artifacts.forEach((artifact) => listEl.appendChild(renderArtifactRow(artifact)));
+        setStatus(statusEl, '');
+      } catch (error) { listEl.replaceChildren(); emptyEl.hidden = true; setStatus(statusEl, messageFor(error, 'AIノート一覧の取得に失敗しました'), true); }
+    }
+
+    async function loadExportEvents() {
+      eventSelect.replaceChildren(new Option('紐づけない', ''));
+      const response = await fetch('/api/export-events?limit=20');
+      if (!response.ok) throw new Error(await responseError(response, 'エクスポート履歴の取得に失敗しました'));
+      const payload = await response.json(); const events = Array.isArray(payload.export_events) ? payload.export_events : [];
+      events.forEach((event) => eventSelect.add(new Option(exportEventLabel(event), String(event.id))));
+    }
+
+    async function openCreate() {
+      setStatus(createStatus, 'エクスポート履歴を取得中です。');
+      try { await loadExportEvents(); setStatus(createStatus, ''); openModal(createModal, document.getElementById('artifact-title')); }
+      catch (error) { setStatus(createStatus, messageFor(error, 'エクスポート履歴の取得に失敗しました'), true); openModal(createModal, document.getElementById('artifact-title')); }
+    }
+
+    function detailSection(label, value) {
+      const section = document.createElement('section'); section.className = 'artifact-detail-section';
+      const heading = document.createElement('h3'); heading.textContent = label;
+      const body = document.createElement('p'); body.className = 'artifact-detail-value'; body.textContent = value || '未指定';
+      section.append(heading, body); return section;
+    }
+
+    async function openDetail(id) {
+      setStatus(statusEl, '詳細を取得中です。');
+      try {
+        const response = await fetch(`/api/artifacts/${id}`);
+        if (response.status === 404) { await refreshList(); throw new Error('AIノートが見つかりません'); }
+        if (!response.ok) throw new Error(await responseError(response, 'AIノート詳細の取得に失敗しました'));
+        const artifact = await response.json(); selectedArtifactId = artifact.id; detailTitle.textContent = artifact.title; detailBody.replaceChildren();
+        detailBody.append(detailSection('本文', artifact.body), detailSection('取り込み元サービス', artifact.source_service), detailSection('モデル名', artifact.source_model), detailSection('プロンプト', artifact.prompt));
+        detailBody.append(detailSection('関連するエクスポート履歴', artifact.pack_name || (artifact.export_event_id ? `履歴 #${artifact.export_event_id}` : '紐づけない')));
+        const sources = document.createElement('section'); sources.className = 'artifact-detail-section'; const heading = document.createElement('h3'); heading.textContent = `出典明細（${artifact.source_count}冊）`; const list = document.createElement('ul'); list.className = 'artifact-source-list';
+        if (artifact.sources.length === 0) { const item = document.createElement('li'); item.textContent = '出典明細はありません。'; list.appendChild(item); }
+        artifact.sources.forEach((source) => { const item = document.createElement('li'); item.textContent = `${source.title} / p.${source.pages}`; list.appendChild(item); });
+        sources.append(heading, list); detailBody.appendChild(sources); setStatus(statusEl, ''); openModal(detailModal, document.getElementById('artifact-detail-close'));
+      } catch (error) { setStatus(statusEl, messageFor(error, 'AIノート詳細の取得に失敗しました'), true); }
+    }
+
+    async function createArtifact(event) {
+      event.preventDefault();
+      if (createInProgress) return;
+      const data = new FormData(createForm); const payload = { title: data.get('title'), body: data.get('body') };
+      if (typeof payload.title !== 'string' || !payload.title.trim() || typeof payload.body !== 'string' || !payload.body.trim()) {
+        setStatus(createStatus, 'タイトルと本文を入力してください。', true); return;
+      }
+      ['source_service', 'source_model', 'prompt'].forEach((key) => { const value = data.get(key); if (typeof value === 'string' && value) payload[key] = value; });
+      if (data.get('export_event_id')) payload.export_event_id = Number(data.get('export_event_id'));
+      createInProgress = true;
+      const originalButtonLabel = createSubmitButton.textContent;
+      createSubmitButton.disabled = true;
+      createSubmitButton.textContent = '保存中...';
+      setStatus(createStatus, '保存中です。');
+      try {
+        const response = await fetch('/api/artifacts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+        if (!response.ok) throw new Error(await responseError(response, 'AIノートの保存に失敗しました'));
+        closeModal(createModal); createForm.reset(); setStatus(createStatus, ''); await refreshList(); setStatus(statusEl, 'AIノートを保存しました。');
+      } catch (error) { setStatus(createStatus, messageFor(error, 'AIノートの保存に失敗しました'), true); }
+      finally {
+        createInProgress = false;
+        createSubmitButton.disabled = false;
+        createSubmitButton.textContent = originalButtonLabel;
+      }
+    }
+
+    async function deleteArtifact() {
+      if (selectedArtifactId === null || !window.confirm('このAIノートを削除します。よろしいですか？')) return;
+      try {
+        const response = await fetch(`/api/artifacts/${selectedArtifactId}`, { method: 'DELETE' });
+        if (response.status === 404) { closeModal(detailModal); await refreshList(); setStatus(statusEl, 'AIノートはすでに削除されています。', true); return; }
+        if (!response.ok) throw new Error(await responseError(response, 'AIノートの削除に失敗しました'));
+        closeModal(detailModal); selectedArtifactId = null; await refreshList(); setStatus(statusEl, 'AIノートを削除しました。');
+      } catch (error) { setStatus(statusEl, messageFor(error, 'AIノートの削除に失敗しました'), true); }
+    }
+
+    document.getElementById('artifact-create-open')?.addEventListener('click', () => void openCreate());
+    createForm?.addEventListener('submit', createArtifact); deleteButton?.addEventListener('click', () => void deleteArtifact());
+    [['artifact-create-close', createModal], ['artifact-create-cancel', createModal], ['artifact-detail-close', detailModal], ['artifact-detail-done', detailModal]].forEach(([id, modal]) => document.getElementById(id)?.addEventListener('click', () => closeModal(modal)));
+    [createModal, detailModal].forEach((modal) => { modal?.addEventListener('click', (event) => { if (event.target === modal) closeModal(modal); }); });
+    document.addEventListener('keydown', (event) => { if (event.key !== 'Escape') return; if (createModal?.classList.contains('open')) closeModal(createModal); if (detailModal?.classList.contains('open')) closeModal(detailModal); });
+    refreshList();
+  })();
+</script>
+{% endblock %}
