@@ -93,6 +93,24 @@ test.describe('Search multiple additions (Phase 3A E2E)', () => {
     await expect(page).toHaveURL(/\/workspace$/);
   });
 
+  test('navigates from home through renamed registration and workspace management actions', async ({ page }) => {
+    await page.goto('http://localhost:8003/');
+    await page.getByRole('link', { name: '本の登録', exact: true }).click();
+    await expect(page).toHaveURL(/\/settings$/);
+    await expect(page.getByRole('heading', { name: 'インデックス実行', exact: true })).toBeVisible();
+
+    await page.goto('http://localhost:8003/');
+    await page.locator('#home-pack-card a.button[href="/workspace"]').click();
+    await expect(page).toHaveURL(/\/workspace$/);
+    await expect(page.getByRole('heading', { name: '資料机', exact: true })).toBeVisible();
+
+    await page.locator('#ws-management > summary').click();
+    await expect(page.locator('#ws-management > summary')).toHaveText('⋯ 資料管理');
+    await page.locator('#ws-pack-list-link').click();
+    await expect(page).toHaveURL(/\/packs$/);
+    await expect(page.getByRole('heading', { name: '資料一覧', exact: true })).toBeVisible();
+  });
+
   test('keeps the selected pack control within the viewport on narrow screens', async ({ page }) => {
     const originalViewport = page.viewportSize();
     await page.setViewportSize({ width: 375, height: 812 });
