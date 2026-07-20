@@ -54,7 +54,6 @@ from tsundokensaku.web import (
     update_pdf_export_save_dir,
     upload_pdf,
     upload_scrapbox_json,
-    artifact_list_page,
     pack_list_page,
     workspace_page,
 )
@@ -566,19 +565,6 @@ class HighlightQueryTest(unittest.TestCase):
         self.assertIn("/api/packs/stats", body)
         self.assertIn('id="pl-list"', body)
         self.assertIn('id="pl-delete-selected"', body)
-
-    def test_artifact_list_page_renders(self) -> None:
-        from unittest.mock import MagicMock
-
-        request = MagicMock()
-        request.url.path = "/artifacts"
-        response = artifact_list_page(request)
-
-        self.assertEqual(response.status_code, 200)
-        body = response.body.decode("utf-8")
-        self.assertIn("AIノート", body)
-        self.assertIn('id="artifact-list"', body)
-        self.assertIn('href="/artifacts" class="active"', body)
 
     def test_search_pages_returns_matching_pages_with_snippets(self) -> None:
         from tsundokensaku.database import PageRecord, replace_pages
@@ -3321,185 +3307,43 @@ class ExportEventRecordingTest(unittest.TestCase):
             self.assertEqual(self._count_events(db_path), 2)
 
 
-class ArtifactApiTest(unittest.TestCase):
-    def _insert_export_event(
-        self,
-        db_path: Path,
-        *,
-        exported_at: str = "2026-07-20T00:00:00+00:00",
-        pack_name: str = "資料スナップショット",
-        items: list[dict[str, object]] | None = None,
-    ) -> int:
-        connection = connect(db_path)
-        try:
+class ArtifactRemovalApiTest(unittest.TestCase):
+    def test_artifact_routes_are_not_registered_and_export_events_remains_available(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "index.db"
+            connection = connect(db_path)
             initialize(connection)
-            cursor = connection.execute(
-                """
-                INSERT INTO export_events(exported_at, pack_id, pack_name, profile, format, items_json)
-                VALUES (?, ?, ?, ?, ?, ?)
-                """,
+            connection.execute(
+                "INSERT INTO export_events(exported_at, pack_id, pack_name, profile, format, items_json) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
                 (
-                    exported_at,
-                    7,
-                    pack_name,
+                    "2026-07-20T00:00:00+00:00",
+                    None,
+                    "履歴資料",
                     "standard",
                     "pdf",
-                    json.dumps({"version": 1, "items": items or []}, ensure_ascii=False),
+                    '{"version": 1, "items": []}',
                 ),
             )
             connection.commit()
-            return int(cursor.lastrowid)
-        finally:
             connection.close()
 
-    def _artifact_count(self, db_path: Path) -> int:
-        connection = connect(db_path)
-        try:
-            initialize(connection)
-            return int(connection.execute("SELECT COUNT(*) FROM artifacts").fetchone()[0])
-        finally:
-            connection.close()
-
-    def test_export_events_list_limit_and_demo_mode(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            db_path = Path(temp_dir) / "index.db"
-            older_id = self._insert_export_event(db_path, exported_at="2026-07-18T00:00:00+00:00", pack_name="古い資料")
-            newer_id = self._insert_export_event(
-                db_path,
-                exported_at="2026-07-19T00:00:00+00:00",
-                pack_name="新しい資料",
-                items=[{"pdf_path": "books/a.pdf", "title": "本A", "pages": "1-2", "position": 0}],
-            )
             with patch("tsundokensaku.web.get_db_path", return_value=db_path):
                 client = TestClient(tsundokensaku_app)
-                response = client.get("/api/export-events?limit=1")
-                self.assertEqual(response.status_code, 200)
-                self.assertEqual([event["id"] for event in response.json()["export_events"]], [newer_id])
-                self.assertEqual(response.json()["export_events"][0]["items"][0]["title"], "本A")
-                with patch.dict(os.environ, {"DEMO_MODE": "true"}):
-                    demo_response = client.get("/api/export-events")
-                self.assertEqual(demo_response.status_code, 200)
-                self.assertEqual([event["id"] for event in demo_response.json()["export_events"]], [newer_id, older_id])
+                self.assertEqual(client.get("/artifacts").status_code, 404)
+                self.assertEqual(client.get("/api/artifacts").status_code, 404)
+                self.assertEqual(client.post("/api/artifacts", json={}).status_code, 404)
+                self.assertEqual(client.get("/api/artifacts/1").status_code, 404)
+                response = client.get("/api/export-events")
+                openapi_paths = client.get("/openapi.json").json()["paths"]
 
-    def test_create_artifact_with_and_without_export_event(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            db_path = Path(temp_dir) / "index.db"
-            event_id = self._insert_export_event(
-                db_path,
-                items=[{"pdf_path": "books/a.pdf", "title": "本A", "pages": "3-4", "position": 2}],
-            )
-            with patch("tsundokensaku.web.get_db_path", return_value=db_path):
-                client = TestClient(tsundokensaku_app)
-                standalone = client.post("/api/artifacts", json={"title": "手動ノート", "body": "本文"})
-                self.assertEqual(standalone.status_code, 201)
-                self.assertIsNone(standalone.json()["export_event_id"])
-                self.assertEqual(standalone.json()["sources"], [])
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json()["export_events"][0]["pack_name"], "履歴資料")
+            self.assertIn("/api/export-events", openapi_paths)
+            self.assertNotIn("/api/artifacts", openapi_paths)
+            self.assertNotIn("/api/artifacts/{artifact_id}", openapi_paths)
 
-                response = client.post(
-                    "/api/artifacts",
-                    json={
-                        "title": "  履歴付きノート  ",
-                        "body": "# 本文",
-                        "source_service": "ChatGPT",
-                        "source_model": "gpt-test",
-                        "prompt": "整理して",
-                        "export_event_id": event_id,
-                    },
-                )
-            self.assertEqual(response.status_code, 201)
-            artifact = response.json()
-            self.assertEqual(artifact["title"], "履歴付きノート")
-            self.assertEqual(artifact["export_event_id"], event_id)
-            self.assertEqual(artifact["pack_name"], "資料スナップショット")
-            self.assertEqual(artifact["sources"], [{
-                "id": artifact["sources"][0]["id"],
-                "artifact_id": artifact["id"],
-                "pdf_path": "books/a.pdf",
-                "title": "本A",
-                "pages": "3-4",
-                "position": 2,
-            }])
 
-    def test_create_artifact_validation_and_demo_mode(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            db_path = Path(temp_dir) / "index.db"
-            with patch("tsundokensaku.web.get_db_path", return_value=db_path):
-                client = TestClient(tsundokensaku_app)
-                invalid_payloads = [
-                    {},
-                    {"title": "", "body": "本文"},
-                    {"title": "  ", "body": "本文"},
-                    {"title": "題" * 201, "body": "本文"},
-                    {"title": "題"},
-                    {"title": "題", "body": ""},
-                    {"title": "題", "body": "  "},
-                    {"title": "題", "body": "本文", "export_event_id": 9999},
-                    {"title": "題", "body": "本文", "export_event_id": "1"},
-                ]
-                for payload in invalid_payloads:
-                    with self.subTest(payload=payload):
-                        self.assertEqual(client.post("/api/artifacts", json=payload).status_code, 400)
-                malformed = client.post("/api/artifacts", content="{not-json", headers={"content-type": "application/json"})
-                self.assertEqual(malformed.status_code, 400)
-                with patch.dict(os.environ, {"DEMO_MODE": "true"}):
-                    demo_response = client.post("/api/artifacts", json={"title": "題", "body": "本文"})
-                self.assertEqual(demo_response.status_code, 403)
-                self.assertEqual(demo_response.json()["detail"], "デモモードのため無効です")
-
-    def test_create_artifact_rolls_back_when_source_copy_fails(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            db_path = Path(temp_dir) / "index.db"
-            event_id = self._insert_export_event(
-                db_path,
-                items=[{"pdf_path": "books/a.pdf", "title": "本A", "pages": "1", "position": 0}],
-            )
-            connection = connect(db_path)
-            try:
-                connection.execute(
-                    """
-                    CREATE TRIGGER fail_artifact_source_insert
-                    BEFORE INSERT ON artifact_sources
-                    BEGIN
-                        SELECT RAISE(ABORT, 'source insert failed');
-                    END
-                    """
-                )
-                connection.commit()
-            finally:
-                connection.close()
-            with patch("tsundokensaku.web.get_db_path", return_value=db_path):
-                client = TestClient(tsundokensaku_app, raise_server_exceptions=False)
-                response = client.post("/api/artifacts", json={"title": "失敗するノート", "body": "本文", "export_event_id": event_id})
-            self.assertEqual(response.status_code, 500)
-            self.assertEqual(self._artifact_count(db_path), 0)
-
-    def test_artifact_list_detail_delete_and_demo_mode(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            db_path = Path(temp_dir) / "index.db"
-            with patch("tsundokensaku.web.get_db_path", return_value=db_path):
-                client = TestClient(tsundokensaku_app)
-                self.assertEqual(client.get("/api/artifacts").json()["artifacts"], [])
-                created = client.post("/api/artifacts", json={"title": "取得するノート", "body": "本文"}).json()
-                listing = client.get("/api/artifacts")
-                self.assertEqual(listing.status_code, 200)
-                self.assertEqual(listing.json()["artifacts"][0]["id"], created["id"])
-                self.assertNotIn("body", listing.json()["artifacts"][0])
-                with patch.dict(os.environ, {"DEMO_MODE": "true"}):
-                    self.assertEqual(client.get("/api/artifacts").status_code, 200)
-                detail = client.get(f"/api/artifacts/{created['id']}")
-                self.assertEqual(detail.status_code, 200)
-                self.assertEqual(detail.json()["body"], "本文")
-                self.assertEqual(client.get("/api/artifacts/9999").status_code, 404)
-                with patch.dict(os.environ, {"DEMO_MODE": "true"}):
-                    self.assertEqual(client.get(f"/api/artifacts/{created['id']}").status_code, 200)
-                    blocked = client.delete(f"/api/artifacts/{created['id']}")
-                self.assertEqual(blocked.status_code, 403)
-                self.assertEqual(blocked.json()["detail"], "デモモードのため無効です")
-                deleted = client.delete(f"/api/artifacts/{created['id']}")
-                self.assertEqual(deleted.status_code, 200)
-                self.assertEqual(deleted.json()["deleted"], created["id"])
-                self.assertEqual(client.get(f"/api/artifacts/{created['id']}").status_code, 404)
-                self.assertEqual(client.delete("/api/artifacts/9999").status_code, 404)
 
 
 if __name__ == "__main__":

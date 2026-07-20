@@ -79,6 +79,14 @@ test.describe('Search multiple additions (Phase 3A E2E)', () => {
     await expect(page.locator('#ws-pack-select')).toContainText('Phase2D改名資料');
   });
 
+  test('does not show the removed AI note navigation', async ({ page }) => {
+    await page.goto('http://localhost:8003/');
+
+    await expect(page.getByRole('link', { name: 'AIノート', exact: true })).toHaveCount(0);
+    await expect(page.getByRole('link', { name: '資料机', exact: true })).toBeVisible();
+    await expect(page.getByRole('link', { name: '本の登録', exact: true })).toBeVisible();
+  });
+
   test('uses one workspace link on the home page', async ({ page }) => {
     await page.goto('http://localhost:8003/');
 

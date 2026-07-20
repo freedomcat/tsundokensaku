@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import sqlite3
 from collections.abc import Iterable
@@ -108,43 +109,6 @@ class ExportEventItemRecord:
 
 
 @dataclass(frozen=True)
-class ArtifactSourceRecord:
-    id: int
-    artifact_id: int
-    pdf_path: str
-    title: str
-    pages: str
-    position: int
-
-
-@dataclass(frozen=True)
-class ArtifactRecord:
-    id: int
-    title: str
-    body: str
-    source_service: str
-    source_model: str
-    prompt: str
-    export_event_id: int | None
-    pack_id: int | None
-    pack_name: str
-    created_at: str
-    updated_at: str
-    source_count: int = 0
-    sources: tuple[ArtifactSourceRecord, ...] = ()
-
-
-@dataclass(frozen=True)
-class ArtifactSummaryRecord:
-    id: int
-    title: str
-    source_service: str
-    pack_name: str
-    source_count: int
-    created_at: str
-
-
-@dataclass(frozen=True)
 class SearchResult:
     title: str
     path: str | None
@@ -189,7 +153,7 @@ def initialize(connection: sqlite3.Connection) -> None:
     _ensure_book_notes_schema(connection)
     _ensure_search_schema(connection)
     _ensure_pack_schema(connection)
-    _ensure_artifact_schema(connection)
+    _remove_empty_artifact_tables(connection)
     connection.execute("PRAGMA foreign_keys = ON")
     connection.commit()
 
@@ -1479,12 +1443,7 @@ def _pack_record_from_row(row: sqlite3.Row) -> PackRecord:
 def ensure_pack_schema(connection: sqlite3.Connection) -> None:
     """パック関連テーブルだけを保証する軽量版。APIリクエスト経路で使う。"""
     _ensure_pack_schema(connection)
-    connection.commit()
-
-
-def ensure_artifact_schema(connection: sqlite3.Connection) -> None:
-    """artifact関連テーブルだけを保証する軽量版。APIリクエスト経路で使う。"""
-    _ensure_artifact_schema(connection)
+    _remove_empty_artifact_tables(connection)
     connection.commit()
 
 
@@ -1533,7 +1492,7 @@ def list_export_events(connection: sqlite3.Connection, *, limit: int = 20) -> li
     """最近のエクスポート履歴を新しい順で返す。
 
     旧DBや手動編集で items_json が壊れていても、当該イベントの出典を空として
-    扱う。履歴一覧とAIノート取り込みを、1件の不正データで止めないためである。
+    扱う。履歴一覧を、1件の不正データで止めないためである。
     """
     rows = connection.execute(
         """
@@ -1559,148 +1518,6 @@ def get_export_event(connection: sqlite3.Connection, export_event_id: int) -> Ex
     if row is None:
         return None
     return _export_event_record_from_row(row)
-
-
-def create_artifact(
-    connection: sqlite3.Connection,
-    *,
-    title: str,
-    body: str,
-    source_service: str = "",
-    source_model: str = "",
-    prompt: str = "",
-    export_event_id: int | None = None,
-) -> ArtifactRecord:
-    """AIノートを保存し、指定されたエクスポート履歴の出典を複製する。
-
-    artifact本体とartifact_sourcesは同一トランザクションで書き込む。履歴が
-    存在しない場合や途中のINSERTに失敗した場合は、どちらも残さない。
-    """
-    normalized_title = title.strip()
-    if not normalized_title:
-        raise ValueError("Artifact title must not be blank.")
-    if len(normalized_title) > 200:
-        raise ValueError("Artifact title must be at most 200 characters.")
-    if not body.strip():
-        raise ValueError("Artifact body must not be blank.")
-
-    export_event = get_export_event(connection, export_event_id) if export_event_id is not None else None
-    if export_event_id is not None and export_event is None:
-        raise ValueError("Export event does not exist.")
-
-    now = _pack_now()
-    with connection:
-        cursor = connection.execute(
-            """
-            INSERT INTO artifacts(
-                title, body, source_service, source_model, prompt,
-                export_event_id, pack_id, pack_name, created_at, updated_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                normalized_title,
-                body,
-                source_service,
-                source_model,
-                prompt,
-                export_event.id if export_event is not None else None,
-                export_event.pack_id if export_event is not None else None,
-                export_event.pack_name if export_event is not None else "",
-                now,
-                now,
-            ),
-        )
-        artifact_id = int(cursor.lastrowid)
-        if export_event is not None:
-            connection.executemany(
-                """
-                INSERT INTO artifact_sources(artifact_id, pdf_path, title, pages, position)
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                [
-                    (artifact_id, item.pdf_path, item.title, item.pages, item.position)
-                    for item in export_event.items
-                ],
-            )
-
-    artifact = get_artifact(connection, artifact_id)
-    if artifact is None:  # pragma: no cover - defensive guard for an unexpected SQLite failure
-        raise RuntimeError("Artifact was not saved.")
-    return artifact
-
-
-def list_artifacts(connection: sqlite3.Connection, *, limit: int | None = None) -> list[ArtifactSummaryRecord]:
-    """AIノート一覧を作成日時の降順で返す（本文・出典明細は含めない）。"""
-    query = """
-        SELECT a.id, a.title, a.source_service, a.pack_name, a.created_at,
-               COUNT(s.id) AS source_count
-        FROM artifacts a
-        LEFT JOIN artifact_sources s ON s.artifact_id = a.id
-        GROUP BY a.id
-        ORDER BY a.created_at DESC, a.id DESC
-    """
-    parameters: tuple[int, ...] = ()
-    if limit is not None:
-        query += " LIMIT ?"
-        parameters = (max(0, limit),)
-    rows = connection.execute(query, parameters).fetchall()
-    return [
-        ArtifactSummaryRecord(
-            id=int(row["id"]),
-            title=str(row["title"]),
-            source_service=str(row["source_service"]),
-            pack_name=str(row["pack_name"]),
-            source_count=int(row["source_count"]),
-            created_at=str(row["created_at"]),
-        )
-        for row in rows
-    ]
-
-
-def get_artifact(connection: sqlite3.Connection, artifact_id: int) -> ArtifactRecord | None:
-    row = connection.execute(
-        """
-        SELECT a.id, a.title, a.body, a.source_service, a.source_model, a.prompt,
-               a.export_event_id, a.pack_id, a.pack_name, a.created_at, a.updated_at,
-               COUNT(s.id) AS source_count
-        FROM artifacts a
-        LEFT JOIN artifact_sources s ON s.artifact_id = a.id
-        WHERE a.id = ?
-        GROUP BY a.id
-        """,
-        (artifact_id,),
-    ).fetchone()
-    if row is None:
-        return None
-    sources = tuple(
-        ArtifactSourceRecord(
-            id=int(source["id"]),
-            artifact_id=int(source["artifact_id"]),
-            pdf_path=str(source["pdf_path"]),
-            title=str(source["title"]),
-            pages=str(source["pages"]),
-            position=int(source["position"]),
-        )
-        for source in connection.execute(
-            """
-            SELECT id, artifact_id, pdf_path, title, pages, position
-            FROM artifact_sources
-            WHERE artifact_id = ?
-            ORDER BY position, id
-            """,
-            (artifact_id,),
-        ).fetchall()
-    )
-    return _artifact_record_from_row(row, sources=sources)
-
-
-def delete_artifact(connection: sqlite3.Connection, artifact_id: int) -> bool:
-    """AIノートと出典明細を削除する。"""
-    with connection:
-        connection.execute("DELETE FROM artifact_sources WHERE artifact_id = ?", (artifact_id,))
-        cursor = connection.execute("DELETE FROM artifacts WHERE id = ?", (artifact_id,))
-    return cursor.rowcount > 0
 
 
 def _export_event_record_from_row(row: sqlite3.Row) -> ExportEventRecord:
@@ -1735,28 +1552,6 @@ def _parse_export_event_items(items_json: str) -> tuple[ExportEventItemRecord, .
             continue
         items.append(ExportEventItemRecord(pdf_path=pdf_path, title=title, pages=pages, position=position))
     return tuple(items)
-
-
-def _artifact_record_from_row(
-    row: sqlite3.Row,
-    *,
-    sources: tuple[ArtifactSourceRecord, ...] = (),
-) -> ArtifactRecord:
-    return ArtifactRecord(
-        id=int(row["id"]),
-        title=str(row["title"]),
-        body=str(row["body"]),
-        source_service=str(row["source_service"]),
-        source_model=str(row["source_model"]),
-        prompt=str(row["prompt"]),
-        export_event_id=int(row["export_event_id"]) if row["export_event_id"] is not None else None,
-        pack_id=int(row["pack_id"]) if row["pack_id"] is not None else None,
-        pack_name=str(row["pack_name"]),
-        created_at=str(row["created_at"]),
-        updated_at=str(row["updated_at"]),
-        source_count=int(row["source_count"]),
-        sources=sources,
-    )
 
 
 def _ensure_pack_schema(connection: sqlite3.Connection) -> None:
@@ -1802,33 +1597,33 @@ def _ensure_pack_schema(connection: sqlite3.Connection) -> None:
     _migrate_pack_items_drop_pdf_path_unique(connection)
 
 
-def _ensure_artifact_schema(connection: sqlite3.Connection) -> None:
-    connection.executescript(
-        """
-        CREATE TABLE IF NOT EXISTS artifacts (
-            id INTEGER PRIMARY KEY,
-            title TEXT NOT NULL,
-            body TEXT NOT NULL,
-            source_service TEXT NOT NULL DEFAULT '',
-            source_model TEXT NOT NULL DEFAULT '',
-            prompt TEXT NOT NULL DEFAULT '',
-            export_event_id INTEGER,
-            pack_id INTEGER,
-            pack_name TEXT NOT NULL DEFAULT '',
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL
-        );
+def _remove_empty_artifact_tables(connection: sqlite3.Connection) -> None:
+    """空の旧AIノートテーブルだけを安全に削除する。"""
+    table_names = {row["name"] for row in connection.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('artifacts', 'artifact_sources')"
+    ).fetchall()}
+    if not table_names:
+        return
 
-        CREATE TABLE IF NOT EXISTS artifact_sources (
-            id INTEGER PRIMARY KEY,
-            artifact_id INTEGER NOT NULL REFERENCES artifacts(id) ON DELETE CASCADE,
-            pdf_path TEXT NOT NULL,
-            title TEXT NOT NULL,
-            pages TEXT NOT NULL,
-            position INTEGER NOT NULL DEFAULT 0
-        );
-        """
-    )
+    counts = {
+        table_name: int(connection.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()[0])
+        for table_name in table_names
+    }
+    artifact_count = counts.get("artifacts", 0)
+    source_count = counts.get("artifact_sources", 0)
+    if artifact_count or source_count:
+        logging.warning(
+            "AIノート機能は撤去されましたが、既存データを保護するため旧テーブルを保持します: "
+            "artifacts=%d, artifact_sources=%d",
+            artifact_count,
+            source_count,
+        )
+        return
+
+    if "artifact_sources" in table_names:
+        connection.execute("DROP TABLE artifact_sources")
+    if "artifacts" in table_names:
+        connection.execute("DROP TABLE artifacts")
 
 
 def _migrate_pack_items_drop_pdf_path_unique(connection: sqlite3.Connection) -> None:
