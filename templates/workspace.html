@@ -1,9 +1,9 @@
 {% extends "base.html" %}
-{% block title %}つんどけんさく | 資料棚{% endblock %}
+{% block title %}つんどけんさく | 資料机{% endblock %}
 {% block content %}
 <section class="card ws-controls-card">
   <div class="ws-toolbar" style="margin-bottom: 10px;">
-    <h2 style="margin: 0;">資料棚</h2>
+    <h2 style="margin: 0;">資料机</h2>
     <a class="button" id="ws-pack-list-link" href="/packs">資料一覧へ</a>
   </div>
   <div class="ws-toolbar" style="margin-bottom: 10px;">
@@ -12,7 +12,7 @@
       <select id="ws-pack-select" aria-label="資料を選択"></select>
     </label>
     <details class="ws-management" id="ws-management">
-      <summary>⋯ 管理</summary>
+      <summary>⋯ 資料管理</summary>
       <div class="ws-management-menu">
         <div class="ws-management-heading">資料</div>
         <button type="button" id="ws-pack-new">新しい資料</button>
@@ -1000,7 +1000,7 @@
         const note = document.createElement('p');
         note.className = 'muted';
         note.style.margin = '0';
-        note.textContent = '未インデックスのため検索できません。設定画面でインデックスを実行してください。';
+        note.textContent = '未インデックスのため検索できません。本の登録画面でインデックスを実行してください。';
         group.appendChild(note);
         return group;
       }
