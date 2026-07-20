@@ -1095,6 +1095,11 @@ def pack_list_page(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(request, "pack_list.html", {"request": request})
 
 
+@app.get("/artifacts", response_class=HTMLResponse)
+def artifact_list_page(request: Request) -> HTMLResponse:
+    return templates.TemplateResponse(request, "artifacts.html", {"request": request})
+
+
 def _pack_connection():
     connection = connect(get_db_path())
     ensure_pack_schema(connection)

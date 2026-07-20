@@ -54,6 +54,7 @@ from tsundokensaku.web import (
     update_pdf_export_save_dir,
     upload_pdf,
     upload_scrapbox_json,
+    artifact_list_page,
     pack_list_page,
     workspace_page,
 )
@@ -540,6 +541,19 @@ class HighlightQueryTest(unittest.TestCase):
         self.assertIn("/api/packs/stats", body)
         self.assertIn('id="pl-list"', body)
         self.assertIn('id="pl-delete-selected"', body)
+
+    def test_artifact_list_page_renders(self) -> None:
+        from unittest.mock import MagicMock
+
+        request = MagicMock()
+        request.url.path = "/artifacts"
+        response = artifact_list_page(request)
+
+        self.assertEqual(response.status_code, 200)
+        body = response.body.decode("utf-8")
+        self.assertIn("AIノート", body)
+        self.assertIn('id="artifact-list"', body)
+        self.assertIn('href="/artifacts" class="active"', body)
 
     def test_search_pages_returns_matching_pages_with_snippets(self) -> None:
         from tsundokensaku.database import PageRecord, replace_pages
