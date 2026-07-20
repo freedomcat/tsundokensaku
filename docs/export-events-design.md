@@ -2,13 +2,13 @@
 
 作成: 2026-07-12
 状態: 仕様確定（実装は Phase 3C の C-6）
-前提: [usage-history-discovery.md](usage-history-discovery.md) / [ai-artifact-return-discovery.md](ai-artifact-return-discovery.md) / [ai-export-optimization-design.md](ai-export-optimization-design.md) §12.2・§19
+前提: [usage-history-discovery.md](usage-history-discovery.md) / [ai-export-optimization-design.md](ai-export-optimization-design.md) §12.2・§19
 
 ## 1. 目的
 
 エクスポート成功時に「いつ・どの資料の・どの構成を・どの出力条件で書き出したか」を 1 行記録する。記録するのはエクスポートした事実であり、書き出したファイルを外部 AI へ実際に渡した事実ではない。資料の構成、ページ範囲、プロファイル、形式をエクスポート時点のスナップショットとして残す。
 
-この履歴は、Phase 4 で AI 成果物と生成元の出典を結び直す基盤、Phase 5 で書き出し実績を可視化する基盤になり得る。ただし、これらは将来の活用用途であり、Phase 3C で行うのは履歴の記録までとする。
+この履歴は、外部クライアントで書き出し実績を参照・可視化する基盤になり得る。ただし、将来の活用用途とは独立して、Phase 3C で行うのは履歴の記録までとする。
 
 ## 2. テーブル定義（確定）
 
@@ -45,11 +45,11 @@ CREATE TABLE IF NOT EXISTS export_events (
 }
 ```
 
-- `version: 1` を必ず含める。将来フィールドを足す場合は version を上げ、読み手（Phase 4/5 の集計・UI）が判別できるようにする
+- `version: 1` を必ず含める。将来フィールドを足す場合は version を上げ、読み手（集計・外部クライアント）が判別できるようにする
 - `items` は position 順。各要素は `pdf_path`（文字列参照）・`title`（スナップショット）・`pages`（spec 文字列）・`position` の 4 フィールドのみ
 - `pack_items.id` / `collapsed` / `added_at` は**含めない**。id は削除後に意味を失い、collapsed は表示状態で出典情報ではない。含める情報は「何を書き出したか」の確認に必要な最小限に絞る
 
-**選ばなかった案**: チャンク構成（分冊の切れ目）まで記録する案。Phase 4/5 の将来用途に必要なのは書き出し時点の資料構成であり、分冊の切れ目は profile と items から再計算できる。記録を薄く保つ方を優先。
+**選ばなかった案**: チャンク構成（分冊の切れ目）まで記録する案。将来用途に必要なのは書き出し時点の資料構成であり、分冊の切れ目は profile と items から再計算できる。記録を薄く保つ方を優先。
 
 ## 4. 記録対象 format（確定）
 

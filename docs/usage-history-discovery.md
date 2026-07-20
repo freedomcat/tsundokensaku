@@ -2,7 +2,7 @@
 
 作成: 2026-07-12
 状態: 調査・提案（実装なし）
-前提: [ROADMAP.md](../ROADMAP.md) Phase 5 / [pack-design.md](pack-design.md) / [ai-artifact-return-discovery.md](ai-artifact-return-discovery.md)
+前提: [ROADMAP.md](../ROADMAP.md) Phase 5 / [pack-design.md](pack-design.md)
 
 > **位置付け**: 本文書は Phase 5 に向けた調査・提案の記録であり、エクスポート履歴の現行仕様の正本ではない。確定仕様は [export-events-design.md](export-events-design.md) を参照。
 
@@ -90,7 +90,6 @@ CREATE TABLE export_events (
 | 資料エクスポート（pdf/md/json × profile） | **記録する** | items_json に構成スナップショット |
 | 単体ページ切り出し | 見送り | 消化マップ精度を上げたくなったら追加 |
 | 項目追加・削除・範囲変更 | 見送り | ノイズ過多。現在形で代替 |
-| 成果物取り込み（Phase 4） | Phase 4 で追加 | artifacts テーブル側に created_at があるため専用イベントは不要かもしれない |
 
 ### 4.4 保存期間
 
