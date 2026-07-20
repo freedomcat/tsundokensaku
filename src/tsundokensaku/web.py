@@ -27,20 +27,14 @@ from tsundokensaku.database import (
     SEARCH_SCOPES,
     clear_active_pack,
     connect,
-    create_artifact,
     create_pack,
-    delete_artifact,
     delete_pack,
-    ensure_artifact_schema,
     ensure_pack_schema,
     get_book,
-    get_artifact,
-    get_export_event,
     get_pack,
     get_pack_items,
     import_cart_as_pack,
     list_books,
-    list_artifacts,
     list_export_events,
     list_packs,
     pack_items_as_cart,
@@ -1095,11 +1089,6 @@ def pack_list_page(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(request, "pack_list.html", {"request": request})
 
 
-@app.get("/artifacts", response_class=HTMLResponse)
-def artifact_list_page(request: Request) -> HTMLResponse:
-    return templates.TemplateResponse(request, "artifacts.html", {"request": request})
-
-
 def _pack_connection():
     connection = connect(get_db_path())
     ensure_pack_schema(connection)
@@ -1115,13 +1104,6 @@ def _pack_to_json(pack) -> dict:
         "created_at": pack.created_at,
         "updated_at": pack.updated_at,
     }
-
-
-def _artifact_connection():
-    connection = connect(get_db_path())
-    ensure_pack_schema(connection)
-    ensure_artifact_schema(connection)
-    return connection
 
 
 def _export_event_to_json(event) -> dict:
@@ -1144,138 +1126,14 @@ def _export_event_to_json(event) -> dict:
     }
 
 
-def _artifact_summary_to_json(artifact) -> dict:
-    return {
-        "id": artifact.id,
-        "title": artifact.title,
-        "source_service": artifact.source_service,
-        "pack_name": artifact.pack_name,
-        "source_count": artifact.source_count,
-        "created_at": artifact.created_at,
-    }
-
-
-def _artifact_to_json(artifact) -> dict:
-    return {
-        "id": artifact.id,
-        "title": artifact.title,
-        "body": artifact.body,
-        "source_service": artifact.source_service,
-        "source_model": artifact.source_model,
-        "prompt": artifact.prompt,
-        "export_event_id": artifact.export_event_id,
-        "pack_id": artifact.pack_id,
-        "pack_name": artifact.pack_name,
-        "created_at": artifact.created_at,
-        "updated_at": artifact.updated_at,
-        "source_count": artifact.source_count,
-        "sources": [
-            {
-                "id": source.id,
-                "artifact_id": source.artifact_id,
-                "pdf_path": source.pdf_path,
-                "title": source.title,
-                "pages": source.pages,
-                "position": source.position,
-            }
-            for source in artifact.sources
-        ],
-    }
-
-
 @app.get("/api/export-events")
 def api_list_export_events(limit: int = Query(default=20)) -> JSONResponse:
-    connection = _artifact_connection()
+    connection = _pack_connection()
     try:
         events = [_export_event_to_json(event) for event in list_export_events(connection, limit=limit)]
     finally:
         connection.close()
     return JSONResponse({"export_events": events})
-
-
-@app.post("/api/artifacts")
-async def api_create_artifact(request: Request) -> JSONResponse:
-    if is_demo_mode():
-        raise HTTPException(status_code=403, detail=DEMO_MODE_SETTING_MESSAGE)
-    try:
-        payload = await request.json()
-    except json.JSONDecodeError as exc:
-        raise HTTPException(status_code=400, detail="JSONの形式が不正です") from exc
-    if not isinstance(payload, dict):
-        raise HTTPException(status_code=400, detail="JSONオブジェクトが必要です")
-
-    title = payload.get("title")
-    if not isinstance(title, str):
-        raise HTTPException(status_code=400, detail="title は必須です")
-    if not title.strip():
-        raise HTTPException(status_code=400, detail="title は空白のみにはできません")
-    if len(title.strip()) > 200:
-        raise HTTPException(status_code=400, detail="title は200文字以内で指定してください")
-
-    body = payload.get("body")
-    if not isinstance(body, str):
-        raise HTTPException(status_code=400, detail="body は必須です")
-    if not body.strip():
-        raise HTTPException(status_code=400, detail="body は空白のみにはできません")
-
-    export_event_id = payload.get("export_event_id")
-    if export_event_id is not None and (not isinstance(export_event_id, int) or isinstance(export_event_id, bool)):
-        raise HTTPException(status_code=400, detail="export_event_id は整数で指定してください")
-
-    connection = _artifact_connection()
-    try:
-        if export_event_id is not None and get_export_event(connection, export_event_id) is None:
-            raise HTTPException(status_code=400, detail="エクスポート履歴が見つかりません")
-        try:
-            artifact = create_artifact(
-                connection,
-                title=title,
-                body=body,
-                source_service=payload.get("source_service") if isinstance(payload.get("source_service"), str) else "",
-                source_model=payload.get("source_model") if isinstance(payload.get("source_model"), str) else "",
-                prompt=payload.get("prompt") if isinstance(payload.get("prompt"), str) else "",
-                export_event_id=export_event_id,
-            )
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-    finally:
-        connection.close()
-    return JSONResponse(_artifact_to_json(artifact), status_code=201)
-
-
-@app.get("/api/artifacts")
-def api_list_artifacts() -> JSONResponse:
-    connection = _artifact_connection()
-    try:
-        artifacts = [_artifact_summary_to_json(artifact) for artifact in list_artifacts(connection)]
-    finally:
-        connection.close()
-    return JSONResponse({"artifacts": artifacts})
-
-
-@app.get("/api/artifacts/{artifact_id}")
-def api_get_artifact(artifact_id: int) -> JSONResponse:
-    connection = _artifact_connection()
-    try:
-        artifact = get_artifact(connection, artifact_id)
-        if artifact is None:
-            raise HTTPException(status_code=404, detail="AIノートが見つかりません")
-    finally:
-        connection.close()
-    return JSONResponse(_artifact_to_json(artifact))
-
-
-@app.delete("/api/artifacts/{artifact_id}")
-def api_delete_artifact(artifact_id: int) -> JSONResponse:
-    if is_demo_mode():
-        raise HTTPException(status_code=403, detail=DEMO_MODE_SETTING_MESSAGE)
-    connection = _artifact_connection()
-    try:
-        if not delete_artifact(connection, artifact_id):
-            raise HTTPException(status_code=404, detail="AIノートが見つかりません")
-    finally:
-        connection.close()
-    return JSONResponse({"deleted": artifact_id})
 
 
 @app.get("/api/packs")
