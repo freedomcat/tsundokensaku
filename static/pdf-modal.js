@@ -27,7 +27,11 @@
   const thumbPanel = document.getElementById('pdf-modal-thumb-panel');
   const thumbGrid = document.getElementById('pdf-modal-thumb-grid');
   const thumbPrevButton = document.getElementById('pdf-modal-thumb-prev');
+  const thumbNextTopButton = document.getElementById('pdf-modal-thumb-next-top');
+  const thumbPrevBottomButton = document.getElementById('pdf-modal-thumb-prev-bottom');
   const thumbNextButton = document.getElementById('pdf-modal-thumb-next');
+  const thumbPrevButtons = [thumbPrevButton, thumbPrevBottomButton].filter(Boolean);
+  const thumbNextButtons = [thumbNextTopButton, thumbNextButton].filter(Boolean);
   const thumbApplyButton = document.getElementById('pdf-modal-thumb-apply');
   const thumbStatus = document.getElementById('pdf-modal-thumb-status');
   const thumbDetailOverlay = document.getElementById('pdf-modal-thumb-overlay');
@@ -476,15 +480,15 @@
   }
 
   function updateThumbRangeButtons() {
-    if (thumbPrevButton) {
-      const canGoPrev = thumbLoadedMin !== null && thumbLoadedMin > 1;
-      thumbPrevButton.hidden = thumbLoadedMin === null;
-      thumbPrevButton.disabled = !canGoPrev || thumbLoadingDirection !== null;
+    const canGoPrev = thumbLoadedMin !== null && thumbLoadedMin > 1;
+    const canGoNext = thumbLoadedMax !== null && (!currentPageCount || thumbLoadedMax < currentPageCount);
+    for (const button of thumbPrevButtons) {
+      button.hidden = thumbLoadedMin === null;
+      button.disabled = !canGoPrev || thumbLoadingDirection !== null;
     }
-    if (thumbNextButton) {
-      const canGoNext = thumbLoadedMax !== null && (!currentPageCount || thumbLoadedMax < currentPageCount);
-      thumbNextButton.hidden = thumbLoadedMax === null;
-      thumbNextButton.disabled = !canGoNext || thumbLoadingDirection !== null;
+    for (const button of thumbNextButtons) {
+      button.hidden = thumbLoadedMax === null;
+      button.disabled = !canGoNext || thumbLoadingDirection !== null;
     }
   }
 
@@ -739,13 +743,17 @@
     exitThumbMode();
   });
 
-  thumbPrevButton?.addEventListener('click', () => {
-    void expandThumbRange('prev');
-  });
+  for (const button of thumbPrevButtons) {
+    button.addEventListener('click', () => {
+      void expandThumbRange('prev');
+    });
+  }
 
-  thumbNextButton?.addEventListener('click', () => {
-    void expandThumbRange('next');
-  });
+  for (const button of thumbNextButtons) {
+    button.addEventListener('click', () => {
+      void expandThumbRange('next');
+    });
+  }
 
   thumbDetailCloseButton?.addEventListener('click', () => {
     closeThumbDetailOverlay();
