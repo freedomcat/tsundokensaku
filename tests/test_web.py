@@ -503,11 +503,12 @@ class HighlightQueryTest(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         body = response.body.decode("utf-8")
-        self.assertIn("資料棚", body)
+        self.assertIn("資料机", body)
         self.assertIn('class="card ws-controls-card"', body)
         self.assertIn('.ws-controls-card { position: relative; z-index: 1; overflow: visible; }', body)
         self.assertIn('id="ws-management"', body)
         self.assertEqual(body.count('id="ws-management"'), 1)
+        self.assertIn("⋯ 資料管理", body)
         self.assertIn("新しい資料", body)
         self.assertIn("名前を変更", body)
         self.assertIn("バックアップ", body)
@@ -529,6 +530,28 @@ class HighlightQueryTest(unittest.TestCase):
         self.assertIn("章単位PDF", body)
         self.assertIn("PDF一式", body)
         self.assertIn("Markdown一式", body)
+
+    def test_home_page_renders_single_workspace_link(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            db_path = root / "index.db"
+            books_dir = root / "books"
+            books_dir.mkdir()
+            with (
+                patch("tsundokensaku.web.get_db_path", return_value=db_path),
+                patch("tsundokensaku.web.get_books_dir", return_value=books_dir),
+            ):
+                client = TestClient(tsundokensaku_app)
+                self.assertEqual(client.post("/api/packs", json={"name": "ホーム確認資料"}).status_code, 201)
+                response = client.get("/")
+
+            self.assertEqual(response.status_code, 200)
+            body = response.text
+            self.assertIn('class="button" href="/workspace">資料机で整理する', body)
+            self.assertNotIn("資料棚で編集", body)
+            self.assertNotIn("PDF一式を書き出す", body)
+            self.assertNotIn("MD一式を書き出す", body)
+            self.assertEqual(body.count('class="button" href="/workspace"'), 1)
 
     def test_pack_list_page_renders(self) -> None:
         from unittest.mock import MagicMock

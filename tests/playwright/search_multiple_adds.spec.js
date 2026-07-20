@@ -55,11 +55,15 @@ test.describe('Search multiple additions (Phase 3A E2E)', () => {
   test('uses workspace header links and management menu', async ({ page }) => {
     await page.goto('http://localhost:8003/workspace');
 
+    await expect(page.getByRole('link', { name: /^資料机/ })).toBeVisible();
+    await expect(page.getByRole('link', { name: '本の登録', exact: true })).toBeVisible();
+    await expect(page.getByRole('heading', { name: '資料机', exact: true })).toBeVisible();
     await expect(page.locator('#ws-pack-list-link')).toBeVisible();
     await expect(page.locator('#ws-add-open')).toBeVisible();
     await expect(page.locator('#ws-search-link')).toBeVisible();
     await expect(page.locator('#ws-pack-delete')).toHaveCount(0);
     await expect(page.locator('details#ws-management')).toHaveCount(1);
+    await expect(page.locator('#ws-management > summary')).toHaveText('⋯ 資料管理');
 
     await page.locator('#ws-pack-list-link').click();
     await expect(page).toHaveURL(/\/packs$/);
@@ -73,6 +77,20 @@ test.describe('Search multiple additions (Phase 3A E2E)', () => {
     page.once('dialog', (dialog) => dialog.accept('Phase2D改名資料'));
     await page.locator('#ws-pack-rename').click();
     await expect(page.locator('#ws-pack-select')).toContainText('Phase2D改名資料');
+  });
+
+  test('uses one workspace link on the home page', async ({ page }) => {
+    await page.goto('http://localhost:8003/');
+
+    const workspaceLink = page.locator('#home-pack-card a.button[href="/workspace"]');
+    await expect(workspaceLink).toHaveCount(1);
+    await expect(workspaceLink).toHaveText('資料机で整理する');
+    await expect(page.getByText('資料棚で編集', { exact: true })).toHaveCount(0);
+    await expect(page.getByText('PDF一式を書き出す', { exact: true })).toHaveCount(0);
+    await expect(page.getByText('MD一式を書き出す', { exact: true })).toHaveCount(0);
+
+    await workspaceLink.click();
+    await expect(page).toHaveURL(/\/workspace$/);
   });
 
   test('keeps the selected pack control within the viewport on narrow screens', async ({ page }) => {
@@ -154,7 +172,7 @@ test.describe('Search multiple additions (Phase 3A E2E)', () => {
     await expect(msg).toContainText('1件を資料');
     await expect(checkbox).not.toBeChecked();
 
-    // 7. 資料棚に移動し、同じPDFが2つ表示されていることを確認
+    // 7. 資料机に移動し、同じPDFが2つ表示されていることを確認
     await page.goto('http://localhost:8003/workspace');
 
     const cards = page.locator('.ws-book');
@@ -189,7 +207,7 @@ test.describe('Search multiple additions (Phase 3A E2E)', () => {
     await checkbox.check();
     await checkbox.uncheck();
     
-    // 資料棚に戻り、2件維持されていることを確認
+    // 資料机に戻り、2件維持されていることを確認
     await page.goto('http://localhost:8003/workspace');
     await expect(page.locator('.ws-book')).toHaveCount(2);
   });
@@ -212,7 +230,7 @@ test.describe('Search multiple additions (Phase 3A E2E)', () => {
 
     await expect(page.locator('#cart-message')).toContainText('2件を資料');
 
-    // 資料棚で2件表示されていることを確認
+    // 資料机で2件表示されていることを確認
     await page.goto('http://localhost:8003/workspace');
     await expect(page.locator('.ws-book')).toHaveCount(2);
     await expect(page.locator('#nav-workspace-count')).toHaveText('2冊');
@@ -255,7 +273,7 @@ test.describe('Search multiple additions (Phase 3A E2E)', () => {
     await page.locator('#pdf-modal-close').click();
     await expect(modal).not.toHaveClass(/open/);
 
-    // 5. 資料棚に移動し、同じPDFが2つ表示されていることを確認
+    // 5. 資料机に移動し、同じPDFが2つ表示されていることを確認
     await page.goto('http://localhost:8003/workspace');
 
     const cards = page.locator('.ws-book');
@@ -296,7 +314,7 @@ test.describe('Search multiple additions (Phase 3A E2E)', () => {
       await window.TsundokuCart.flushPendingSave();
     });
 
-    // 資料棚で、1枚目のカードの表示範囲のみが更新され、2枚目のカードが変更されていないことを確認
+    // 資料机で、1枚目のカードの表示範囲のみが更新され、2枚目のカードが変更されていないことを確認
     // （かつ、編集操作によってカードの件数が増えていないことも確認）
     await expect(cards).toHaveCount(2);
     const pagesPill1Updated = await cards.nth(0).locator('.ws-book-range').textContent();
