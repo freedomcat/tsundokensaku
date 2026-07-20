@@ -83,7 +83,7 @@ test.describe('Search multiple additions (Phase 3A E2E)', () => {
     await page.goto('http://localhost:8003/');
 
     await expect(page.getByRole('link', { name: 'AIノート', exact: true })).toHaveCount(0);
-    await expect(page.getByRole('link', { name: /^資料机/ })).toBeVisible();
+    await expect(page.getByRole('link', { name: '資料机', exact: true })).toBeVisible();
     await expect(page.getByRole('link', { name: '本の登録', exact: true })).toBeVisible();
   });
 
