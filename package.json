@@ -1,0 +1,9 @@
+{
+  "scripts": {
+    "test:ui": "playwright test --workers=1"
+  },
+  "_note_test:ui": "Please refer to tests/playwright/README.md for the reason why --workers=1 is required.",
+  "devDependencies": {
+    "@playwright/test": "^1.55.0"
+  }
+}

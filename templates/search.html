@@ -168,7 +168,9 @@
   <div class="cart-summary">
     <span class="muted">追加先:</span>
     <select id="cart-pack-select" aria-label="追加先の資料を選択"></select>
-    <a class="button primary" href="/workspace">資料棚で編集</a>
+    <button type="button" class="button primary" id="add-selected-btn" disabled>選択した本を追加</button>
+    <span id="cart-message" style="margin-left: 10px; color: var(--color-success, green); font-weight: bold;"></span>
+    <a class="button" href="/workspace">資料机で整理</a>
   </div>
 </section>
 
@@ -231,59 +233,87 @@
       }
     }
 
-    function syncCheckboxes(cart) {
-      for (const checkbox of document.querySelectorAll('.cart-checkbox')) {
-        const entry = cart.books[checkbox.dataset.cartPath];
-        const pages = parsePages(checkbox.dataset.cartPages);
-        checkbox.checked =
-          Boolean(entry) && pages.length > 0 && TsundokuPages.specContainsPages(entry.pages, pages);
+    function updateAddButtonState() {
+      const checkedCount = document.querySelectorAll('.cart-checkbox:checked').length;
+      const addBtn = document.getElementById('add-selected-btn');
+      if (addBtn) {
+        addBtn.disabled = checkedCount === 0;
+        if (checkedCount > 0) {
+          addBtn.textContent = `選択した本を追加（${checkedCount}件）`;
+        } else {
+          addBtn.textContent = '選択した本を追加';
+        }
       }
     }
 
-    async function handleToggle(checkbox) {
-      const path = checkbox.dataset.cartPath;
-      const title = checkbox.dataset.cartTitle || path;
-      const pages = parsePages(checkbox.dataset.cartPages);
-      if (!path || pages.length === 0) {
-        return;
+    function syncCheckboxes(cart) {
+      // 資料切り替えなどの際、チェックボックスの選択状態をクリアする
+      for (const checkbox of document.querySelectorAll('.cart-checkbox')) {
+        checkbox.checked = false;
       }
-      // 資料作成中の再描画イベントで checkbox.checked が書き換わるため先に確定させる
-      const wantsAdd = checkbox.checked;
-      if (wantsAdd && !TsundokuCart.getActivePack()) {
-        // 資料がまだない。作成してから追加する（取りやめたらチェックを戻す）
-        const created = await TsundokuCart.ensureActivePackInteractive();
-        if (!created) {
-          checkbox.checked = false;
+      updateAddButtonState();
+    }
+
+    const addSelectedBtn = document.getElementById('add-selected-btn');
+    if (addSelectedBtn) {
+      addSelectedBtn.addEventListener('click', async () => {
+        const checked = Array.from(document.querySelectorAll('.cart-checkbox:checked'));
+        if (checked.length === 0) {
           return;
         }
-      }
-      const cart = TsundokuCart.load();
-      const entry = cart.books[path];
-      if (wantsAdd) {
-        const merged = TsundokuPages.mergeSpecs([entry ? entry.pages : '', TsundokuPages.pagesToSpec(pages)]);
-        cart.books[path] = {
-          title,
-          pages: merged,
-          collapsed: entry ? entry.collapsed : false,
-          addedAt: entry ? entry.addedAt : new Date().toISOString(),
-        };
-      } else if (entry) {
-        const remaining = TsundokuPages.subtractPages(entry.pages, pages);
-        if (remaining) {
-          entry.pages = remaining;
-        } else {
-          delete cart.books[path];
+
+        let activePack = TsundokuCart.getActivePack();
+        if (!activePack) {
+          const created = await TsundokuCart.ensureActivePackInteractive();
+          if (!created) {
+            return;
+          }
+          activePack = TsundokuCart.getActivePack();
         }
-      }
-      TsundokuCart.save(cart);
-      void renderBar(cart);
-      syncCheckboxes(cart);
+
+        const cart = TsundokuCart.load();
+        
+        for (const checkbox of checked) {
+          const path = checkbox.dataset.cartPath;
+          const title = checkbox.dataset.cartTitle || path;
+          const pages = parsePages(checkbox.dataset.cartPages);
+          if (!path) continue;
+
+          cart.items.push({
+            clientId: TsundokuCart.createClientId(),
+            pdf_path: path,
+            title,
+            pages: TsundokuPages.pagesToSpec(pages),
+            collapsed: false,
+            addedAt: new Date().toISOString(),
+          });
+        }
+
+        TsundokuCart.save(cart);
+
+        const msgSpan = document.getElementById('cart-message');
+        if (msgSpan) {
+          const packName = activePack ? activePack.name : '資料';
+          msgSpan.textContent = `${checked.length}件を資料「${packName}」に追加しました`;
+          setTimeout(() => {
+            if (msgSpan.textContent.includes(packName)) {
+              msgSpan.textContent = '';
+            }
+          }, 4000);
+        }
+
+        for (const checkbox of checked) {
+          checkbox.checked = false;
+        }
+        updateAddButtonState();
+        void renderBar(cart);
+      });
     }
 
     document.addEventListener('change', (event) => {
       const checkbox = event.target.closest('.cart-checkbox');
       if (checkbox) {
-        void handleToggle(checkbox);
+        updateAddButtonState();
       }
     });
 
@@ -320,8 +350,6 @@
     });
 
     // サーバからのパック取得完了・他画面での更新に追随して再描画する。
-    // バーの初回表示も取得完了イベントに任せる（取得前に
-    // 「資料はまだありません」を誤表示しないため）
     document.addEventListener('tsundoku-cart-updated', () => {
       const cart = TsundokuCart.load();
       void renderBar(cart);

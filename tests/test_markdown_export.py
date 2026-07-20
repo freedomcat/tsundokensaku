@@ -5,6 +5,7 @@ from pathlib import Path
 from tsundokensaku.markdown_export import (
     default_markdown_output_name,
     page_selection_label,
+    render_chat_chunk_header,
     render_markdown_pages,
 )
 
@@ -47,6 +48,19 @@ class MarkdownExportTest(unittest.TestCase):
 
         self.assertIn("## p.1", content)
         self.assertIn("（このページから抽出できたテキストはありません）", content)
+
+    def test_render_chat_chunk_header(self) -> None:
+        header = render_chat_chunk_header(
+            pack_name="テスト資料",
+            chunk_index=1,
+            total_chunks=3,
+            items=[("本A", "1-10"), ("本B", "5-8")]
+        )
+        self.assertIn("# テスト資料（分冊 1/3）", header)
+        self.assertIn("## 収録項目", header)
+        self.assertIn("- 本A (1-10)", header)
+        self.assertIn("- 本B (5-8)", header)
+        self.assertIn("---", header)
 
 
 if __name__ == "__main__":

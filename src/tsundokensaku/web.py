@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import base64
+import json
 import re
 import sqlite3
 import threading
@@ -34,9 +35,13 @@ from tsundokensaku.database import (
     get_pack_items,
     import_cart_as_pack,
     list_books,
+    list_export_events,
     list_packs,
     pack_items_as_cart,
+    pack_items_as_items,
     parse_query,
+    record_export_event,
+    replace_pack_item_entries,
     replace_pack_items,
     resolve_active_pack_id,
     search,
@@ -46,6 +51,8 @@ from tsundokensaku.database import (
     update_pack,
 )
 from tsundokensaku.database import initialize
+from tsundokensaku.export_profiles import PROFILES, ExportProfile, RenderContext, resolve_profile
+from tsundokensaku.export_stats import ItemStats, collect_item_stats
 from tsundokensaku.indexer import find_pdfs, index_books
 from tsundokensaku.metadata import (
     BookMetadata,
@@ -58,13 +65,19 @@ from tsundokensaku.metadata import (
 from tsundokensaku.markdown_export import default_markdown_output_name, render_markdown_pages
 from tsundokensaku.pdf_export import default_output_path, parse_page_selection, render_selected_pages
 from tsundokensaku.pdf_outline import get_page_count, list_chapters
-from tsundokensaku.pdf_thumbnail import render_thumbnails
+from tsundokensaku.pdf_thumbnail import render_thumbnail_detail, render_thumbnails
+from tsundokensaku.token_estimate import ESTIMATOR_NAME, TextStats, estimate_tokens
 from tsundokensaku.tokenizer import query_highlight_terms
 from tsundokensaku.zip_export import (
     PackExportEntry,
+    PlanManifestChunk,
+    PlanManifestFragment,
     build_entry_filename,
     build_pack_zip,
     build_pack_zip_filename,
+    build_pack_zip_with_manifest,
+    render_plan_manifest,
+    sanitize_filename_component,
 )
 
 
@@ -73,6 +86,7 @@ DEFAULT_BOOKS_DIR = Path("data/books")
 CONTAINER_BOOKS_DIRS = (Path("/data/books"), Path("/books/tech"))
 DEFAULT_DB_PATH = Path("data/index.db")
 PDF_EXPORT_SAVE_DIR_ENV = "PDF_EXPORT_SAVE_DIR"
+EXTERNALLY_AVAILABLE_EXPORT_PROFILES = frozenset({"standard", "chat", "chapter"})
 
 
 def _find_project_root() -> Path:
@@ -451,6 +465,10 @@ def _run_index_job(force_paths: set[str] | None = None) -> None:
         )
 
 
+# TODO(phase3b-path-resolution-dedup): export_stats._resolve_pdf_path が本関数と
+# CONTAINER_BOOKS_DIRS を意図的に複製している（循環import回避のため。詳細は
+# export_stats.py 冒頭のコメントと docs/ai-export-optimization-design.md 5.9）。
+# Phase 3B で共通モジュールへ統合する想定。
 def resolve_pdf_path(pdf_path: str | Path, books_dir: Path) -> Path | None:
     candidate = Path(pdf_path)
     books_root = books_dir.resolve()
@@ -1066,6 +1084,11 @@ def workspace_page(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(request, "workspace.html", {"request": request})
 
 
+@app.get("/packs", response_class=HTMLResponse)
+def pack_list_page(request: Request) -> HTMLResponse:
+    return templates.TemplateResponse(request, "pack_list.html", {"request": request})
+
+
 def _pack_connection():
     connection = connect(get_db_path())
     ensure_pack_schema(connection)
@@ -1083,12 +1106,83 @@ def _pack_to_json(pack) -> dict:
     }
 
 
+def _export_event_to_json(event) -> dict:
+    return {
+        "id": event.id,
+        "exported_at": event.exported_at,
+        "pack_id": event.pack_id,
+        "pack_name": event.pack_name,
+        "profile": event.profile,
+        "format": event.format,
+        "items": [
+            {
+                "pdf_path": item.pdf_path,
+                "title": item.title,
+                "pages": item.pages,
+                "position": item.position,
+            }
+            for item in event.items
+        ],
+    }
+
+
+@app.get("/api/export-events")
+def api_list_export_events(limit: int = Query(default=20)) -> JSONResponse:
+    connection = _pack_connection()
+    try:
+        events = [_export_event_to_json(event) for event in list_export_events(connection, limit=limit)]
+    finally:
+        connection.close()
+    return JSONResponse({"export_events": events})
+
+
 @app.get("/api/packs")
 def api_list_packs() -> JSONResponse:
     connection = _pack_connection()
     try:
         active_pack_id = resolve_active_pack_id(connection)
         packs = [_pack_to_json(pack) for pack in list_packs(connection)]
+    finally:
+        connection.close()
+    return JSONResponse({"packs": packs, "active_pack_id": active_pack_id})
+
+
+@app.get("/api/packs/stats")
+def api_list_pack_stats() -> JSONResponse:
+    """資料一覧画面専用。冊数に加え項目数・ページ数・推定トークン数を返す。
+
+    GET /api/packs は資料棚の資料切替がデバウンス保存完了のたびに呼ぶ
+    ホットパスのため、そちらのレスポンス形状は変えず本エンドポイントを
+    別に用意する（docs/workspace-ui-information-architecture.md Phase 2C）。
+    インデックス済みの本は collect_item_stats が PDF ファイルを開かず
+    SQLite のみで集計するため（export_stats.py の設計）、資料横断の集計
+    でも軽量に収まる想定。
+
+    ルーティング上、/api/packs/{pack_id} より先に定義する必要がある
+    （先に定義しないと "stats" が pack_id として解釈され 422 になる）。
+    """
+    books_dir = get_books_dir()
+    connection = _pack_connection()
+    try:
+        active_pack_id = resolve_active_pack_id(connection)
+        packs = []
+        for pack in list_packs(connection):
+            items = get_pack_items(connection, pack.id)
+            item_stats = collect_item_stats(connection, items, books_dir=books_dir)
+            stats = _preview_base_stats(item_stats)
+            packs.append(
+                {
+                    "id": pack.id,
+                    "name": pack.name,
+                    "note": pack.note,
+                    "created_at": pack.created_at,
+                    "updated_at": pack.updated_at,
+                    "book_count": stats["book_count"],
+                    "item_count": stats["item_count"],
+                    "total_pages": stats["total_pages"],
+                    "estimated_tokens": stats["estimated_tokens"],
+                }
+            )
     finally:
         connection.close()
     return JSONResponse({"packs": packs, "active_pack_id": active_pack_id})
@@ -1115,9 +1209,10 @@ def api_get_pack(pack_id: int) -> JSONResponse:
         if pack is None:
             raise HTTPException(status_code=404, detail="資料が見つかりません")
         cart = pack_items_as_cart(connection, pack_id)
+        items = pack_items_as_items(connection, pack_id)
     finally:
         connection.close()
-    return JSONResponse({**_pack_to_json(pack), "cart": cart})
+    return JSONResponse({**_pack_to_json(pack), "cart": cart, **items})
 
 
 @app.patch("/api/packs/{pack_id}")
@@ -1177,15 +1272,377 @@ def api_replace_pack_books(pack_id: int, payload: dict = Body(default={})) -> JS
         if not replace_pack_items(connection, pack_id, books):
             raise HTTPException(status_code=404, detail="資料が見つかりません")
         cart = pack_items_as_cart(connection, pack_id)
+        items_payload = pack_items_as_items(connection, pack_id)
     finally:
         connection.close()
-    return JSONResponse({"pack_id": pack_id, "cart": cart})
+    return JSONResponse({"pack_id": pack_id, "cart": cart, **items_payload})
+
+
+@app.put("/api/packs/{pack_id}/items")
+def api_replace_pack_items(pack_id: int, payload: dict = Body(default={})) -> JSONResponse:
+    items = payload.get("items")
+    if not isinstance(items, list):
+        raise HTTPException(status_code=400, detail="items 配列が必要です")
+    connection = _pack_connection()
+    try:
+        try:
+            saved_items = replace_pack_item_entries(connection, pack_id, items)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if saved_items is None:
+            raise HTTPException(status_code=404, detail="資料が見つかりません")
+        items_payload = pack_items_as_items(connection, pack_id)
+        cart = pack_items_as_cart(connection, pack_id)
+    finally:
+        connection.close()
+    return JSONResponse({"pack_id": pack_id, "cart": cart, **items_payload})
+
+
+# エクスポート前の概算（トークンバジェット）。実行系エクスポートと異なり、
+# 空資料・PDF欠損・不正なページ範囲・未インデックスのいずれも例外にせず、
+# warnings として列挙して返す（設計書 14章「プレビューは寛容、実行は厳格」）。
+# Phase 3A では profile パラメータを受け付けず、常に standard 相当の概算を返す。
+# profile 追加時（Phase 3C）も、省略時はこの挙動を後方互換として維持する
+# （設計書 12.1）。
+def _export_preview_warning(code: str, *, item_id: int | None, message: str) -> dict[str, object]:
+    return {"code": code, "item_id": item_id, "message": message}
+
+
+def build_export_preview_warnings(item_stats: list[ItemStats]) -> list[dict[str, object]]:
+    if not item_stats:
+        return [_export_preview_warning("empty_pack", item_id=None, message="この資料には資料項目がありません")]
+
+    warnings: list[dict[str, object]] = []
+    for entry in item_stats:
+        item = entry.item
+        if entry.missing_pdf:
+            warnings.append(
+                _export_preview_warning(
+                    "missing_pdf", item_id=item.id, message=f"「{item.title}」はPDFファイルが見つかりません"
+                )
+            )
+            continue
+        if not item.pages.strip():
+            warnings.append(
+                _export_preview_warning(
+                    "missing_pages", item_id=item.id, message=f"「{item.title}」はページが指定されていません"
+                )
+            )
+            continue
+        if not entry.page_numbers:
+            warnings.append(
+                _export_preview_warning(
+                    "invalid_pages", item_id=item.id, message=f"「{item.title}」のページ指定を解釈できませんでした"
+                )
+            )
+            continue
+        if entry.unindexed_pages > 0:
+            warnings.append(
+                _export_preview_warning(
+                    "unindexed_pages",
+                    item_id=item.id,
+                    message=f"「{item.title}」は未インデックスのため{entry.unindexed_pages}ページ分を概算に含めていません",
+                )
+            )
+    return warnings
+
+
+def _preview_base_stats(item_stats: list[ItemStats]) -> dict[str, object]:
+    book_count = len({entry.item.pdf_path for entry in item_stats})
+    total_pages = sum(len(entry.page_numbers) for entry in item_stats)
+    total_stats = TextStats(
+        cjk_chars=sum(entry.stats.cjk_chars for entry in item_stats),
+        other_chars=sum(entry.stats.other_chars for entry in item_stats),
+    )
+
+    return {
+        "estimation": "approximate",
+        "estimator": ESTIMATOR_NAME,
+        "book_count": book_count,
+        "item_count": len(item_stats),
+        "total_pages": total_pages,
+        "estimated_chars": total_stats.cjk_chars + total_stats.other_chars,
+        "estimated_tokens": estimate_tokens(total_stats),
+    }
+
+
+def build_export_preview_payload(item_stats: list[ItemStats]) -> dict[str, object]:
+    # Phase 3A からの既存レスポンス形式（profile未指定・profile=standard用）。
+    # フィールド集合・値とも Phase 3C 導入前から不変（設計書12.1の後方互換方針）
+    return {
+        **_preview_base_stats(item_stats),
+        "warnings": build_export_preview_warnings(item_stats),
+    }
+
+
+def build_export_preview_payload_for_profile(
+    item_stats: list[ItemStats],
+    profile: ExportProfile,
+    *,
+    pack_name: str,
+    chapter_loader=None,
+) -> dict[str, object]:
+    """standard以外（chat等）向けの拡張プレビュー。設計書12.1のchunks付きレスポンス。
+
+    実エクスポート（_export_pack_archive）と同じ plan() / chunk_filename() を
+    呼ぶことで、分冊結果・ファイル名・警告をエクスポート実行前に一致させる。
+    """
+    item_warnings = build_export_preview_warnings(item_stats)
+
+    if not item_stats:
+        return {
+            "profile": profile.name,
+            **_preview_base_stats(item_stats),
+            "file_count": 0,
+            "archive": "zip",
+            "chunks": [],
+            "warnings": item_warnings,
+        }
+
+    plan = profile.plan(item_stats, chapter_loader=chapter_loader)
+    # primary_format を持たないプロファイル（standardのみ）はこの関数の対象外のため
+    # 実際には使われないが、chunk_filename の型契約上フォーマット文字列が必要
+    format_for_naming = profile.primary_format or "pdf"
+
+    chunks_payload = [
+        {
+            "filename": profile.chunk_filename(chunk, pack_name=pack_name, format=format_for_naming),
+            "estimated_tokens": chunk.estimated_tokens,
+            "pages": chunk.total_pages,
+            "items": [
+                {
+                    "item_id": fragment.item.id,
+                    "title": fragment.item.title,
+                    "pdf_path": fragment.item.pdf_path,
+                    "pages": fragment.page_spec,
+                    "label": fragment.label,
+                    "fragment_index": fragment.fragment_index,
+                    "fragment_count": fragment.fragment_count,
+                    "estimated_tokens": estimate_tokens(fragment.stats),
+                }
+                for fragment in chunk.fragments
+            ],
+        }
+        for chunk in plan.chunks
+    ]
+    plan_warnings = [
+        {"code": warning.code, "item_id": warning.item_id, "message": warning.message}
+        for warning in plan.warnings
+    ]
+
+    return {
+        "profile": profile.name,
+        **_preview_base_stats(item_stats),
+        "file_count": len(plan.chunks),
+        "archive": "zip",
+        "chunks": chunks_payload,
+        "warnings": item_warnings + plan_warnings,
+    }
+
+
+@app.get("/api/packs/{pack_id}/export/preview")
+def api_preview_pack_export(pack_id: int, profile: str | None = None) -> JSONResponse:
+    resolved_profile = _resolve_export_profile_or_400(profile)
+
+    connection = _pack_connection()
+    try:
+        pack = get_pack(connection, pack_id)
+        if pack is None:
+            raise HTTPException(status_code=404, detail="資料が見つかりません")
+        items = get_pack_items(connection, pack_id)
+        item_stats = collect_item_stats(connection, items, books_dir=get_books_dir())
+    finally:
+        connection.close()
+
+    if not resolved_profile.uses_plan_output:
+        return JSONResponse(build_export_preview_payload(item_stats))
+
+    chapter_loader = None
+    if resolved_profile.needs_chapter_loader:
+        chapter_loader = lambda pdf_path: list_chapters(_resolve_pdf_file_or_404(str(pdf_path), get_books_dir()))
+
+    return JSONResponse(
+        build_export_preview_payload_for_profile(
+            item_stats,
+            resolved_profile,
+            pack_name=pack.name,
+            chapter_loader=chapter_loader,
+        )
+    )
+
+
+def _export_pack_json(pack, items: list) -> Response:
+    import json
+    export_data = {
+        "version": 3,
+        "name": pack.name,
+        "items": [
+            {
+                "pdf_path": item.pdf_path,
+                "title": item.title,
+                "pages": item.pages,
+                "collapsed": item.collapsed,
+                "addedAt": item.added_at,
+                "position": item.position,
+            }
+            for item in items
+        ]
+    }
+    json_bytes = json.dumps(export_data, ensure_ascii=False, indent=2).encode("utf-8")
+    filename = f"{sanitize_filename_component(pack.name)}_{_now_jst():%Y%m%d}.json"
+    return Response(
+        content=json_bytes,
+        media_type="application/json",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"},
+    )
+
+
+def _placeholder_item_stats_for_export(item) -> ItemStats:
+    """StandardProfile.plan() へ渡す最小限のItemStats。
+
+    standard は chunk_limit=None のため item_weight は使われず、plan() は
+    1項目=1チャンクの構造（position順）を作るだけに使う。実際のページ数・
+    本文検証・レンダリングは render_chunk 内で既存の render_pdf_export /
+    render_markdown_export が行うため、ここでは重複計算しない
+    （collect_item_stats の寛容なエラー処理をそのまま使うと、不正な
+    ページ範囲の詳細なエラーメッセージが失われ後方互換性が壊れるため
+    採用していない）。
+    """
+    return ItemStats(
+        item=item,
+        page_numbers=[],
+        stats=TextStats(cjk_chars=0, other_chars=0),
+        unindexed_pages=0,
+        missing_pdf=False,
+    )
+
+
+def _export_pack_archive(pack, items: list, *, format: str, profile: ExportProfile) -> Response:
+    if not items:
+        raise HTTPException(status_code=400, detail="資料が空です")
+
+    # 全項目の事前検証
+    for item in items:
+        if not item.pages.strip():
+            raise HTTPException(status_code=400, detail=f"{item.title}: ページを指定してください")
+
+    books_dir = get_books_dir()
+    db_path = get_db_path()
+    exported_at = _now_jst()
+
+    # 実統計を必要とするプロファイル（chunk_limit が None 以外）なら collect_item_stats、そうでなければプレースホルダ
+    if profile.chunk_limit() is not None:
+        connection = _pack_connection()
+        try:
+            item_stats = collect_item_stats(connection, items, books_dir=books_dir)
+        finally:
+            connection.close()
+    else:
+        item_stats = [_placeholder_item_stats_for_export(item) for item in items]
+
+    chapter_loader = None
+    if profile.needs_chapter_loader:
+        chapter_loader = lambda pdf_path: list_chapters(_resolve_pdf_file_or_404(str(pdf_path), books_dir))
+
+    plan = profile.plan(item_stats, chapter_loader=chapter_loader)
+    ctx = RenderContext(
+        pack_name=pack.name,
+        exported_at=exported_at,
+        format=format,
+        resolve_pdf=lambda pdf_path: _resolve_pdf_file_or_404(pdf_path, books_dir),
+        render_pdf=render_pdf_export,
+        render_markdown=lambda candidate, pages: render_markdown_export(
+            candidate, pages, books_dir=books_dir, db_path=db_path
+        ),
+        total_chunks=len(plan.chunks),
+    )
+
+    entries: list[PackExportEntry] = []
+    manifest_chunks: list[tuple[str, list[tuple[str, str]]] | PlanManifestChunk] = []
+    for chunk in plan.chunks:
+        filename = profile.chunk_filename(chunk, pack_name=pack.name, format=format)
+        primary_fragment = chunk.fragments[0]
+        entries.append(
+            PackExportEntry(
+                index=chunk.index,
+                title=primary_fragment.item.title,
+                page_label=primary_fragment.page_spec,
+                filename=filename,
+                content=profile.render_chunk(chunk, ctx),
+            )
+        )
+        if profile.manifest_uses_fragment_labels:
+            manifest_chunks.append(
+                PlanManifestChunk(
+                    filename=filename,
+                    fragments=[
+                        PlanManifestFragment(
+                            title=fragment.item.title,
+                            pages=fragment.page_spec,
+                            label=fragment.label,
+                        )
+                        for fragment in chunk.fragments
+                    ],
+                )
+            )
+        else:
+            manifest_chunks.append((filename, [(fragment.item.title, fragment.page_spec) for fragment in chunk.fragments]))
+
+    if not profile.uses_plan_output:
+        # 現行 manifest（PackExportEntry 前提、1項目=1エントリ）をそのまま使い
+        # バイト互換を守る（設計書 10.3）
+        zip_bytes = build_pack_zip(pack_name=pack.name, entries=entries, exported_at=exported_at)
+    else:
+        # 複数項目チャンク（chat の分冊・chapter の結合）でも項目内訳が
+        # 失われないよう、ExportPlan から組み立てた manifest を使う。
+        # plan の警告（item_exceeds_limit 等）もここに記載する（設計書 14）
+        manifest = render_plan_manifest(
+            pack_name=pack.name,
+            exported_at=exported_at,
+            profile_name=profile.name,
+            chunks=manifest_chunks,
+            header_lines=profile.manifest_header_lines(plan),
+            warnings=[warning.message for warning in plan.warnings],
+        )
+        zip_bytes = build_pack_zip_with_manifest(entries=entries, manifest=manifest)
+
+    zip_filename = profile.archive_filename(pack_name=pack.name, exported_at=exported_at)
+    return Response(
+        content=zip_bytes,
+        media_type="application/zip",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(zip_filename)}"},
+    )
+
+
+def _resolve_export_profile_or_400(name: str | None) -> ExportProfile:
+    try:
+        profile = resolve_profile(name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"不明なエクスポートプロファイルです: {exc}") from exc
+    if profile.name not in EXTERNALLY_AVAILABLE_EXPORT_PROFILES:
+        raise HTTPException(status_code=400, detail=f"不明なエクスポートプロファイルです: {profile.name}")
+    return profile
 
 
 @app.get("/api/packs/{pack_id}/export")
-def api_export_pack(pack_id: int, format: str = Query("pdf")) -> Response:
-    if format not in ("pdf", "md"):
-        raise HTTPException(status_code=400, detail="format は pdf か md を指定してください")
+def api_export_pack(pack_id: int, profile: str | None = None, format: str | None = None) -> Response:
+    resolved_profile = _resolve_export_profile_or_400(profile)
+
+    if format is None:
+        # 省略時は profile の主形式（standard は None なので現行既定の pdf）
+        format = resolved_profile.primary_format if resolved_profile.primary_format is not None else "pdf"
+
+    if format not in ("pdf", "md", "json"):
+        raise HTTPException(status_code=400, detail="format は pdf, md, または json を指定してください")
+
+    # standard は primary_format=None（format を実行時に選べる）ため、この時点では
+    # 常にスキップされる。chat/chapter 追加時に固定形式との矛盾を弾く構造だけ
+    # 用意しておく（B-3では仮実装や分岐を追加しない）
+    if resolved_profile.primary_format is not None and format != resolved_profile.primary_format:
+        raise HTTPException(
+            status_code=400,
+            detail=f"profile={resolved_profile.name} では format={resolved_profile.primary_format} のみ指定できます",
+        )
 
     connection = _pack_connection()
     try:
@@ -1196,57 +1653,58 @@ def api_export_pack(pack_id: int, format: str = Query("pdf")) -> Response:
     finally:
         connection.close()
 
-    if not items:
-        raise HTTPException(status_code=400, detail="資料が空です")
+    if format == "json":
+        response = _export_pack_json(pack, items)
+    else:
+        response = _export_pack_archive(pack, items, format=format, profile=resolved_profile)
 
-    books_dir = get_books_dir()
-    db_path = get_db_path()
-    exported_at = _now_jst()
-    entries: list[PackExportEntry] = []
-    for index, item in enumerate(items, start=1):
-        if not item.pages.strip():
-            raise HTTPException(status_code=400, detail=f"{item.title}: ページを指定してください")
-        candidate = _resolve_pdf_file_or_404(item.pdf_path, books_dir)
-        if format == "pdf":
-            content, _base_filename = render_pdf_export(candidate, item.pages)
-        else:
-            content, _base_filename = render_markdown_export(
-                candidate, item.pages, books_dir=books_dir, db_path=db_path
+    # エクスポート成功後にイベントを記録する（ベストエフォート。設計書 C-6 / export-events-design.md §6）
+    try:
+        connection = _pack_connection()
+        try:
+            record_export_event(
+                connection,
+                pack_id=pack_id,
+                pack_name=pack.name,
+                profile=resolved_profile.name,
+                format=format,
+                items=list(items),
             )
-        entries.append(
-            PackExportEntry(
-                index=index,
-                title=item.title,
-                page_label=item.pages,
-                filename=build_entry_filename(index, item.title, item.pages, format),
-                content=content,
-            )
-        )
+        finally:
+            connection.close()
+    except Exception:
+        logging.exception("export_events の記録に失敗しました（エクスポート本体は正常）")
 
-    zip_bytes = build_pack_zip(pack_name=pack.name, entries=entries, exported_at=exported_at)
-    zip_filename = build_pack_zip_filename(pack.name, exported_at)
-    return Response(
-        content=zip_bytes,
-        media_type="application/zip",
-        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(zip_filename)}"},
-    )
+    return response
 
 
 @app.post("/api/packs/import")
 def api_import_pack(payload: dict = Body(default={})) -> JSONResponse:
-    cart = payload.get("cart")
+    cart = payload.get("cart") if "cart" in payload else payload
+    
+    if not isinstance(cart, dict) or ("version" not in cart and "items" not in cart and "books" not in cart):
+        raise HTTPException(status_code=400, detail="取り込めるカートデータがありません")
+
+    if cart.get("version") == 3 and not isinstance(cart.get("items"), list):
+        raise HTTPException(status_code=400, detail="items はリストでなければなりません")
+    if cart.get("version") == 2 and not isinstance(cart.get("books"), dict):
+        raise HTTPException(status_code=400, detail="books は辞書でなければなりません")
+
     name = payload.get("name") if isinstance(payload.get("name"), str) and payload.get("name") else "移行された資料"
     connection = _pack_connection()
     try:
-        pack_id = import_cart_as_pack(connection, cart, name=name) if isinstance(cart, dict) else None
+        pack_id = import_cart_as_pack(connection, cart, name=name)
         if pack_id is None:
             raise HTTPException(status_code=400, detail="取り込めるカートデータがありません")
         set_active_pack(connection, pack_id)
         pack = get_pack(connection, pack_id)
         imported_cart = pack_items_as_cart(connection, pack_id)
+        imported_items = pack_items_as_items(connection, pack_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     finally:
         connection.close()
-    return JSONResponse({**_pack_to_json(pack), "cart": imported_cart}, status_code=201)
+    return JSONResponse({**_pack_to_json(pack), "cart": imported_cart, **imported_items}, status_code=201)
 
 
 @app.get("/settings", response_class=HTMLResponse)
@@ -1465,18 +1923,28 @@ def pdf_outline(pdf_path: str) -> JSONResponse:
 
 
 MAX_THUMBNAIL_PAGES_PER_REQUEST = 60
+THUMBNAIL_SIZE_PRESETS = {
+    "thumbnail": {"zoom": 0.3, "quality": 70},
+    "detail": {"zoom": 1.0, "quality": 85},
+}
 # spec の展開上限。実際のページ数を知るには fitz.open() が必要（コストが
 # 支配的なため二重に開きたくない）ので、蔵書の実ページ数を十分に超える
 # 仮の上限を渡し、範囲外ページは render_thumbnails 側で無視させる
 _THUMBNAIL_SPEC_PAGE_COUNT_GUARD = 10_000
+_DETAIL_THUMBNAIL_PAGE_PATTERN = re.compile(r"^[1-9][0-9]*$")
 
 
 @app.get("/pdf-thumbnails")
-def pdf_thumbnails(pdf_path: str, pages: str) -> JSONResponse:
+def pdf_thumbnails(pdf_path: str, pages: str, size: str = "thumbnail") -> JSONResponse:
     candidate = _resolve_pdf_file_or_404(pdf_path, get_books_dir())
     page_spec = pages.strip()
     if not page_spec:
         raise HTTPException(status_code=400, detail="pages is required")
+    preset = THUMBNAIL_SIZE_PRESETS.get(size)
+    if preset is None:
+        raise HTTPException(status_code=400, detail="size must be thumbnail or detail")
+    if size == "detail" and not _DETAIL_THUMBNAIL_PAGE_PATTERN.fullmatch(page_spec):
+        raise HTTPException(status_code=400, detail="detail size requires a single page number")
 
     try:
         page_numbers = parse_page_selection(page_spec, _THUMBNAIL_SPEC_PAGE_COUNT_GUARD)
@@ -1488,8 +1956,21 @@ def pdf_thumbnails(pdf_path: str, pages: str) -> JSONResponse:
             status_code=400,
             detail=f"一度に取得できるページ数は{MAX_THUMBNAIL_PAGES_PER_REQUEST}件までです",
         )
+    if size == "detail" and len(page_numbers) != 1:
+        raise HTTPException(status_code=400, detail="detail size requires a single page number")
+    if size == "detail":
+        rendered_detail = render_thumbnail_detail(
+            candidate,
+            page_numbers[0],
+            zoom=preset["zoom"],
+            quality=preset["quality"],
+        )
+        if rendered_detail is None:
+            raise HTTPException(status_code=404, detail="page not found")
+        rendered = [rendered_detail]
+    else:
+        rendered = render_thumbnails(candidate, page_numbers, zoom=preset["zoom"], quality=preset["quality"])
 
-    rendered = render_thumbnails(candidate, page_numbers)
     return JSONResponse(
         {
             "pages": [

@@ -85,3 +85,37 @@ def render_selected_pages(input_pdf: Path, page_numbers: list[int]) -> bytes:
     buffer = BytesIO()
     writer.write(buffer)
     return buffer.getvalue()
+
+
+def merge_rendered_pdfs(rendered_pdfs: list[bytes]) -> bytes:
+    if not rendered_pdfs:
+        raise ValueError("rendered_pdfs must not be empty")
+
+    readers = [PdfReader(BytesIO(pdf_bytes)) for pdf_bytes in rendered_pdfs]
+    writer = PdfWriter()
+
+    for reader in readers:
+        for page in reader.pages:
+            writer.add_page(page)
+
+    metadata = readers[0].metadata
+    if metadata:
+        safe_metadata: dict[str, str] = {}
+        for key, value in metadata.items():
+            if value is None:
+                continue
+            metadata_key = str(key)
+            if not metadata_key:
+                continue
+            if not metadata_key.startswith("/"):
+                metadata_key = f"/{metadata_key}"
+            safe_metadata[metadata_key] = str(value)
+        if safe_metadata:
+            try:
+                writer.add_metadata(safe_metadata)
+            except Exception:
+                pass
+
+    buffer = BytesIO()
+    writer.write(buffer)
+    return buffer.getvalue()

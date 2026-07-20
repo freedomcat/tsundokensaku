@@ -27,9 +27,19 @@
   const thumbPanel = document.getElementById('pdf-modal-thumb-panel');
   const thumbGrid = document.getElementById('pdf-modal-thumb-grid');
   const thumbPrevButton = document.getElementById('pdf-modal-thumb-prev');
+  const thumbNextTopButton = document.getElementById('pdf-modal-thumb-next-top');
+  const thumbPrevBottomButton = document.getElementById('pdf-modal-thumb-prev-bottom');
   const thumbNextButton = document.getElementById('pdf-modal-thumb-next');
+  const thumbPrevButtons = [thumbPrevButton, thumbPrevBottomButton].filter(Boolean);
+  const thumbNextButtons = [thumbNextTopButton, thumbNextButton].filter(Boolean);
   const thumbApplyButton = document.getElementById('pdf-modal-thumb-apply');
   const thumbStatus = document.getElementById('pdf-modal-thumb-status');
+  const thumbDetailOverlay = document.getElementById('pdf-modal-thumb-overlay');
+  const thumbDetailTitle = document.getElementById('pdf-modal-thumb-detail-title');
+  const thumbDetailBody = document.getElementById('pdf-modal-thumb-detail-body');
+  const thumbDetailPrevButton = document.getElementById('pdf-modal-thumb-detail-prev');
+  const thumbDetailNextButton = document.getElementById('pdf-modal-thumb-detail-next');
+  const thumbDetailCloseButton = document.getElementById('pdf-modal-thumb-detail-close');
   let currentPdfPath = '';
 
   function canUseWebShare() {
@@ -161,11 +171,13 @@
   }
 
   let chaptersRequestToken = 0;
+  let currentPackItemKey = null;
   let currentPageCount = null;
 
   // --- ページを選ぶ（現在ページ周辺のサムネイル） ---
   const THUMB_INITIAL_RADIUS = 10; // 初期表示: 現在ページの前後何ページ分を読み込むか
   const THUMB_EXPAND_STEP = 10; // 「前/次の10ページを表示」1回あたりの拡張ページ数
+  const THUMB_DETAIL_CACHE_LIMIT = 20;
   let thumbRequestToken = 0;
   let thumbLoadedPages = new Set();
   let thumbSelectedPages = new Set();
@@ -173,6 +185,11 @@
   let thumbLoadedMax = null; // ロード済み範囲の最大ページ番号
   let thumbAnchorPage = 1; // 起点にした「現在ページ」（見出し・マーカー表示用）
   let thumbLoadingDirection = null; // 'prev' | 'next' | null（前後ボタンの多重クリック防止）
+  let thumbDetailCache = new Map();
+  let thumbDetailAbortController = null;
+  let thumbDetailRequestToken = 0;
+  let thumbDetailActivePage = null;
+  let thumbDetailReturnFocus = null;
 
   function extractPageFromUrl(url) {
     const match = /#page=(\d+)/.exec(url || '');
@@ -193,14 +210,263 @@
     thumbStatus.classList.toggle('is-error', Boolean(isError && message));
   }
 
-  // 現在開いている本が既に資料内にあるかどうかで「反映」の意味が変わる
-  // （資料内: 即保存の置き換え / 資料外: ページ欄への反映のみ）。
-  // 呼び出し側は事前に TsundokuCart.ready を await しておくこと
-  function currentCartEntry() {
-    if (!currentPdfPath) {
+  function setThumbDetailTitle(pageNumber = null) {
+    if (!thumbDetailTitle) {
+      return;
+    }
+    thumbDetailTitle.textContent = pageNumber ? `p.${pageNumber} 拡大プレビュー` : '拡大プレビュー';
+  }
+
+  function thumbDetailCacheKey(pageNumber) {
+    return `${currentPdfPath}:${pageNumber}:detail`;
+  }
+
+  function getCachedThumbDetail(pageNumber) {
+    const key = thumbDetailCacheKey(pageNumber);
+    if (!thumbDetailCache.has(key)) {
       return null;
     }
-    return TsundokuCart.load().books[currentPdfPath] || null;
+    const data = thumbDetailCache.get(key);
+    thumbDetailCache.delete(key);
+    thumbDetailCache.set(key, data);
+    return data;
+  }
+
+  function setCachedThumbDetail(pageNumber, data) {
+    const key = thumbDetailCacheKey(pageNumber);
+    if (thumbDetailCache.has(key)) {
+      thumbDetailCache.delete(key);
+    }
+    thumbDetailCache.set(key, data);
+    while (thumbDetailCache.size > THUMB_DETAIL_CACHE_LIMIT) {
+      const oldestKey = thumbDetailCache.keys().next().value;
+      thumbDetailCache.delete(oldestKey);
+    }
+  }
+
+  function updateThumbDetailNav() {
+    if (thumbDetailPrevButton) {
+      thumbDetailPrevButton.disabled = !currentPageCount || !thumbDetailActivePage || thumbDetailActivePage <= 1;
+    }
+    if (thumbDetailNextButton) {
+      thumbDetailNextButton.disabled = !currentPageCount || !thumbDetailActivePage || thumbDetailActivePage >= currentPageCount;
+    }
+  }
+
+  function isThumbDetailOverlayOpen() {
+    return Boolean(thumbDetailOverlay && !thumbDetailOverlay.hidden);
+  }
+
+  function openThumbDetailOverlay(pageNumber, returnFocus = null) {
+    if (!thumbDetailOverlay) {
+      return;
+    }
+    thumbDetailReturnFocus = returnFocus || document.activeElement;
+    thumbDetailOverlay.hidden = false;
+    requestAnimationFrame(() => {
+      thumbDetailOverlay.classList.add('is-open');
+    });
+    document.body.classList.add('modal-thumb-overlay-open');
+    thumbPanel?.classList.add('detail-open');
+    setThumbDetailTitle(pageNumber);
+    updateThumbDetailNav();
+    thumbDetailCloseButton?.focus();
+  }
+
+  function closeThumbDetailOverlay({ clearCache = false } = {}) {
+    thumbDetailRequestToken += 1;
+    thumbDetailAbortController?.abort();
+    thumbDetailAbortController = null;
+    thumbDetailActivePage = null;
+    if (clearCache) {
+      thumbDetailCache.clear();
+    }
+    if (thumbDetailOverlay) {
+      thumbDetailOverlay.classList.remove('is-open');
+      thumbDetailOverlay.hidden = true;
+    }
+    document.body.classList.remove('modal-thumb-overlay-open');
+    thumbPanel?.classList.remove('detail-open');
+    updateThumbDetailNav();
+    if (thumbDetailReturnFocus && typeof thumbDetailReturnFocus.focus === 'function') {
+      thumbDetailReturnFocus.focus();
+    }
+    thumbDetailReturnFocus = null;
+  }
+
+  function setThumbDetailMessage(message, { pageNumber = null, retry = false, isError = false } = {}) {
+    if (!thumbDetailBody) {
+      return;
+    }
+    setThumbDetailTitle(pageNumber);
+    thumbDetailBody.innerHTML = '';
+    const wrap = document.createElement('div');
+    wrap.className = 'modal-thumb-dialog-message';
+    wrap.textContent = message;
+    if (isError) {
+      wrap.classList.add('is-error');
+    }
+    if (retry && pageNumber) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'modal-thumb-dialog-retry';
+      button.textContent = '再試行';
+      button.addEventListener('click', () => {
+        void loadThumbDetail(pageNumber, { force: true });
+      });
+      wrap.appendChild(document.createElement('br'));
+      wrap.appendChild(button);
+    }
+    thumbDetailBody.appendChild(wrap);
+    updateThumbDetailNav();
+  }
+
+  function setThumbDetailImage(pageNumber, base64Data) {
+    if (!thumbDetailBody) {
+      return;
+    }
+    setThumbDetailTitle(pageNumber);
+    thumbDetailBody.innerHTML = '';
+    const img = document.createElement('img');
+    img.src = `data:image/jpeg;base64,${base64Data}`;
+    img.alt = `p.${pageNumber} 拡大プレビュー`;
+    thumbDetailBody.appendChild(img);
+    updateThumbDetailNav();
+  }
+
+  function resetThumbDetail() {
+    closeThumbDetailOverlay({ clearCache: true });
+    if (thumbDetailBody) {
+      thumbDetailBody.innerHTML = '';
+    }
+  }
+
+  async function loadThumbDetail(pageNumber, { force = false, returnFocus = null } = {}) {
+    if (!currentPdfPath || !pageNumber) {
+      return;
+    }
+    openThumbDetailOverlay(pageNumber, returnFocus);
+    thumbDetailActivePage = pageNumber;
+    const cachedData = getCachedThumbDetail(pageNumber);
+    if (!force && cachedData) {
+      setThumbDetailImage(pageNumber, cachedData);
+      return;
+    }
+    thumbDetailAbortController?.abort();
+    const controller = new AbortController();
+    thumbDetailAbortController = controller;
+    const token = ++thumbDetailRequestToken;
+    setThumbDetailMessage('拡大プレビューを読み込み中...', { pageNumber });
+    try {
+      const response = await fetch(
+        `/pdf-thumbnails?${new URLSearchParams({
+          pdf_path: currentPdfPath,
+          pages: String(pageNumber),
+          size: 'detail',
+        })}`,
+        { signal: controller.signal },
+      );
+      if (token !== thumbDetailRequestToken || thumbDetailActivePage !== pageNumber) {
+        return;
+      }
+      if (!response.ok) {
+        setThumbDetailMessage('拡大プレビューの取得に失敗しました', {
+          pageNumber,
+          retry: true,
+          isError: true,
+        });
+        return;
+      }
+      const payload = await response.json();
+      const item = Array.isArray(payload.pages) ? payload.pages.find((page) => page.page === pageNumber) : null;
+      if (token !== thumbDetailRequestToken || thumbDetailActivePage !== pageNumber) {
+        return;
+      }
+      if (!item?.data) {
+        setThumbDetailMessage('このページの拡大プレビューを表示できませんでした', {
+          pageNumber,
+          retry: true,
+          isError: true,
+        });
+        return;
+      }
+      setCachedThumbDetail(pageNumber, item.data);
+      setThumbDetailImage(pageNumber, item.data);
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') {
+        return;
+      }
+      if (token === thumbDetailRequestToken) {
+        setThumbDetailMessage('拡大プレビューの取得に失敗しました', {
+          pageNumber,
+          retry: true,
+          isError: true,
+        });
+      }
+      console.warn('Failed to load detail thumbnail', error);
+    }
+  }
+
+  function moveThumbDetail(delta) {
+    if (!currentPageCount || !thumbDetailActivePage) {
+      return;
+    }
+    const nextPage = thumbDetailActivePage + delta;
+    if (nextPage < 1 || (currentPageCount && nextPage > currentPageCount)) {
+      return;
+    }
+    void loadThumbDetail(nextPage, { returnFocus: thumbDetailReturnFocus });
+  }
+
+  function handleThumbDetailKeydown(event) {
+    if (!thumbDetailOverlay || thumbDetailOverlay.hidden) {
+      return;
+    }
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      closeThumbDetailOverlay();
+      return;
+    }
+    if (event.key === 'ArrowLeft') {
+      event.preventDefault();
+      moveThumbDetail(-1);
+      return;
+    }
+    if (event.key === 'ArrowRight') {
+      event.preventDefault();
+      moveThumbDetail(1);
+      return;
+    }
+    if (event.key === 'Tab') {
+      const focusables = [...thumbDetailOverlay.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])')]
+        .filter((element) => !element.disabled && element.offsetParent !== null);
+      if (focusables.length === 0) {
+        event.preventDefault();
+        return;
+      }
+      const first = focusables[0];
+      const last = focusables[focusables.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    }
+  }
+
+  // 資料棚の特定カードから開いた場合だけ item_key を持ち、既存項目を更新する。
+  // 検索結果など item_key なしの文脈では新規追加として扱う。
+  // 呼び出し側は事前に TsundokuCart.ready を await しておくこと
+  function currentCartEntry() {
+    if (!currentPackItemKey) {
+      return null;
+    }
+    const cart = TsundokuCart.load();
+    const items = Array.isArray(cart.items) ? cart.items : [];
+    return items.find((item) => TsundokuCart.itemKey(item) === currentPackItemKey) || null;
   }
 
   function updateThumbApplyButton() {
@@ -214,15 +480,15 @@
   }
 
   function updateThumbRangeButtons() {
-    if (thumbPrevButton) {
-      const canGoPrev = thumbLoadedMin !== null && thumbLoadedMin > 1;
-      thumbPrevButton.hidden = thumbLoadedMin === null;
-      thumbPrevButton.disabled = !canGoPrev || thumbLoadingDirection !== null;
+    const canGoPrev = thumbLoadedMin !== null && thumbLoadedMin > 1;
+    const canGoNext = thumbLoadedMax !== null && (!currentPageCount || thumbLoadedMax < currentPageCount);
+    for (const button of thumbPrevButtons) {
+      button.hidden = thumbLoadedMin === null;
+      button.disabled = !canGoPrev || thumbLoadingDirection !== null;
     }
-    if (thumbNextButton) {
-      const canGoNext = thumbLoadedMax !== null && (!currentPageCount || thumbLoadedMax < currentPageCount);
-      thumbNextButton.hidden = thumbLoadedMax === null;
-      thumbNextButton.disabled = !canGoNext || thumbLoadingDirection !== null;
+    for (const button of thumbNextButtons) {
+      button.hidden = thumbLoadedMax === null;
+      button.disabled = !canGoNext || thumbLoadingDirection !== null;
     }
   }
 
@@ -245,6 +511,7 @@
     if (!thumbPanel) {
       return;
     }
+    closeThumbDetailOverlay({ clearCache: true });
     thumbPanel.hidden = true;
     frame.hidden = false;
     if (browseBar) {
@@ -263,6 +530,7 @@
     thumbLoadedMax = null;
     thumbAnchorPage = 1;
     thumbLoadingDirection = null;
+    resetThumbDetail();
     if (thumbGrid) {
       thumbGrid.innerHTML = '';
       delete thumbGrid.dataset.initialized;
@@ -277,7 +545,7 @@
   }
 
   function insertThumbCell(pageNumber, base64Data) {
-    const cell = document.createElement('label');
+    const cell = document.createElement('div');
     cell.className = 'modal-thumb-item';
     cell.dataset.page = String(pageNumber);
     if (thumbSelectedPages.has(pageNumber)) {
@@ -290,10 +558,16 @@
     checkbox.type = 'checkbox';
     checkbox.className = 'modal-thumb-checkbox';
     checkbox.checked = thumbSelectedPages.has(pageNumber);
+    checkbox.id = `pdf-modal-thumb-check-${pageNumber}`;
     const img = document.createElement('img');
     img.src = `data:image/jpeg;base64,${base64Data}`;
     img.loading = 'lazy';
     img.alt = `p.${pageNumber}`;
+    img.title = 'ダブルクリックで拡大';
+    const checkControl = document.createElement('label');
+    checkControl.className = 'modal-thumb-check-control';
+    checkControl.setAttribute('for', checkbox.id);
+    checkControl.setAttribute('aria-label', `p.${pageNumber} を選択`);
     const badge = document.createElement('span');
     badge.className = 'modal-thumb-check-badge';
     badge.textContent = '✓';
@@ -301,10 +575,18 @@
     const pageLabel = document.createElement('span');
     pageLabel.className = 'modal-thumb-page-label';
     pageLabel.textContent = pageNumber === thumbAnchorPage ? `p.${pageNumber}（現在）` : `p.${pageNumber}`;
-    cell.appendChild(checkbox);
+    const zoomButton = document.createElement('button');
+    zoomButton.type = 'button';
+    zoomButton.className = 'modal-thumb-zoom-button';
+    zoomButton.textContent = '⌕';
+    zoomButton.title = '拡大プレビュー';
+    zoomButton.setAttribute('aria-label', `p.${pageNumber} を拡大プレビュー`);
+    checkControl.appendChild(checkbox);
+    checkControl.appendChild(badge);
+    cell.appendChild(checkControl);
     cell.appendChild(img);
-    cell.appendChild(badge);
     cell.appendChild(pageLabel);
+    cell.appendChild(zoomButton);
     checkbox.addEventListener('change', () => {
       if (checkbox.checked) {
         thumbSelectedPages.add(pageNumber);
@@ -314,6 +596,16 @@
         cell.classList.remove('selected');
       }
       updateThumbApplyButton();
+    });
+    zoomButton.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      void loadThumbDetail(pageNumber, { returnFocus: zoomButton });
+    });
+    img.addEventListener('dblclick', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      void loadThumbDetail(pageNumber, { returnFocus: zoomButton });
     });
 
     // レスポンスの到着順はページ番号順と限らないため、挿入位置をページ番号で揃える
@@ -339,7 +631,11 @@
     setThumbStatus('サムネイルを読み込み中...');
     try {
       const response = await fetch(
-        `/pdf-thumbnails?${new URLSearchParams({ pdf_path: currentPdfPath, pages: `${clampedStart}-${clampedEnd}` })}`
+        `/pdf-thumbnails?${new URLSearchParams({
+          pdf_path: currentPdfPath,
+          pages: `${clampedStart}-${clampedEnd}`,
+          size: 'thumbnail',
+        })}`
       );
       if (token !== thumbRequestToken) {
         return false;
@@ -447,13 +743,37 @@
     exitThumbMode();
   });
 
-  thumbPrevButton?.addEventListener('click', () => {
-    void expandThumbRange('prev');
+  for (const button of thumbPrevButtons) {
+    button.addEventListener('click', () => {
+      void expandThumbRange('prev');
+    });
+  }
+
+  for (const button of thumbNextButtons) {
+    button.addEventListener('click', () => {
+      void expandThumbRange('next');
+    });
+  }
+
+  thumbDetailCloseButton?.addEventListener('click', () => {
+    closeThumbDetailOverlay();
   });
 
-  thumbNextButton?.addEventListener('click', () => {
-    void expandThumbRange('next');
+  thumbDetailPrevButton?.addEventListener('click', () => {
+    moveThumbDetail(-1);
   });
+
+  thumbDetailNextButton?.addEventListener('click', () => {
+    moveThumbDetail(1);
+  });
+
+  thumbDetailOverlay?.addEventListener('click', (event) => {
+    if (event.target === thumbDetailOverlay) {
+      closeThumbDetailOverlay();
+    }
+  });
+
+  document.addEventListener('keydown', handleThumbDetailKeydown, true);
 
   thumbApplyButton?.addEventListener('click', async () => {
     // cart初回ロード未完了だと資料内の本を誤って「新規」判定してしまうため待つ
@@ -468,7 +788,12 @@
     // save() は load() で得た同一の cart オブジェクトをミューテートしてから
     // 渡す必要があるため、判定用の currentCartEntry() ではなくここで直接取得する
     const cart = TsundokuCart.load();
-    const entry = currentPdfPath ? cart.books[currentPdfPath] : null;
+    if (!Array.isArray(cart.items)) {
+      cart.items = [];
+    }
+    const entry = currentPackItemKey
+      ? cart.items.find((item) => TsundokuCart.itemKey(item) === currentPackItemKey)
+      : null;
     if (entry) {
       // 資料棚起点（既にこの本が資料内にある）: そのページ範囲を直接置き換えて即保存
       entry.pages = newSpec;
@@ -649,13 +974,14 @@
     }
   }
 
-  function openModal(url, label, scrapboxUrl, pdfPath, pages) {
+  function openModal(url, label, scrapboxUrl, pdfPath, pages, itemKey = null) {
     resetThumbPanel();
     frame.src = url;
     openLink.href = url;
     title.textContent = label || 'PDF';
     setScrapboxLink(scrapboxUrl);
     currentPdfPath = pdfPath || '';
+    currentPackItemKey = typeof itemKey === 'string' && itemKey ? itemKey : null;
     pagesInput.value = pages || '';
     if (addWorkspaceButton) {
       // 検索・資料棚どちらの起点でも、PDFパスが分かるモーダルなら資料へ追加できる
@@ -671,6 +997,7 @@
     modal.classList.add('open');
     modal.setAttribute('aria-hidden', 'false');
     updateFullscreenButton();
+    updateAddWorkspaceButtonLabel();
   }
 
   document.addEventListener('click', (event) => {
@@ -685,6 +1012,7 @@
       trigger.dataset.pdfModalScrapboxUrl,
       trigger.dataset.pdfModalPath,
       trigger.dataset.pdfModalPages,
+      trigger.dataset.pdfModalItemKey || null,
     );
   });
 
@@ -697,7 +1025,11 @@
       return;
     }
     const pack = TsundokuCart.getActivePack();
-    addWorkspaceButton.textContent = pack ? `「${shortPackName(pack.name)}」に追加` : '資料に追加';
+    if (currentPackItemKey) {
+      addWorkspaceButton.textContent = 'ページ範囲を更新';
+    } else {
+      addWorkspaceButton.textContent = pack ? `「${shortPackName(pack.name)}」に追加` : '資料に追加';
+    }
   }
 
   document.addEventListener('tsundoku-cart-updated', updateAddWorkspaceButtonLabel);
@@ -721,20 +1053,34 @@
       }
     }
     const cart = TsundokuCart.load();
-    const entry = cart.books[currentPdfPath];
+    if (!Array.isArray(cart.items)) {
+      cart.items = [];
+    }
+    const entry = currentPackItemKey
+      ? cart.items.find((item) => TsundokuCart.itemKey(item) === currentPackItemKey)
+      : null;
     if (entry) {
-      entry.pages = TsundokuPages.mergeSpecs([entry.pages, pages]);
+      entry.pages = pages;
     } else {
-      cart.books[currentPdfPath] = {
+      cart.items.push({
+        clientId: TsundokuCart.createClientId(),
+        pdf_path: currentPdfPath,
         title: title.textContent || currentPdfPath,
-        pages: TsundokuPages.mergeSpecs([pages]),
+        pages: pages,
         collapsed: false,
         addedAt: new Date().toISOString(),
-      };
+      });
     }
     TsundokuCart.save(cart);
     const pack = TsundokuCart.getActivePack();
-    setExportStatus(pack ? `「${shortPackName(pack.name)}」に追加しました` : '資料に追加しました');
+    const packName = pack ? pack.name : '資料';
+    const displayPages = pages ? `p.${pages}` : '全ページ';
+    const bookTitle = title.textContent || currentPdfPath;
+    if (entry) {
+      setExportStatus(`「${shortPackName(packName)}」の「${bookTitle}」のページ範囲を ${displayPages} に更新しました`);
+    } else {
+      setExportStatus(`「${shortPackName(packName)}」に「${bookTitle}」の ${displayPages} を追加しました`);
+    }
     document.dispatchEvent(new CustomEvent('tsundoku-cart-updated'));
   });
 
@@ -762,6 +1108,9 @@
     }
   });
   document.addEventListener('keydown', (event) => {
+    if (isThumbDetailOverlayOpen()) {
+      return;
+    }
     if (event.key === 'Escape' && modal.classList.contains('open')) {
       void closeModal();
     }

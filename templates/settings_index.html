@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}つんどけんさく | 設定{% endblock %}
+{% block title %}つんどけんさく | 本の登録{% endblock %}
 {% block content %}
 <div class="settings-layout">
   {% set active_settings_page = 'index' %}
@@ -115,7 +115,7 @@
             type="search"
             name="save_dir"
             value="{{ pdf_export_save_dir or '' }}"
-            placeholder="/path/to/NotebookLM-folder"
+            placeholder="/path/to/save-folder"
             aria-label="PDF切り出し保存先フォルダ"
           >
           <button class="primary" type="submit">保存する</button>

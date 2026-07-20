@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import logging
 import re
 import sqlite3
 from collections.abc import Iterable
@@ -77,6 +79,7 @@ class PackRecord:
 
 @dataclass(frozen=True)
 class PackItemRecord:
+    id: int
     pdf_path: str
     title: str
     pages: str
@@ -84,6 +87,25 @@ class PackItemRecord:
     position: int
     added_at: str
     updated_at: str
+
+
+@dataclass(frozen=True)
+class ExportEventRecord:
+    id: int
+    exported_at: str
+    pack_id: int | None
+    pack_name: str
+    profile: str
+    format: str
+    items: tuple["ExportEventItemRecord", ...]
+
+
+@dataclass(frozen=True)
+class ExportEventItemRecord:
+    pdf_path: str
+    title: str
+    pages: str
+    position: int
 
 
 @dataclass(frozen=True)
@@ -131,6 +153,7 @@ def initialize(connection: sqlite3.Connection) -> None:
     _ensure_book_notes_schema(connection)
     _ensure_search_schema(connection)
     _ensure_pack_schema(connection)
+    _remove_empty_artifact_tables(connection)
     connection.execute("PRAGMA foreign_keys = ON")
     connection.commit()
 
@@ -949,7 +972,7 @@ def get_pack(connection: sqlite3.Connection, pack_id: int) -> PackRecord | None:
     row = connection.execute(
         """
         SELECT p.id, p.name, p.note, p.created_at, p.updated_at, p.archived_at,
-               (SELECT COUNT(*) FROM pack_items i WHERE i.pack_id = p.id) AS book_count
+               (SELECT COUNT(DISTINCT i.pdf_path) FROM pack_items i WHERE i.pack_id = p.id) AS book_count
         FROM packs p
         WHERE p.id = ?
         """,
@@ -964,7 +987,7 @@ def list_packs(connection: sqlite3.Connection) -> list[PackRecord]:
     rows = connection.execute(
         """
         SELECT p.id, p.name, p.note, p.created_at, p.updated_at, p.archived_at,
-               (SELECT COUNT(*) FROM pack_items i WHERE i.pack_id = p.id) AS book_count
+               (SELECT COUNT(DISTINCT i.pdf_path) FROM pack_items i WHERE i.pack_id = p.id) AS book_count
         FROM packs p
         WHERE p.archived_at IS NULL
         ORDER BY p.updated_at DESC, p.id DESC
@@ -1072,7 +1095,7 @@ def resolve_active_pack_id(connection: sqlite3.Connection) -> int | None:
 def get_pack_items(connection: sqlite3.Connection, pack_id: int) -> list[PackItemRecord]:
     rows = connection.execute(
         """
-        SELECT pdf_path, title, pages, collapsed, position, added_at, updated_at
+        SELECT id, pdf_path, title, pages, collapsed, position, added_at, updated_at
         FROM pack_items
         WHERE pack_id = ?
         ORDER BY position, id
@@ -1081,6 +1104,7 @@ def get_pack_items(connection: sqlite3.Connection, pack_id: int) -> list[PackIte
     ).fetchall()
     return [
         PackItemRecord(
+            id=int(row["id"]),
             pdf_path=str(row["pdf_path"]),
             title=str(row["title"]),
             pages=str(row["pages"]),
@@ -1091,6 +1115,120 @@ def get_pack_items(connection: sqlite3.Connection, pack_id: int) -> list[PackIte
         )
         for row in rows
     ]
+
+
+def _item_to_json(item: PackItemRecord, *, include_id: bool = True) -> dict[str, object]:
+    data: dict[str, object] = {
+        "pdf_path": item.pdf_path,
+        "title": item.title,
+        "pages": item.pages,
+        "collapsed": item.collapsed,
+        "position": item.position,
+        "addedAt": item.added_at,
+        "updatedAt": item.updated_at,
+    }
+    if include_id:
+        data["id"] = item.id
+    return data
+
+
+def pack_items_as_items(connection: sqlite3.Connection, pack_id: int) -> dict:
+    """パック内容を正規の version 3 items 形式で返す。"""
+    return {"version": 3, "items": [_item_to_json(item) for item in get_pack_items(connection, pack_id)]}
+
+
+def _books_to_item_entries(books: dict) -> list[dict[str, object]]:
+    entries: list[dict[str, object]] = []
+    for pdf_path, entry in books.items():
+        if not isinstance(pdf_path, str) or not pdf_path or not isinstance(entry, dict):
+            continue
+        entries.append(
+            {
+                "pdf_path": pdf_path,
+                "title": entry.get("title") if isinstance(entry.get("title"), str) and entry.get("title") else pdf_path,
+                "pages": entry.get("pages") if isinstance(entry.get("pages"), str) else "",
+                "collapsed": bool(entry.get("collapsed")),
+                "addedAt": entry.get("addedAt") if isinstance(entry.get("addedAt"), str) and entry.get("addedAt") else "",
+            }
+        )
+    return entries
+
+
+def replace_pack_item_entries(connection: sqlite3.Connection, pack_id: int, items: list[dict]) -> list[PackItemRecord] | None:
+    """パックの内容を version 3 items 配列で丸ごと置き換える。
+
+    id がある項目は同じ pack_id に属する既存項目として更新し、id がない項目は
+    新規作成する。リクエストから消えた既存項目は削除する。
+    """
+    if get_pack(connection, pack_id) is None:
+        return None
+    if not isinstance(items, list):
+        return None
+
+    now = _pack_now()
+    existing_rows = connection.execute(
+        """
+        SELECT id, pack_id, pdf_path, title, pages, collapsed, position, added_at, updated_at
+        FROM pack_items
+        WHERE pack_id = ?
+        """,
+        (pack_id,),
+    ).fetchall()
+    existing_ids = {int(row["id"]) for row in existing_rows}
+    seen_ids: set[int] = set()
+
+    connection.execute("BEGIN TRANSACTION")
+    try:
+        for index, raw in enumerate(items):
+            if not isinstance(raw, dict):
+                continue
+            pdf_path = raw.get("pdf_path")
+            if not isinstance(pdf_path, str) or not pdf_path:
+                continue
+            title = raw.get("title") if isinstance(raw.get("title"), str) and raw.get("title") else pdf_path
+            pages = raw.get("pages") if isinstance(raw.get("pages"), str) else ""
+            collapsed = 1 if raw.get("collapsed") else 0
+            added_at = raw.get("addedAt") if isinstance(raw.get("addedAt"), str) and raw.get("addedAt") else now
+            
+            raw_pos = raw.get("position")
+            position = raw_pos if isinstance(raw_pos, int) else index
+
+            raw_id = raw.get("id")
+            item_id = raw_id if isinstance(raw_id, int) else None
+            
+            if item_id is not None:
+                if item_id not in existing_ids:
+                    raise ValueError("item id does not belong to this pack")
+                if item_id in seen_ids:
+                    raise ValueError("duplicate item id in request")
+                seen_ids.add(item_id)
+                connection.execute(
+                    """
+                    UPDATE pack_items SET pdf_path = ?, title = ?, pages = ?, collapsed = ?, position = ?, updated_at = ?
+                    WHERE pack_id = ? AND id = ?
+                    """,
+                    (pdf_path, title, pages, collapsed, position, now, pack_id, item_id),
+                )
+            else:
+                cursor = connection.execute(
+                    """
+                    INSERT INTO pack_items(pack_id, pdf_path, title, pages, collapsed, position, added_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (pack_id, pdf_path, title, pages, collapsed, position, added_at, now),
+                )
+                seen_ids.add(int(cursor.lastrowid))
+
+        for item_id in existing_ids - seen_ids:
+            connection.execute("DELETE FROM pack_items WHERE pack_id = ? AND id = ?", (pack_id, item_id))
+
+        connection.execute("UPDATE packs SET updated_at = ? WHERE id = ?", (now, pack_id))
+        connection.commit()
+    except Exception as exc:
+        connection.rollback()
+        raise exc
+
+    return get_pack_items(connection, pack_id)
 
 
 def replace_pack_items(connection: sqlite3.Connection, pack_id: int, books: dict) -> bool:
@@ -1104,42 +1242,23 @@ def replace_pack_items(connection: sqlite3.Connection, pack_id: int, books: dict
         return False
     if not isinstance(books, dict):
         return False
-    now = _pack_now()
-    existing = {item.pdf_path: item for item in get_pack_items(connection, pack_id)}
 
-    for pdf_path in set(existing) - set(books):
-        connection.execute("DELETE FROM pack_items WHERE pack_id = ? AND pdf_path = ?", (pack_id, pdf_path))
+    existing_items = get_pack_items(connection, pack_id)
+    existing_paths = [item.pdf_path for item in existing_items]
+    if len(existing_paths) != len(set(existing_paths)):
+        raise ValueError("Cannot overwrite pack using v2 format because it contains duplicate PDF paths")
 
-    position = 0
-    for pdf_path, entry in books.items():
-        if not isinstance(pdf_path, str) or not pdf_path or not isinstance(entry, dict):
+    entries = _books_to_item_entries(books)
+    existing_by_path: dict[str, PackItemRecord] = {}
+    for item in existing_items:
+        existing_by_path.setdefault(item.pdf_path, item)
+    for entry in entries:
+        current = existing_by_path.get(str(entry["pdf_path"]))
+        if current is None:
             continue
-        title = entry.get("title") if isinstance(entry.get("title"), str) and entry.get("title") else pdf_path
-        pages = entry.get("pages") if isinstance(entry.get("pages"), str) else ""
-        collapsed = 1 if entry.get("collapsed") else 0
-        current = existing.get(pdf_path)
-        if current is not None:
-            connection.execute(
-                """
-                UPDATE pack_items SET title = ?, pages = ?, collapsed = ?, position = ?, updated_at = ?
-                WHERE pack_id = ? AND pdf_path = ?
-                """,
-                (title, pages, collapsed, position, now, pack_id, pdf_path),
-            )
-        else:
-            added_at = entry.get("addedAt") if isinstance(entry.get("addedAt"), str) and entry.get("addedAt") else now
-            connection.execute(
-                """
-                INSERT INTO pack_items(pack_id, pdf_path, title, pages, collapsed, position, added_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (pack_id, pdf_path, title, pages, collapsed, position, added_at, now),
-            )
-        position += 1
-
-    connection.execute("UPDATE packs SET updated_at = ? WHERE id = ?", (now, pack_id))
-    connection.commit()
-    return True
+        entry["id"] = current.id
+        entry["addedAt"] = current.added_at
+    return replace_pack_item_entries(connection, pack_id, entries) is not None
 
 
 def pack_items_as_cart(connection: sqlite3.Connection, pack_id: int) -> dict:
@@ -1155,15 +1274,157 @@ def pack_items_as_cart(connection: sqlite3.Connection, pack_id: int) -> dict:
     return {"version": 2, "books": books}
 
 
-def import_cart_as_pack(connection: sqlite3.Connection, cart: dict, *, name: str) -> int | None:
-    """sessionStorage のカート（version 2）を新規パックとして取り込む。"""
-    if not isinstance(cart, dict) or cart.get("version") != 2:
+def validate_pages_syntax(spec: str) -> None:
+    page_spec = spec.strip()
+    if not page_spec:
+        return
+    for part in page_spec.split(","):
+        chunk = part.strip()
+        if not chunk:
+            continue
+        if "-" in chunk:
+            parts = chunk.split("-")
+            if len(parts) != 2:
+                raise ValueError(f"Invalid page spec chunk: {chunk}")
+            start_text, end_text = parts
+            start_text = start_text.strip()
+            end_text = end_text.strip()
+            start = 1
+            if start_text:
+                if not start_text.isdigit():
+                    raise ValueError(f"Invalid start page: {start_text}")
+                start = int(start_text)
+                if start <= 0:
+                    raise ValueError(f"Page number must be positive: {start}")
+            
+            if end_text:
+                if not end_text.isdigit():
+                    raise ValueError(f"Invalid end page: {end_text}")
+                end = int(end_text)
+                if end <= 0:
+                    raise ValueError(f"Page number must be positive: {end}")
+                if start_text and start > end:
+                    raise ValueError(f"Start page {start} cannot be greater than end page {end}")
+        else:
+            if not chunk.isdigit():
+                raise ValueError(f"Invalid page number: {chunk}")
+            val = int(chunk)
+            if val <= 0:
+                raise ValueError(f"Page number must be positive: {val}")
+
+
+def normalize_pack_payload_to_items(payload: dict) -> list[dict[str, object]] | None:
+    if not isinstance(payload, dict):
         return None
-    books = cart.get("books")
-    if not isinstance(books, dict) or not books:
+
+    version = payload.get("version")
+    if version not in (2, 3):
+        return None
+
+    if version == 3:
+        items = payload.get("items")
+        if not isinstance(items, list) or not items:
+            return None
+        
+        normalized: list[dict[str, object]] = []
+        positions = [item.get("position") for item in items if isinstance(item, dict)]
+        is_pos_valid = all(isinstance(p, int) and p >= 0 for p in positions) and len(set(positions)) == len(positions)
+
+        for index, raw in enumerate(items):
+            if not isinstance(raw, dict):
+                raise ValueError(f"item at index {index} must be a dictionary")
+            
+            pdf_path = raw.get("pdf_path")
+            if not isinstance(pdf_path, str) or not pdf_path:
+                raise ValueError(f"item at index {index} has invalid pdf_path: {pdf_path}")
+            
+            title = raw.get("title")
+            if title is not None and not isinstance(title, str):
+                raise ValueError(f"item at index {index} has invalid title: {title}")
+            
+            pages = raw.get("pages")
+            if not isinstance(pages, str):
+                raise ValueError(f"item at index {index} has invalid pages: {pages}")
+            validate_pages_syntax(pages)
+            
+            collapsed = raw.get("collapsed")
+            if not isinstance(collapsed, bool):
+                raise ValueError(f"item at index {index} has invalid collapsed: {collapsed}")
+            
+            added_at = raw.get("addedAt")
+            if added_at is not None and not isinstance(added_at, str):
+                raise ValueError(f"item at index {index} has invalid addedAt: {added_at}")
+            
+            pos_val = raw.get("position")
+            position = pos_val if (is_pos_valid and isinstance(pos_val, int)) else index
+            
+            normalized.append({
+                "pdf_path": pdf_path,
+                "title": title or pdf_path,
+                "pages": pages,
+                "collapsed": collapsed,
+                "addedAt": added_at or "",
+                "position": position,
+            })
+        
+        normalized.sort(key=lambda x: x["position"]) # type: ignore
+        for idx, item in enumerate(normalized):
+            item["position"] = idx
+        return normalized
+
+    if version == 2:
+        books = payload.get("books")
+        if not isinstance(books, dict) or not books:
+            return None
+        
+        normalized = []
+        for pdf_path, entry in books.items():
+            if not isinstance(pdf_path, str) or not pdf_path:
+                raise ValueError("v2 books dict has empty/invalid key")
+            if not isinstance(entry, dict):
+                raise ValueError(f"v2 book entry for {pdf_path} must be a dictionary")
+            
+            title = entry.get("title") or pdf_path
+            if not isinstance(title, str):
+                raise ValueError(f"v2 book {pdf_path} has invalid title: {title}")
+            
+            pages = entry.get("pages") or ""
+            if not isinstance(pages, str):
+                raise ValueError(f"v2 book {pdf_path} has invalid pages: {pages}")
+            validate_pages_syntax(pages)
+            
+            collapsed = entry.get("collapsed")
+            if not isinstance(collapsed, bool):
+                collapsed = bool(collapsed)
+            
+            added_at = entry.get("addedAt") or ""
+            if not isinstance(added_at, str):
+                raise ValueError(f"v2 book {pdf_path} has invalid addedAt: {added_at}")
+            
+            normalized.append({
+                "pdf_path": pdf_path,
+                "title": title,
+                "pages": pages,
+                "collapsed": collapsed,
+                "addedAt": added_at,
+                "position": len(normalized),
+            })
+        return normalized
+
+    return None
+
+
+def import_cart_as_pack(connection: sqlite3.Connection, cart: dict, *, name: str) -> int | None:
+    """sessionStorage のカート（version 2）または items（version 3）を新規パックとして取り込む。"""
+    items = normalize_pack_payload_to_items(cart)
+    if not items:
         return None
     pack_id = create_pack(connection, name=name)
-    replace_pack_items(connection, pack_id, books)
+    try:
+        replace_pack_item_entries(connection, pack_id, items)
+    except Exception as exc:
+        delete_pack(connection, pack_id)
+        raise exc
     return pack_id
 
 
@@ -1182,7 +1443,115 @@ def _pack_record_from_row(row: sqlite3.Row) -> PackRecord:
 def ensure_pack_schema(connection: sqlite3.Connection) -> None:
     """パック関連テーブルだけを保証する軽量版。APIリクエスト経路で使う。"""
     _ensure_pack_schema(connection)
+    _remove_empty_artifact_tables(connection)
     connection.commit()
+
+
+def record_export_event(
+    connection: sqlite3.Connection,
+    *,
+    pack_id: int | None,
+    pack_name: str,
+    profile: str,
+    format: str,
+    items: list[PackItemRecord],
+) -> None:
+    """エクスポート成功時に export_events テーブルへ1行記録する（設計書 C-6）。
+
+    呼び出し側（web.py）はこの関数を try/except で包み、INSERT の失敗を
+    ログ出力のみで握り潰すこと（ベストエフォート）。エクスポート本体のレスポンスには
+    影響を与えない（設計書 export-events-design.md §6）。
+
+    items_json は position 順のスナップショット（§3）。
+    """
+    exported_at = datetime.now(timezone.utc).isoformat()
+    items_payload = {
+        "version": 1,
+        "items": [
+            {
+                "pdf_path": item.pdf_path,
+                "title": item.title,
+                "pages": item.pages,
+                "position": item.position,
+            }
+            for item in items
+        ],
+    }
+    items_json = json.dumps(items_payload, ensure_ascii=False)
+    connection.execute(
+        """
+        INSERT INTO export_events (exported_at, pack_id, pack_name, profile, format, items_json)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (exported_at, pack_id, pack_name, profile, format, items_json),
+    )
+    connection.commit()
+
+
+def list_export_events(connection: sqlite3.Connection, *, limit: int = 20) -> list[ExportEventRecord]:
+    """最近のエクスポート履歴を新しい順で返す。
+
+    旧DBや手動編集で items_json が壊れていても、当該イベントの出典を空として
+    扱う。履歴一覧を、1件の不正データで止めないためである。
+    """
+    rows = connection.execute(
+        """
+        SELECT id, exported_at, pack_id, pack_name, profile, format, items_json
+        FROM export_events
+        ORDER BY exported_at DESC, id DESC
+        LIMIT ?
+        """,
+        (max(0, limit),),
+    ).fetchall()
+    return [_export_event_record_from_row(row) for row in rows]
+
+
+def get_export_event(connection: sqlite3.Connection, export_event_id: int) -> ExportEventRecord | None:
+    row = connection.execute(
+        """
+        SELECT id, exported_at, pack_id, pack_name, profile, format, items_json
+        FROM export_events
+        WHERE id = ?
+        """,
+        (export_event_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    return _export_event_record_from_row(row)
+
+
+def _export_event_record_from_row(row: sqlite3.Row) -> ExportEventRecord:
+    return ExportEventRecord(
+        id=int(row["id"]),
+        exported_at=str(row["exported_at"]),
+        pack_id=int(row["pack_id"]) if row["pack_id"] is not None else None,
+        pack_name=str(row["pack_name"]),
+        profile=str(row["profile"]),
+        format=str(row["format"]),
+        items=_parse_export_event_items(str(row["items_json"])),
+    )
+
+
+def _parse_export_event_items(items_json: str) -> tuple[ExportEventItemRecord, ...]:
+    try:
+        payload = json.loads(items_json)
+    except (TypeError, json.JSONDecodeError):
+        return ()
+    if not isinstance(payload, dict) or payload.get("version") != 1 or not isinstance(payload.get("items"), list):
+        return ()
+
+    items: list[ExportEventItemRecord] = []
+    for raw_item in payload["items"]:
+        if not isinstance(raw_item, dict):
+            continue
+        pdf_path = raw_item.get("pdf_path")
+        title = raw_item.get("title")
+        pages = raw_item.get("pages")
+        position = raw_item.get("position")
+        if not isinstance(pdf_path, str) or not isinstance(title, str) or not isinstance(pages, str) or not isinstance(position, int):
+            continue
+        items.append(ExportEventItemRecord(pdf_path=pdf_path, title=title, pages=pages, position=position))
+    return tuple(items)
 
 
 def _ensure_pack_schema(connection: sqlite3.Connection) -> None:
@@ -1206,14 +1575,90 @@ def _ensure_pack_schema(connection: sqlite3.Connection) -> None:
             collapsed INTEGER NOT NULL DEFAULT 0,
             position INTEGER NOT NULL DEFAULT 0,
             added_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
-            UNIQUE(pack_id, pdf_path)
+            updated_at TEXT NOT NULL
         );
 
         CREATE TABLE IF NOT EXISTS app_state (
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS export_events (
+            id INTEGER PRIMARY KEY,
+            exported_at TEXT NOT NULL,
+            pack_id INTEGER,
+            pack_name TEXT NOT NULL,
+            profile TEXT NOT NULL,
+            format TEXT NOT NULL,
+            items_json TEXT NOT NULL
+        );
+        """
+    )
+    _migrate_pack_items_drop_pdf_path_unique(connection)
+
+
+def _remove_empty_artifact_tables(connection: sqlite3.Connection) -> None:
+    """空の旧AIノートテーブルだけを安全に削除する。"""
+    table_names = {row["name"] for row in connection.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('artifacts', 'artifact_sources')"
+    ).fetchall()}
+    if not table_names:
+        return
+
+    counts = {
+        table_name: int(connection.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()[0])
+        for table_name in table_names
+    }
+    artifact_count = counts.get("artifacts", 0)
+    source_count = counts.get("artifact_sources", 0)
+    if artifact_count or source_count:
+        logging.warning(
+            "AIノート機能は撤去されましたが、既存データを保護するため旧テーブルを保持します: "
+            "artifacts=%d, artifact_sources=%d",
+            artifact_count,
+            source_count,
+        )
+        return
+
+    if "artifact_sources" in table_names:
+        connection.execute("DROP TABLE artifact_sources")
+    if "artifacts" in table_names:
+        connection.execute("DROP TABLE artifacts")
+
+
+def _migrate_pack_items_drop_pdf_path_unique(connection: sqlite3.Connection) -> None:
+    row = connection.execute(
+        """
+        SELECT sql
+        FROM sqlite_master
+        WHERE type = 'table' AND name = 'pack_items'
+        """
+    ).fetchone()
+    create_sql = str(row["sql"] or "") if row is not None else ""
+    if "UNIQUE(pack_id, pdf_path)" not in create_sql:
+        return
+
+    connection.executescript(
+        """
+        CREATE TABLE pack_items_new (
+            id INTEGER PRIMARY KEY,
+            pack_id INTEGER NOT NULL REFERENCES packs(id) ON DELETE CASCADE,
+            pdf_path TEXT NOT NULL,
+            title TEXT NOT NULL,
+            pages TEXT NOT NULL DEFAULT '',
+            collapsed INTEGER NOT NULL DEFAULT 0,
+            position INTEGER NOT NULL DEFAULT 0,
+            added_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        INSERT INTO pack_items_new(id, pack_id, pdf_path, title, pages, collapsed, position, added_at, updated_at)
+        SELECT id, pack_id, pdf_path, title, pages, collapsed, position, added_at, updated_at
+        FROM pack_items
+        ORDER BY pack_id, position, id;
+
+        DROP TABLE pack_items;
+        ALTER TABLE pack_items_new RENAME TO pack_items;
         """
     )
 
