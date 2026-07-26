@@ -1,8 +1,8 @@
 # 中心ファイルの責務棚卸しと段階的分割設計
 
-対象: `src/tsundokensaku/web.py`（2072行）・`src/tsundokensaku/database.py`（1922行）
+対象: `src/tsundokensaku/web.py`（2014行、`paths.py`分離後）・`src/tsundokensaku/database.py`（1922行、未着手）
 位置づけ: ROADMAP「Phase 5着手前: 構造改善と回帰保証」の「構造と依存関係の棚卸し」の成果物
-状態: 調査・設計のみ。本体コードは分割していない。
+状態: 段階0（パス解決の一元化、0a・0bとも）は実装済み（コミット `7f7e6ddaa9089b75f0c07a2b11f92abcd9a55b3f` ・ `20a04417b8c58b4a828964e3199e9d51d4dd3643`）。段階1以降は未着手・本体コード未変更。
 
 ---
 
@@ -24,9 +24,9 @@
 ### 前提（確認済み）
 
 - 個人開発・ローカル利用が中心。SQLite単一ファイル、追加サーバープロセスなし。
-- すでに多くの処理が専用モジュールへ分離済み: `export_profiles` / `export_stats` / `pdf_export` / `pdf_extract` / `pdf_outline` / `pdf_thumbnail` / `markdown_export` / `metadata` / `tokenizer` / `token_estimate` / `zip_export` / `indexer`。残る大物が `web.py` と `database.py` の2つ。
-- 回帰の安全網は厚い: `tests/test_web.py`（3350行、FastAPI TestClient 経由）・`tests/test_database.py`（1236行）。Playwright は5 spec・29テスト。
-- CI（`.github/workflows/ci.yml`）は現在 Python unittest のみ実行。Playwright は未搭載（ROADMAP の Must で CI 化予定）。
+- すでに多くの処理が専用モジュールへ分離済み: `export_profiles` / `export_stats` / `pdf_export` / `pdf_extract` / `pdf_outline` / `pdf_thumbnail` / `markdown_export` / `metadata` / `tokenizer` / `token_estimate` / `zip_export` / `indexer` / `paths`（段階0で新設）。残る大物が `web.py` と `database.py` の2つ。
+- 回帰の安全網は厚い: `tests/test_web.py`（3531行、FastAPI TestClient 経由。段階0でパス関連23件を追加）・`tests/test_database.py`（1236行）。Playwright は5 spec・29テスト。
+- CI（`.github/workflows/ci.yml`）は Python unittest と Playwright の両方を別jobで実行済み（ROADMAP Must「Playwright テストの CI 実行」は2026-07-26完了）。
 
 ---
 
@@ -190,6 +190,7 @@ graph TD
         exps[export_stats.py]
         zip[zip_export.py]
         pdfx[pdf_export/extract/outline/thumbnail]
+        paths[paths.py]
     end
     db[(database.py: 接続+スキーマ+CRUD+検索+履歴)]
 
@@ -201,6 +202,8 @@ graph TD
     web --> zip
     web --> pdfx
     web --> tok
+    web --> paths
+    exps --> paths
     cli --> db
     cli --> idx
     idx --> db
@@ -208,12 +211,11 @@ graph TD
     idx --> pdfx
     db --> meta
     db --> tok
-    exps -. path解決を複製 .-> web
 ```
 
 確認済みの問題点:
-- web.py が「HTTP層」でありながら、設定解決・パス解決・生SQL集計・インデックスジョブ・エクスポート業務ロジックまで抱える。
-- `export_stats` が `web.resolve_pdf_path` 相当を複製している（循環import回避のための既知の負債。web.py 469-471 の TODO）。
+- web.py が「HTTP層」でありながら、設定解決・生SQL集計・インデックスジョブ・エクスポート業務ロジックまで抱える（パス解決は段階0で `paths.py` へ分離済み）。
+- ~~`export_stats` が `web.resolve_pdf_path` 相当を複製している~~ → 段階0bで解消済み。`export_stats.py` は `web.py` をimportせず `paths.py` を参照する形になり、循環import経路も発生していない。
 - `database.py` が「接続＋スキーマ＋4ドメインCRUD＋検索＋履歴」を1ファイルに集約。
 
 ---
@@ -287,7 +289,7 @@ graph TD
 
 | 候補モジュール | 担当責務 | 移動元 | 主な対象 | 依存先 | 呼び出し元 | 先行/後回し |
 |---|---|---|---|---|---|---|
-| `paths.py` ★ | パス解決・PDF URL生成・一意保存先 | web R3 | `resolve_pdf_path`, `pdf_url`, `raw_pdf_url`, `_unique_*` | fs, config | web, export_stats | **先行**（複製解消） |
+| `paths.py` ★ | パス解決・PDF URL生成・一意保存先 | web R3 | `resolve_pdf_path`, `pdf_url`, `raw_pdf_url`, `_unique_*` | fs, config | web, export_stats | **完了**（コミット `7f7e6dd` ・ `20a0441`） |
 | `config.py` | 環境変数・設定解決・.env書込 | web R2 | `get_books_dir`, `get_db_path`, `is_demo_mode`, `update_env_setting` | os, fs | web, （cli） | 早期 |
 | `search_view.py` | 検索結果の整形・ハイライト・並替 | web R4 | `build_search_result_rows*`, `highlight_query`, `group_pdf_results`, `normalize_*` | tokenizer, metadata, paths | web | 早期（純粋・低リスク） |
 | `index_job.py` | インデックスのバックグラウンド実行と進捗 | web R6 | `_run_index_job`, `_*_index_progress`, 進捗グローバル | threading, indexer, config | web | 中盤 |
@@ -312,28 +314,51 @@ graph TD
 
 **着手前提（ROADMAP Must）**: Playwright の CI 実行・テスト戦略明文化を先に整える。ただし本移行の各段階は Python の TestClient テストが主な安全網であり、UI変更を伴わないため Playwright は「無変更の確認」用途。
 
-### 段階0: パス解決の一元化 ★（先行・複製解消）
+### 段階0: パス解決の一元化 ★（完了）
 
-**この段階は2つの PR に分ける。** テスト追加（挙動を固定するだけでコードは動かさない）と、責務移動（コードを動かすが挙動は変えない）を混在させないため。順序は 0a → 0b。
+**この段階は2つの PR に分けた。** テスト追加（挙動を固定するだけでコードは動かさない）と、責務移動（コードを動かすが挙動は変えない）を混在させないため。順序は 0a → 0b。
 
-#### 段階0a: 既存挙動を固定する回帰テストの追加（コード移動なし）
+#### 段階0a: 既存挙動を固定する回帰テストの追加（コード移動なし）— 完了（コミット `7f7e6ddaa9089b75f0c07a2b11f92abcd9a55b3f`）
 
 - 目的: パス解決・パストラバーサル検証の現在の挙動を、移動前にテストで固定する。
-- 変更対象: `tests/` のみ（テスト追加）。`web.py`・`export_stats.py` の本体は**一切変更しない**。
-- 追加するテスト: `resolve_pdf_path` の正常系（相対・絶対・コンテナパス）と、境界外（`..` によるトラバーサル、books_dir 外の絶対パス、シンボリックリンク相当）が `None` になること。保存先の一意化（`_unique_*`）の既存挙動。
-- Python テストで足りるか: 足りる。
-- ロールバック: PR revert（テストのみなので影響なし）。
-- 次段階条件: 追加テストが現行コードに対して緑。これが 0b の安全網になる。
+- 変更対象: `tests/test_web.py` のみ（`ResolvePdfPathTest`・`PdfUrlTest`・`UniqueDestinationPathTest`・`UniqueExportDestinationPathTest` の計23件）。`web.py`・`export_stats.py` の本体は変更していない。
+- 追加したテスト: `resolve_pdf_path` の正常系（相対・絶対・コンテナパス・ファイル名フォールバック）と、境界外（`..` によるトラバーサル、books_dir 外の絶対パス、books_dir 外を指すsymlink）が `None` になること。`pdf_url`/`raw_pdf_url` のURL形式・ページ番号・特殊文字エンコード。保存先の一意化（`_unique_*`）の命名規則。
+- 結果: Python全件（当時394件）成功。
 
-#### 段階0b: paths.py への純粋移動と複製解消（挙動不変）
+#### 段階0b: paths.py への純粋移動と複製解消（挙動不変）— 完了（コミット `20a04417b8c58b4a828964e3199e9d51d4dd3643`）
 
-- 移動する責務: R3（`resolve_pdf_path`, `pdf_url`, `raw_pdf_url`, `_unique_*`）→ 新規 `paths.py`。
-- 変更対象: 新規 `paths.py`、`web.py`（委譲ラッパー化）、`export_stats.py`（複製をやめて `paths` を参照）。
-- 公開関数: web.py に同名ラッパーを残す。
-- 回帰テスト: 段階0a で追加したパス検証テスト＋既存の PDF URL / thumbnail / export 系 TestClient テスト。**新規テストは追加しない**（0a で固定済みの挙動が、移動後も緑のままであることを確認する）。
-- Python テストで足りるか: 足りる。Playwright は無変更確認のみ。
-- ロールバック: PR revert。
-- 次段階条件: `export_stats` の TODO(phase3b-path-resolution-dedup) が解消し、0a のテストを含む全テストが緑。
+- 移動した責務: R3（`resolve_pdf_path`, `pdf_url`, `raw_pdf_url`, `unique_destination_path`, `unique_export_destination_path`）→ 新規 `paths.py`。
+- 変更対象: 新規 `paths.py`、`web.py`（同名の薄い委譲ラッパーに変更。`CONTAINER_BOOKS_DIRS` は `paths.CONTAINER_BOOKS_DIRS` への単純エイリアス）、`export_stats.py`（`_resolve_pdf_path`・`_CONTAINER_BOOKS_DIRS` と付随する重複説明コメントを削除し `paths.resolve_pdf_path` を参照）。
+- 公開関数: web.py に同名ラッパー（`resolve_pdf_path` / `pdf_url` / `raw_pdf_url` / `_unique_destination_path` / `_unique_export_destination_path`）を維持。単純代入ではなくラッパー関数にした理由: `pdf_url`/`raw_pdf_url` が内部で `resolve_pdf_path` を呼ぶため、将来 `patch("tsundokensaku.web.resolve_pdf_path")` のようなpatchをしても意図通り効くようにするため（`paths.py` 内部の相互呼び出しに引きずられない）。
+- 回帰テスト: 段階0aで追加したパス検証23件＋既存のPDF URL/thumbnail/export系TestClientテスト＋`export_stats`の重複解消を確認する新規2件（`tests/test_export_stats.py` の `ExportStatsUsesSharedPathsModuleTest`）。
+- 結果: Python全件396件成功。循環importなし（`paths.py` は他のtsundokensakuモジュールに依存しない。`export_stats.py` は `web.py` をimportしない）。
+- 次段階条件（達成済み）: `export_stats` のTODO(phase3b-path-resolution-dedup)が解消し、全テストが緑。
+
+### 次に切り出す責務の比較（段階0完了時点での再評価）
+
+段階0完了後、`web.py` に残る主要候補（R2・R4・R6・R7・R8）を実装・テストの現状に基づいて比較した。
+
+| 候補 | 独立させやすさ | FastAPI依存 | DB依存 | fs依存 | 既存テスト充実度 | monkeypatch/import互換影響 | 循環import危険 | 1PR変更量 | 巻き戻しやすさ |
+|---|---|---|---|---|---|---|---|---|---|
+| R2 config（`get_books_dir`等5関数） | 高（相互依存なし） | `templates.env.globals`登録2件をweb.py側に残す必要 | なし | あり（読み取り3関数＋`.env`書込み1関数） | 直接単体テストなし。ただし`patch("tsundokensaku.web.get_books_dir")`63箇所・`get_db_path`70箇所と既存TestClientテストの大半が間接的に依存 | 133箇所のpatch対象名を壊さないよう注意が必要だが、対処は単純（web.py側に同名を残す） | 低（os/pathlibのみ依存） | 小（対象5関数＋定数3個） | 高 |
+| R4 search_view（`highlight_query`等12関数） | 高（tokenizer/metadata/pathsのみ依存） | `templates.env.filters`登録2件をweb.py側に残す必要 | なし | なし | 高い（`test_web.py`内で既存の厚いテスト群が検証済み） | 直接patchは0箇所 | 低 | 中（対象12関数、R2より多い） | 高 |
+| R6 index_job（`_run_index_job`等） | 中（`INDEX_PROGRESS`グローバル辞書＋ロックのライフサイクルに注意） | ルートから参照 | indexer経由で間接依存 | indexer経由で間接依存 | **なし**（`test_web.py`に`/settings/index`・`/settings/progress`・`_run_index_job`への直接テストが存在しない） | 直接patchは0箇所 | 低〜中 | 小 | 中（グローバル状態の前提が絡む） |
+| R7 pdf_service（`save_uploaded_pdf`等） | 低（paths/pdf_*/database/config等に複数依存） | ルートから参照 | あり（`_get_indexed_book`経由） | 高い（アップロード保存等の副作用大） | 中〜高 | 直接patchは0箇所 | 中（複数モジュールを跨ぐ） | 大 | 中〜低（副作用が大きい） |
+| R8 export_service（`build_export_preview_*`等） | 中（export_profiles/export_stats/zip_export/database packに依存） | `_resolve_export_profile_or_400`がHTTPExceptionを直接投げる | あり（pack取得） | 中 | 非常に高い（`BuildExportPreviewPayloadTest`・`PackExportPreviewTest`等の専用クラス） | 直接patchは0箇所 | 低〜中 | 中（HTTP例外とのすみ分け判断を要する） | 中 |
+
+**選定: R2（設定・環境変数の解決）を次の実装PRで `config.py` へ切り出す。**
+
+選定理由（ユーザー指定の優先順位に沿って）:
+
+1. 外部仕様を変えずに移動できる: 環境変数名・デフォルト値・`.env`書式はいずれも変更しない、単純な移動で完結する。
+2. 既存テストで守れる: 直接の単体テストはまだ薄いが、`patch("tsundokensaku.web.get_books_dir")`系が133箇所と極めて広く、段階0のpaths.pyと同型の「web.py側に同名ラッパーを残せば安全網が壊れない」設計にできる。
+3. FastAPIルートの大規模分割を伴わない: 対象は独立した5関数のみで、ルートハンドラの構造には触れない。
+4. DBスキーマ変更を伴わない: R2はDBに一切依存しない。
+5. UI変更を伴わない: 読み込み元・書き込み先とも不変。
+6. 1PRに収まる: 対象5関数＋定数3個は、段階0（`paths.py`、5関数相当）と同程度かそれ以下の規模。R4（12関数）より小さい。
+7. 容易にrevertできる: ラッパー方式のため、問題があれば`config.py`とweb.py側の変更をまとめてrevertするだけで済む。
+
+R4も同様に低リスクで魅力的だが、対象関数がR2の倍以上（12個）あり「1PRに収める」観点でR2を上回れない。R6は安全網（直接テスト）が現状ゼロで、グローバル状態のライフサイクルという固有の複雑さも抱えるため次善に回す。R7・R8はinventory自身が「副作用大」「後半」「HTTP例外との混在」を明記しており、今回の優先順位（容易な移動・容易なrevert）には合わない。
 
 ### 段階1: レコード定義の切り出し（低リスク）
 
@@ -342,11 +367,59 @@ graph TD
 - ロールバック: PR revert。
 - 次段階条件: 全テスト緑、`from tsundokensaku.database import BookRecord` 等が従来通り動く。
 
-### 段階2: 設定の切り出し
+### 段階2: 設定の切り出し（次の実装PRとして選定・設計のみ）
 
-- 責務: R2 → `config.py`。web.py はラッパー保持。
-- 回帰テスト: 設定・アップロード・エクスポート保存の TestClient テスト、デモモード関連。
-- ロールバック: PR revert。
+上記比較で選定した、次に着手すべき責務。**このセクションは設計であり、本体コードは未変更。**
+
+- **PRの目的**: `web.py` に残る「環境変数・設定解決」責務を独立した `config.py` へ移動し、`web.py` を薄くする。将来 `cli.py` 等から再利用しやすくする副次効果もあるが、今回のPRでは `cli.py` 側の変更は行わない。
+- **対象責務**: R2（設定・環境変数の解決）
+- **新しく作る予定のモジュール**: `src/tsundokensaku/config.py`
+- **移動する関数・定数**:
+  - `DEFAULT_BOOKS_DIR`
+  - `DEFAULT_DB_PATH`
+  - `PDF_EXPORT_SAVE_DIR_ENV`
+  - `get_books_dir()`
+  - `get_db_path()`
+  - `get_pdf_export_save_dir()`
+  - `is_demo_mode()`
+  - `update_env_setting()`
+  - `ENV_FILE` は `metadata.py` 由来の既存importのため今回は移動しない。`config.py` 内で必要な場合は `metadata.ENV_FILE` をそのまま参照する。
+- **元のモジュールに残す互換ラッパー**:
+  - `web.py` に `get_books_dir` / `get_db_path` / `get_pdf_export_save_dir` / `is_demo_mode` / `update_env_setting` という同名の薄いラッパー関数を残す（段階0bと同じ理由。呼び出し元が133箇所のmonkeypatchに依存するため、単純な `from import` エイリアスではなく明示的なラッパー関数にする）。
+  - `DEFAULT_BOOKS_DIR` / `DEFAULT_DB_PATH` / `PDF_EXPORT_SAVE_DIR_ENV` は `config.py` の値への単純代入（不変値でありpatch対象にもなっていないため）。
+  - `templates.env.globals["pdf_export_save_dir"] = get_pdf_export_save_dir` と `templates.env.globals["is_demo_mode"] = is_demo_mode` の登録は `web.py` 側にそのまま残す（`Jinja2Templates` オブジェクト自体が `web.py` 内定義のため）。
+- **事前に追加すべきcharacterization test**（段階0aと同型で、コード移動前に `tests/test_web.py` へ追加）:
+  - `get_books_dir`: `BOOKS_DIR` 環境変数がある場合とない場合（デフォルト値 `data/books`）
+  - `get_db_path`: `DB_DIR` 環境変数がある場合とない場合（デフォルト `data/index.db`）
+  - `get_pdf_export_save_dir`: 環境変数が空文字/未設定で `None`、設定時は `expanduser()` 済み `Path` を返す
+  - `is_demo_mode`: `DEMO_MODE` が `"true"`（大文字小文字問わず）で `True`、それ以外・未設定で `False`
+  - `update_env_setting`: 既存キーの更新、新規キーの追記、`.env` ファイル非存在時の新規作成、`os.environ` への反映
+- **変更してはいけない外部契約**:
+  - 環境変数名（`BOOKS_DIR` / `DB_DIR` / `PDF_EXPORT_SAVE_DIR` / `DEMO_MODE`）
+  - デフォルト値（`data/books` / `data/index.db`）
+  - `.env` の書式（コメント行・空行・既存キー更新時の挙動）
+  - `is_demo_mode()` の判定基準
+  - HTTP API・URL・画面表示
+- **対象外**（このPRではやらない）:
+  - `get_metadata()`（web.py固有のヘルパーで、`metadata.find_export_json`/`load_metadata_by_pdf_stem` を束ねるだけのものであり、R2の分類に含めない）
+  - `ENV_FILE` の定義元変更
+  - `templates`/`Jinja2Templates` の構成変更
+  - 他の分割候補（search_view・index_job・pdf_service・export_service等）
+- **完了条件**:
+  - Python全件テストが成功する
+  - `tsundokensaku.web` から `get_books_dir` 等が引き続きimportできる
+  - 既存133箇所の `patch("tsundokensaku.web.get_books_dir"/"get_db_path", ...)` が無修正で機能する
+  - `config.py` が `web.py` を含む他のtsundokensakuモジュールをimportしない（cli.py等からも安全に呼べる状態を保つ）
+- **推奨ブランチ名**: `refactor/extract-config-module`
+- **推奨コミット分割**:
+  1. `test: 設定・環境変数解決の回帰挙動を固定`（`config.py` 相当のcharacterization testを `tests/test_web.py` に追加するのみ。本体コード無変更）
+  2. `refactor: 設定解決をconfigモジュールへ分離`（`config.py` 新設＋`web.py` の委譲ラッパー化）
+- **想定リスクと確認方法**:
+  - 133箇所のmonkeypatchが `tsundokensaku.web.get_books_dir`/`get_db_path` という文字列に依存している。web.py側の関数を消したり、ルートハンドラ側で `config.get_books_dir()` を直接呼ぶよう書き換えると、既存patchが効かなくなる。→ 移動後にPython全件を実行し、該当133箇所を含むテストが全て成功することで確認する。
+  - `templates.env.globals` への登録はオブジェクト参照を保持するため、`config.py`側の関数を直接登録すると `web.py` 側のラッパーとテンプレート内の挙動が乖離しうる。→ `is_demo_mode`/`pdf_export_save_dir` を使う画面のTestClientテスト（`DemoModeUploadTest`等）が成功することで確認する。
+  - `update_env_setting` は `.env` への実書き込みを伴う。既存テストが実ファイルではなく一時ディレクトリ内の `.env` を使っていることを確認してから移動する。
+  - `get_metadata()` をR2と誤認して一緒に移動しないよう、実装時に対象関数リストと照合する。
+- ロールバック: PR revert（ラッパー方式のため即座に可逆）。
 
 ### 段階3: 検索結果整形の切り出し（純粋・低リスク）
 
@@ -422,5 +495,5 @@ graph TD
 
 ## 付録: 確認済み事実と推測の区別
 
-- **確認済み**（コード・grep・テスト実行・git で確認）: 行番号と定義の所在、web.py の27 database import、生SQLの web.py 内実行（`get_db_stats`/`get_library_items`）、path解決の複製TODO、`_ensure_*`/`_migrate_*` の存在、test_web.py 3350行・test_database.py 1236行、Playwright 5spec・29テスト、CI が Python unittest のみ。
+- **確認済み**（コード・grep・テスト実行・git で確認）: 行番号と定義の所在、web.py の27 database import、生SQLの web.py 内実行（`get_db_stats`/`get_library_items`）、`_ensure_*`/`_migrate_*` の存在、test_web.py 3531行・test_database.py 1236行、Playwright 5spec・29テスト、CI が Python unittest と Playwright の両方を別jobで実行済み、段階0完了後は `paths.py` が新設され `export_stats` の path解決複製TODOは解消済み、`patch("tsundokensaku.web.get_books_dir")` 63箇所・`patch("tsundokensaku.web.get_db_path")` 70箇所、R4〜R8対象関数への直接patchはいずれも0箇所、`test_web.py` に `/settings/index`・`/settings/progress`・`_run_index_job` への直接テストが存在しないこと。
 - **推測**（設計判断・要レビュー）: 各モジュールの最終的な粒度、L4を完全分割すべきか、移行順の細部（段階5〜8の順序は入れ替え可能）、ラッパー撤去のタイミング。
