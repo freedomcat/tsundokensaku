@@ -60,9 +60,10 @@ window.TsundokuCart = (() => {
           .filter((item) => item && typeof item === 'object' && typeof item.pdf_path === 'string' && item.pdf_path)
           .map((item) => ({
             id: Number.isInteger(item.id) ? item.id : undefined,
+            position: Number.isInteger(item.position) ? item.position : undefined,
             clientId: typeof item.clientId === 'string' && item.clientId
               ? item.clientId
-              : (Number.isInteger(item.id) ? undefined : createClientId()),
+              : createClientId(),
             pdf_path: item.pdf_path,
             title: typeof item.title === 'string' && item.title ? item.title : item.pdf_path,
             pages: typeof item.pages === 'string' ? item.pages : '',
@@ -82,13 +83,27 @@ window.TsundokuCart = (() => {
   }
 
   function itemKey(item) {
-    if (Number.isInteger(item.id)) {
-      return `id:${item.id}`;
-    }
     if (!item.clientId) {
       item.clientId = createClientId();
     }
     return item.clientId;
+  }
+
+  // clientId is the stable identity used by the browser. The server id is
+  // only the API/DB identity and may be assigned after an item is created.
+  function mergeServerItems(serverItems, submittedItems) {
+    const submittedById = new Map(
+      submittedItems
+        .filter((item) => Number.isInteger(item.id))
+        .map((item) => [item.id, item]),
+    );
+    return serverItems.map((serverItem, index) => ({
+      ...serverItem,
+      clientId: (
+        submittedById.get(serverItem.id)
+        || submittedItems[Number.isInteger(serverItem.position) ? serverItem.position : index]
+      )?.clientId || serverItem.clientId,
+    }));
   }
 
   function cartForSave(cart) {
@@ -283,13 +298,12 @@ window.TsundokuCart = (() => {
           return;
         }
         const serverCart = normalizeCart(payload);
+        const mergedServerItems = mergeServerItems(serverCart.items, currentSavingItems);
         if (dirty) {
           const idMap = new Map();
-          for (let i = 0; i < currentSavingItems.length; i++) {
-            const originalItem = currentSavingItems[i];
-            const serverItem = serverCart.items[i];
-            if (serverItem && !Number.isInteger(originalItem.id) && Number.isInteger(serverItem.id)) {
-              idMap.set(itemKey(originalItem), serverItem.id);
+          for (const serverItem of mergedServerItems) {
+            if (serverItem && serverItem.clientId && Number.isInteger(serverItem.id)) {
+              idMap.set(serverItem.clientId, serverItem.id);
             }
           }
           for (const item of cache.items) {
@@ -299,6 +313,7 @@ window.TsundokuCart = (() => {
             }
           }
         } else {
+          serverCart.items = mergedServerItems;
           cache = serverCart;
         }
         notifyUpdated();

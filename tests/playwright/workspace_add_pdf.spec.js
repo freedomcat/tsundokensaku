@@ -119,9 +119,10 @@ async function addBookToActivePack(page) {
 
 test('opens the selected book PDF from the workspace page-add modal and updates its pages', async ({ page }) => {
   await createActivePack(page);
-  const { itemKey, title } = await addBookToActivePack(page);
+  const { title } = await addBookToActivePack(page);
   await page.goto('/workspace');
   await page.evaluate(() => window.TsundokuCart.ready);
+  const itemKey = await page.evaluate(() => window.TsundokuCart.itemKey(window.TsundokuCart.load().items[0]));
 
   await page.route('**/search-pages**', async (route) => {
     await route.fulfill({
@@ -177,14 +178,47 @@ test('keeps duplicate PDF entries distinct when opening the page-add PDF preview
       collapsed: false,
     };
     cart.items = [first, second];
-    window.TsundokuCart.save(cart);
-    document.dispatchEvent(new Event('tsundoku-cart-updated'));
     return {
       firstKey: window.TsundokuCart.itemKey(first),
       secondKey: window.TsundokuCart.itemKey(second),
+      secondClientId: second.clientId,
       title: first.title,
     };
   });
+
+  let releasePut;
+  const putReleased = new Promise((resolve) => { releasePut = resolve; });
+  const putRequest = page.waitForRequest('**/api/packs/*/items');
+  await page.route('**/api/packs/*/items', async (route) => {
+    const payload = JSON.parse(route.request().postData() || '{}');
+    await putReleased;
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        version: 3,
+        items: (payload.items || []).map((item, index) => ({
+          ...item,
+          id: item.id || (700 + index),
+          position: index,
+        })),
+      }),
+    });
+  });
+  await page.evaluate(({ secondClientId }) => {
+    const cart = window.TsundokuCart.load();
+    const first = cart.items[0];
+    first.pages = '10-20';
+    cart.items = [first, {
+      clientId: secondClientId,
+      pdf_path: first.pdf_path,
+      title: first.title,
+      pages: '80-95',
+      collapsed: false,
+    }];
+    window.TsundokuCart.save(cart);
+    document.dispatchEvent(new Event('tsundoku-cart-updated'));
+  }, { secondClientId: entries.secondClientId });
+  await putRequest;
 
   await page.route('**/pdf-outline**', async (route) => {
     await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ page_count: 120, chapters: [] }) });
@@ -202,15 +236,25 @@ test('keeps duplicate PDF entries distinct when opening the page-add PDF preview
   await expect(page.locator('#pdf-modal')).toHaveClass(/open/);
   await expect(page.locator('#pdf-modal-pages')).toHaveValue('80-95');
 
+  releasePut();
+  await expect(page.locator('#pdf-modal-add-workspace')).toHaveText('ページ範囲を更新');
+  await expect.poll(() => page.evaluate(() => window.TsundokuCart.load().items[1]?.id)).toBe(701);
+
   await page.locator('#pdf-modal-pages').fill('81-96');
   await page.locator('#pdf-modal-add-workspace').click();
+  await expect(page.locator('#pdf-modal-export-status')).toContainText('更新しました');
   await expect.poll(() => page.evaluate(({ firstKey, secondKey }) => {
     const items = window.TsundokuCart.load().items;
     return [
       items.find((item) => window.TsundokuCart.itemKey(item) === firstKey)?.pages,
       items.find((item) => window.TsundokuCart.itemKey(item) === secondKey)?.pages,
+      items.length,
     ];
-  }, entries)).toEqual(['10-20', '81-96']);
+  }, entries)).toEqual(['10-20', '81-96', 2]);
+  await expect.poll(() => page.evaluate(({ secondKey, secondClientId }) => {
+    const item = window.TsundokuCart.load().items.find((entry) => window.TsundokuCart.itemKey(entry) === secondKey);
+    return item && { clientId: item.clientId, id: item.id };
+  }, entries)).toEqual({ clientId: entries.secondClientId, id: 701 });
 });
 
 test('selects visible thumbnails from an outline-free PDF and keeps the range after reload', async ({ page }) => {

@@ -108,8 +108,8 @@ test.describe('TsundokuCart ClientId and Sync', () => {
 
     expect(state.items).toHaveLength(1);
     expect(state.items[0].id).toBe(100); // サーバーが割り当てたID
-    expect(state.items[0].clientId).toBeUndefined(); // IDが確定したためclientIdは不要
-    expect(state.key).toBe('id:100');
+    expect(state.items[0].clientId).toBeTruthy();
+    expect(state.key).toBe(state.items[0].clientId);
   });
 
   test('does not overwrite concurrent local changes with server response', async ({ page }) => {
