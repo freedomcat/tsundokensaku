@@ -39,7 +39,7 @@ test.describe('Search multiple additions (Phase 3A E2E)', () => {
     });
 
     // テスト用にクリーンなパックを作成してアクティブ化
-    await page.goto('http://localhost:8003/workspace');
+    await page.goto('/workspace');
     await page.evaluate(async () => {
       const name = 'Phase3Aテスト資料-' + Math.random().toString(36).substring(7);
       const res = await fetch('/api/packs', {
@@ -53,7 +53,7 @@ test.describe('Search multiple additions (Phase 3A E2E)', () => {
   });
 
   test('uses workspace header links and management menu', async ({ page }) => {
-    await page.goto('http://localhost:8003/workspace');
+    await page.goto('/workspace');
 
     await expect(page.getByRole('link', { name: /^資料机/ })).toBeVisible();
     await expect(page.getByRole('link', { name: '本の登録', exact: true })).toBeVisible();
@@ -68,7 +68,7 @@ test.describe('Search multiple additions (Phase 3A E2E)', () => {
     await page.locator('#ws-pack-list-link').click();
     await expect(page).toHaveURL(/\/packs$/);
 
-    await page.goto('http://localhost:8003/workspace');
+    await page.goto('/workspace');
     await page.locator('#ws-management > summary').click();
     page.once('dialog', (dialog) => dialog.accept('Phase2Dヘッダー資料'));
     await page.locator('#ws-pack-new').click();
@@ -80,7 +80,7 @@ test.describe('Search multiple additions (Phase 3A E2E)', () => {
   });
 
   test('does not show the removed AI note navigation', async ({ page }) => {
-    await page.goto('http://localhost:8003/');
+    await page.goto('/');
 
     await expect(page.getByRole('link', { name: 'AIノート', exact: true })).toHaveCount(0);
     await expect(page.getByRole('link', { name: '資料机', exact: true })).toBeVisible();
@@ -88,7 +88,7 @@ test.describe('Search multiple additions (Phase 3A E2E)', () => {
   });
 
   test('uses one workspace link on the home page', async ({ page }) => {
-    await page.goto('http://localhost:8003/');
+    await page.goto('/');
 
     const workspaceLink = page.locator('#home-pack-card a.button[href="/workspace"]');
     await expect(workspaceLink).toHaveCount(1);
@@ -102,12 +102,12 @@ test.describe('Search multiple additions (Phase 3A E2E)', () => {
   });
 
   test('navigates from home through renamed registration and workspace management actions', async ({ page }) => {
-    await page.goto('http://localhost:8003/');
+    await page.goto('/');
     await page.getByRole('link', { name: '本の登録', exact: true }).click();
     await expect(page).toHaveURL(/\/settings$/);
     await expect(page.getByRole('heading', { name: 'インデックス実行', exact: true })).toBeVisible();
 
-    await page.goto('http://localhost:8003/');
+    await page.goto('/');
     await page.locator('#home-pack-card a.button[href="/workspace"]').click();
     await expect(page).toHaveURL(/\/workspace$/);
     await expect(page.getByRole('heading', { name: '資料机', exact: true })).toBeVisible();
@@ -133,7 +133,7 @@ test.describe('Search multiple additions (Phase 3A E2E)', () => {
         const pack = await response.json();
         await window.TsundokuCart.activatePack(pack.id);
       });
-      await page.goto('http://localhost:8003/workspace');
+      await page.goto('/workspace');
 
       const dimensions = await page.locator('#ws-pack-select').evaluate((select) => {
         const card = select.closest('.ws-controls-card');
@@ -167,7 +167,7 @@ test.describe('Search multiple additions (Phase 3A E2E)', () => {
 
   test('adds the same PDF multiple times from search results and verifies independent identities', async ({ page }) => {
     // 1. 検索画面へ遷移（確実にヒットする "バザール" で検索）
-    await page.goto('http://localhost:8003/search?q=バザール');
+    await page.goto('/search?q=バザール');
 
     const checkbox = page.locator('.cart-checkbox').first();
     await expect(checkbox).toBeVisible();
@@ -199,7 +199,7 @@ test.describe('Search multiple additions (Phase 3A E2E)', () => {
     await expect(checkbox).not.toBeChecked();
 
     // 7. 資料机に移動し、同じPDFが2つ表示されていることを確認
-    await page.goto('http://localhost:8003/workspace');
+    await page.goto('/workspace');
 
     const cards = page.locator('.ws-book');
     await expect(cards).toHaveCount(2);
@@ -224,23 +224,23 @@ test.describe('Search multiple additions (Phase 3A E2E)', () => {
       expect(clientId1).not.toEqual(clientId2);
     }
 
-    await page.goto('http://localhost:8003/');
+    await page.goto('/');
     await expect(page.locator('#home-pack-summary')).toContainText('1冊');
 
     // 9. チェック解除だけでは既存資料項目が削除されないことを検証
-    await page.goto('http://localhost:8003/search?q=バザール');
+    await page.goto('/search?q=バザール');
     await expect(page.locator('#cart-pack-select')).toContainText('（1冊）');
     await checkbox.check();
     await checkbox.uncheck();
     
     // 資料机に戻り、2件維持されていることを確認
-    await page.goto('http://localhost:8003/workspace');
+    await page.goto('/workspace');
     await expect(page.locator('.ws-book')).toHaveCount(2);
   });
 
   test('adds multiple different PDFs at once', async ({ page }) => {
     // サンプルPDFの cathedral.pdf と noosphere.pdf にヒットする "GNU" で検索
-    await page.goto('http://localhost:8003/search?q=GNU');
+    await page.goto('/search?q=GNU');
 
     const checkboxes = page.locator('.cart-checkbox');
     const titles = await checkboxes.evaluateAll((elements) => {
@@ -264,7 +264,7 @@ test.describe('Search multiple additions (Phase 3A E2E)', () => {
     await expect(page.locator('#cart-message')).toContainText('2件を資料');
 
     // 資料机で2件表示されていることを確認
-    await page.goto('http://localhost:8003/workspace');
+    await page.goto('/workspace');
     await expect(page.locator('.ws-book')).toHaveCount(2);
     const workspaceTitles = await page.locator('.ws-book-title').allTextContents();
     for (const [title] of titles) expect(workspaceTitles).toContain(title);
@@ -274,7 +274,7 @@ test.describe('Search multiple additions (Phase 3A E2E)', () => {
 
   test('adds the same PDF multiple times from PDF preview modal and verifies independent identities and edits', async ({ page }, testInfo) => {
     // 1. 検索画面へ遷移し、モーダルを開くボタンを探す
-    await page.goto('http://localhost:8003/search?q=バザール');
+    await page.goto('/search?q=バザール');
 
     const previewBtn = page.locator('[data-pdf-modal-url]').first();
     await expect(previewBtn).toBeVisible();
@@ -309,7 +309,7 @@ test.describe('Search multiple additions (Phase 3A E2E)', () => {
     await expect(modal).not.toHaveClass(/open/);
 
     // 5. 資料机に移動し、同じPDFが2つ表示されていることを確認
-    await page.goto('http://localhost:8003/workspace');
+    await page.goto('/workspace');
 
     const cards = page.locator('.ws-book');
     await expect(cards).toHaveCount(2);

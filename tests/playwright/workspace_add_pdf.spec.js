@@ -48,7 +48,7 @@ function createOutlineFreePdf(pageCount = 5) {
 async function createOutlineFreeWorkspaceItem(page) {
   const filename = `outline-free-${Date.now()}-${Math.random().toString(36).slice(2)}.pdf`;
   const upload = await page.request.post(
-    `http://localhost:8003/settings/pdf-upload?${new URLSearchParams({ filename })}`,
+    `/settings/pdf-upload?${new URLSearchParams({ filename })}`,
     {
       headers: { 'Content-Type': 'application/pdf' },
       data: createOutlineFreePdf(),
@@ -58,7 +58,7 @@ async function createOutlineFreeWorkspaceItem(page) {
   const pdfPath = await upload.text();
 
   const outline = await page.request.get(
-    `http://localhost:8003/pdf-outline?${new URLSearchParams({ pdf_path: pdfPath })}`,
+    `/pdf-outline?${new URLSearchParams({ pdf_path: pdfPath })}`,
   );
   expect(outline.status()).toBe(200);
   await expect(outline.json()).resolves.toEqual({ page_count: 5, chapters: [] });
@@ -79,13 +79,13 @@ async function createOutlineFreeWorkspaceItem(page) {
     await window.TsundokuCart.flushPendingSave();
   }, { pdfPath, filename });
 
-  await page.goto('http://localhost:8003/workspace');
+  await page.goto('/workspace');
   await page.evaluate(() => window.TsundokuCart.ready);
   await expect(page.locator('.ws-book')).toHaveCount(1);
 }
 
 async function createActivePack(page) {
-  await page.goto('http://localhost:8003/workspace');
+  await page.goto('/workspace');
   await page.evaluate(async () => {
     const response = await fetch('/api/packs', {
       method: 'POST',
@@ -98,7 +98,7 @@ async function createActivePack(page) {
 }
 
 async function addBookToActivePack(page) {
-  await page.goto('http://localhost:8003/search?q=バザール');
+  await page.goto('/search?q=バザール');
   const checkbox = page.locator('.cart-checkbox').first();
   await expect(checkbox).toBeVisible();
   const title = await checkbox.getAttribute('data-cart-title');
@@ -120,7 +120,7 @@ async function addBookToActivePack(page) {
 test('opens the selected book PDF from the workspace page-add modal and updates its pages', async ({ page }) => {
   await createActivePack(page);
   const { itemKey, title } = await addBookToActivePack(page);
-  await page.goto('http://localhost:8003/workspace');
+  await page.goto('/workspace');
   await page.evaluate(() => window.TsundokuCart.ready);
 
   await page.route('**/search-pages**', async (route) => {
@@ -162,7 +162,7 @@ test('opens the selected book PDF from the workspace page-add modal and updates 
 test('keeps duplicate PDF entries distinct when opening the page-add PDF preview', async ({ page }) => {
   await createActivePack(page);
   await addBookToActivePack(page);
-  await page.goto('http://localhost:8003/workspace');
+  await page.goto('/workspace');
   await page.evaluate(() => window.TsundokuCart.ready);
 
   const entries = await page.evaluate(() => {

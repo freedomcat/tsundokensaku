@@ -2,7 +2,7 @@ const { test, expect } = require('@playwright/test');
 const fs = require('fs');
 
 async function createActivePack(page) {
-  await page.goto('http://localhost:8003/workspace');
+  await page.goto('/workspace');
   await page.evaluate(async () => {
     const name = `Phase3E書き出し資料-${Math.random().toString(36).slice(2)}`;
     const response = await fetch('/api/packs', {
@@ -16,13 +16,13 @@ async function createActivePack(page) {
 }
 
 async function addOneBookToActivePack(page) {
-  await page.goto('http://localhost:8003/search?q=バザール');
+  await page.goto('/search?q=バザール');
   const checkbox = page.locator('.cart-checkbox').first();
   await expect(checkbox).toBeVisible();
   await checkbox.check();
   await page.locator('#add-selected-btn').click();
   await expect(page.locator('#cart-message')).toContainText('1件を資料');
-  await page.goto('http://localhost:8003/workspace');
+  await page.goto('/workspace');
   await expect(page.locator('.ws-book')).toHaveCount(1);
 }
 

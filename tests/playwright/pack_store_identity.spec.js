@@ -70,7 +70,7 @@ async function setupStorePage(page, { activePackId = 4, initialItems = [], mockP
     });
   });
 
-  await page.goto('http://localhost:8003/workspace');
+  await page.goto('/workspace');
   await page.evaluate(() => window.TsundokuCart.ready);
 
   return {
