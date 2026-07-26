@@ -239,16 +239,23 @@ test.describe('Search multiple additions (Phase 3A E2E)', () => {
   });
 
   test('adds multiple different PDFs at once', async ({ page }) => {
-    // 確実に複数ヒットする "Core" で検索
-    await page.goto('http://localhost:8003/search?q=Core');
+    // サンプルPDFの cathedral.pdf と noosphere.pdf にヒットする "GNU" で検索
+    await page.goto('http://localhost:8003/search?q=GNU');
 
     const checkboxes = page.locator('.cart-checkbox');
-    const count = await checkboxes.count();
-    expect(count).toBeGreaterThanOrEqual(2);
+    const titles = await checkboxes.evaluateAll((elements) => {
+      const uniqueTitles = new Map();
+      elements.forEach((element, index) => {
+        const title = element.getAttribute('data-cart-title');
+        if (title && !uniqueTitles.has(title)) uniqueTitles.set(title, index);
+      });
+      return [...uniqueTitles.entries()];
+    });
+    expect(titles.length).toBeGreaterThanOrEqual(2);
 
-    // 複数チェック
-    await checkboxes.nth(0).check();
-    await checkboxes.nth(1).check();
+    // 検索結果の並び順に依存せず、異なるPDFを1件ずつ選択
+    await checkboxes.nth(titles[0][1]).check();
+    await checkboxes.nth(titles[1][1]).check();
 
     const addBtn = page.locator('#add-selected-btn');
     await expect(addBtn).toHaveText('選択した本を追加（2件）');
@@ -259,6 +266,8 @@ test.describe('Search multiple additions (Phase 3A E2E)', () => {
     // 資料机で2件表示されていることを確認
     await page.goto('http://localhost:8003/workspace');
     await expect(page.locator('.ws-book')).toHaveCount(2);
+    const workspaceTitles = await page.locator('.ws-book-title').allTextContents();
+    for (const [title] of titles) expect(workspaceTitles).toContain(title);
     await expect(page.locator('#nav-workspace-count')).toHaveText('2冊');
     await expect(page.locator('#ws-pack-select')).toContainText('（2冊）');
   });
