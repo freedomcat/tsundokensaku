@@ -329,5 +329,18 @@ class CollectItemStatsTest(unittest.TestCase):
             self.assertGreater(result.stats.other_chars, 0)
 
 
+class ExportStatsUsesSharedPathsModuleTest(unittest.TestCase):
+    def test_no_longer_defines_its_own_path_resolution(self) -> None:
+        from tsundokensaku import export_stats
+
+        self.assertFalse(hasattr(export_stats, "_resolve_pdf_path"))
+        self.assertFalse(hasattr(export_stats, "_CONTAINER_BOOKS_DIRS"))
+
+    def test_uses_paths_module_resolve_pdf_path(self) -> None:
+        from tsundokensaku import export_stats, paths
+
+        self.assertIs(export_stats.paths.resolve_pdf_path, paths.resolve_pdf_path)
+
+
 if __name__ == "__main__":
     unittest.main()

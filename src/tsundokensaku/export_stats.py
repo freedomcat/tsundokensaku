@@ -6,65 +6,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from tsundokensaku.database import PackItemRecord, get_book
+from tsundokensaku import paths
 from tsundokensaku.pdf_export import parse_page_selection
 from tsundokensaku.pdf_outline import get_page_count
 from tsundokensaku.token_estimate import TextStats, count_text_stats
-
-
-# TODO(phase3b-path-resolution-dedup): web.CONTAINER_BOOKS_DIRS / web.resolve_pdf_path
-# のミラー（web.py:76, web.py:457）。以下の _CONTAINER_BOOKS_DIRS と _resolve_pdf_path
-# は web.py の実装と重複している。
-#
-# なぜ重複しているか:
-#   PDFパス解決（絶対/相対パス・旧 /books/tech/... 表記ゆれの吸収・books_dir外への
-#   トラバーサル拒否）は元々 web.py にしか存在しない。export_stats.py は資料項目の
-#   PDF実体有無判定にこれと同じ解決方針が必要。
-#
-# 今回（Phase 3A: A-1/A-2）直さなかった理由:
-#   1) web.py は今回のスコープ外（変更しない制約）で、resolve_pdf_path をそのまま
-#      移設・再利用することができない。
-#   2) A-3（プレビューAPI）以降、web.py が export_stats.py を呼ぶ構造になるため、
-#      resolve_pdf_path を web.py に残したまま export_stats.py がそれを import すると
-#      循環importになる。
-#   3) 純粋ロジック層（token_estimate / export_stats）を先に固めるのが Phase 3A の
-#      目的であり、web.py 側のリファクタは Phase 3B（ExportProfile 基盤導入で
-#      どのみち web.py に手を入れる段階）にまとめた方が変更が一箇所で閉じる。
-#
-# 将来どこへ統合するか:
-#   Phase 3B で新規モジュール（例: pdf_paths.py）へ resolve_pdf_path 相当を切り出し、
-#   web.py と export_stats.py の双方がそこに依存する形にする
-#   （docs/ai-export-optimization-design.md 5.9 参照）。
-_CONTAINER_BOOKS_DIRS = (Path("/data/books"), Path("/books/tech"))
-
-
-def _resolve_pdf_path(pdf_path: str | Path, books_dir: Path) -> Path | None:
-    """web.resolve_pdf_path と同じ解決方針の複製（意図は上記コメント参照）。"""
-    candidate = Path(pdf_path)
-    books_root = books_dir.resolve()
-
-    candidates: list[Path] = []
-    if candidate.is_absolute():
-        candidates.append(candidate)
-        for container_books_dir in _CONTAINER_BOOKS_DIRS:
-            try:
-                candidates.append(books_root / candidate.relative_to(container_books_dir))
-            except ValueError:
-                pass
-    else:
-        candidates.append(books_root / candidate)
-
-    candidates.append(books_root / candidate.name)
-
-    for path in candidates:
-        resolved = path.resolve()
-        try:
-            relative = resolved.relative_to(books_root)
-        except ValueError:
-            continue
-        if resolved.is_file():
-            return relative
-
-    return None
 
 
 def _find_indexed_book(connection: sqlite3.Connection, relative: Path, *, books_dir: Path):
@@ -138,7 +83,7 @@ def _collect_single_item_stats(
     *,
     books_dir: Path,
 ) -> ItemStats:
-    relative = _resolve_pdf_path(item.pdf_path, books_dir)
+    relative = paths.resolve_pdf_path(item.pdf_path, books_dir)
     if relative is None:
         return _empty_item_stats(item, missing_pdf=True)
 

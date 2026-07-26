@@ -63,6 +63,7 @@ from tsundokensaku.metadata import (
     get_scrapbox_project_url,
 )
 from tsundokensaku.markdown_export import default_markdown_output_name, render_markdown_pages
+from tsundokensaku import paths
 from tsundokensaku.pdf_export import default_output_path, parse_page_selection, render_selected_pages
 from tsundokensaku.pdf_outline import get_page_count, list_chapters
 from tsundokensaku.pdf_thumbnail import render_thumbnail_detail, render_thumbnails
@@ -83,7 +84,7 @@ from tsundokensaku.zip_export import (
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_BOOKS_DIR = Path("data/books")
-CONTAINER_BOOKS_DIRS = (Path("/data/books"), Path("/books/tech"))
+CONTAINER_BOOKS_DIRS = paths.CONTAINER_BOOKS_DIRS
 DEFAULT_DB_PATH = Path("data/index.db")
 PDF_EXPORT_SAVE_DIR_ENV = "PDF_EXPORT_SAVE_DIR"
 EXTERNALLY_AVAILABLE_EXPORT_PROFILES = frozenset({"standard", "chat", "chapter"})
@@ -465,57 +466,16 @@ def _run_index_job(force_paths: set[str] | None = None) -> None:
         )
 
 
-# TODO(phase3b-path-resolution-dedup): export_stats._resolve_pdf_path が本関数と
-# CONTAINER_BOOKS_DIRS を意図的に複製している（循環import回避のため。詳細は
-# export_stats.py 冒頭のコメントと docs/ai-export-optimization-design.md 5.9）。
-# Phase 3B で共通モジュールへ統合する想定。
 def resolve_pdf_path(pdf_path: str | Path, books_dir: Path) -> Path | None:
-    candidate = Path(pdf_path)
-    books_root = books_dir.resolve()
-
-    candidates: list[Path] = []
-    if candidate.is_absolute():
-        candidates.append(candidate)
-        for container_books_dir in CONTAINER_BOOKS_DIRS:
-            try:
-                candidates.append(books_root / candidate.relative_to(container_books_dir))
-            except ValueError:
-                pass
-    else:
-        candidates.append(books_root / candidate)
-
-    candidates.append(books_root / candidate.name)
-
-    for path in candidates:
-        resolved = path.resolve()
-        try:
-            relative = resolved.relative_to(books_root)
-        except ValueError:
-            continue
-        if resolved.is_file():
-            return relative
-
-    return None
+    return paths.resolve_pdf_path(pdf_path, books_dir)
 
 
 def pdf_url(pdf_path: str | Path, books_dir: Path, *, page_number: int | None = None) -> str | None:
-    relative = resolve_pdf_path(pdf_path, books_dir)
-    if relative is None:
-        return None
-    url = f"/view/{quote(str(relative).replace(os.sep, '/'))}"
-    if page_number is not None:
-        url = f"{url}?page={page_number}"
-    return url
+    return paths.pdf_url(pdf_path, books_dir, page_number=page_number)
 
 
 def raw_pdf_url(pdf_path: str | Path, books_dir: Path, *, page_number: int | None = None) -> str | None:
-    relative = resolve_pdf_path(pdf_path, books_dir)
-    if relative is None:
-        return None
-    url = f"/pdf/{quote(str(relative).replace(os.sep, '/'))}"
-    if page_number is not None:
-        url = f"{url}#page={page_number}"
-    return url
+    return paths.raw_pdf_url(pdf_path, books_dir, page_number=page_number)
 
 
 def get_pdf_stats(books_dir: Path) -> dict[str, int]:
@@ -686,29 +646,11 @@ def import_pdfs_from_directory(source_dir: Path, books_dir: Path) -> tuple[int, 
 
 
 def _unique_destination_path(destination: Path) -> Path:
-    if not destination.exists():
-        return destination
-
-    stem = destination.stem
-    suffix = destination.suffix
-    for index in range(2, 10_000):
-        candidate = destination.with_name(f"{stem} ({index}){suffix}")
-        if not candidate.exists():
-            return candidate
-    raise FileExistsError(destination)
+    return paths.unique_destination_path(destination)
 
 
 def _unique_export_destination_path(destination: Path) -> Path:
-    if not destination.exists():
-        return destination
-
-    stem = destination.stem
-    suffix = destination.suffix
-    for index in range(2, 10_000):
-        candidate = destination.with_name(f"{stem}_{index}{suffix}")
-        if not candidate.exists():
-            return candidate
-    raise FileExistsError(destination)
+    return paths.unique_export_destination_path(destination)
 
 
 def update_env_setting(key: str, value: str, env_file: Path = ENV_FILE) -> None:
