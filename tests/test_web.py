@@ -33,6 +33,8 @@ from tsundokensaku.web import (
     build_scrapbox_page_url,
     build_search_scrapbox_body,
     _now_jst,
+    _unique_destination_path,
+    _unique_export_destination_path,
     export_markdown,
     export_pdf,
     group_pdf_results,
@@ -41,12 +43,15 @@ from tsundokensaku.web import (
     import_pdfs_from_directory,
     import_scrapbox_json,
     pdf_outline,
+    pdf_url,
+    raw_pdf_url,
     import_scrapbox_export_bytes,
     format_indexed_at,
     is_demo_mode,
     normalize_search_group,
     normalize_search_match,
     pdf_thumbnails,
+    resolve_pdf_path,
     resolve_pdf_scrapbox_url,
     save_pdf_export_to_configured_dir,
     save_uploaded_pdf,
@@ -907,6 +912,182 @@ class HighlightQueryTest(unittest.TestCase):
 
         self.assertIn("21. 本21", body)
         self.assertNotIn("他 ", body)
+
+
+class ResolvePdfPathTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmpdir.cleanup)
+        self.books_dir = Path(self._tmpdir.name) / "books"
+        self.books_dir.mkdir()
+
+    def _touch(self, relative: str) -> Path:
+        path = self.books_dir / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"%PDF-1.4")
+        return path
+
+    def test_resolves_relative_path_under_books_dir(self) -> None:
+        self._touch("tech/example.pdf")
+        result = resolve_pdf_path("tech/example.pdf", self.books_dir)
+        self.assertEqual(result, Path("tech/example.pdf"))
+
+    def test_resolves_absolute_path_under_books_dir(self) -> None:
+        absolute = self._touch("tech/example.pdf")
+        result = resolve_pdf_path(absolute, self.books_dir)
+        self.assertEqual(result, Path("tech/example.pdf"))
+
+    def test_resolves_container_data_books_path(self) -> None:
+        self._touch("tech/example.pdf")
+        container_path = Path("/data/books/tech/example.pdf")
+        result = resolve_pdf_path(container_path, self.books_dir)
+        self.assertEqual(result, Path("tech/example.pdf"))
+
+    def test_resolves_container_books_tech_path(self) -> None:
+        self._touch("example.pdf")
+        container_path = Path("/books/tech/example.pdf")
+        result = resolve_pdf_path(container_path, self.books_dir)
+        self.assertEqual(result, Path("example.pdf"))
+
+    def test_falls_back_to_filename_lookup_in_books_dir_root(self) -> None:
+        self._touch("example.pdf")
+        result = resolve_pdf_path("nested/missing/example.pdf", self.books_dir)
+        self.assertEqual(result, Path("example.pdf"))
+
+    def test_returns_none_for_missing_file(self) -> None:
+        result = resolve_pdf_path("does-not-exist.pdf", self.books_dir)
+        self.assertIsNone(result)
+
+    def test_returns_none_for_parent_traversal(self) -> None:
+        outside_dir = Path(self._tmpdir.name) / "outside"
+        outside_dir.mkdir()
+        (outside_dir / "secret.pdf").write_bytes(b"%PDF-1.4")
+        result = resolve_pdf_path("../outside/secret.pdf", self.books_dir)
+        self.assertIsNone(result)
+
+    def test_returns_none_for_absolute_path_outside_books_dir(self) -> None:
+        outside_dir = Path(self._tmpdir.name) / "outside"
+        outside_dir.mkdir()
+        outside_file = outside_dir / "secret.pdf"
+        outside_file.write_bytes(b"%PDF-1.4")
+        result = resolve_pdf_path(outside_file, self.books_dir)
+        self.assertIsNone(result)
+
+    def test_returns_none_for_symlink_escaping_books_dir(self) -> None:
+        outside_dir = Path(self._tmpdir.name) / "outside"
+        outside_dir.mkdir()
+        outside_file = outside_dir / "secret.pdf"
+        outside_file.write_bytes(b"%PDF-1.4")
+        link = self.books_dir / "link.pdf"
+        os.symlink(outside_file, link)
+        result = resolve_pdf_path("link.pdf", self.books_dir)
+        self.assertIsNone(result)
+
+
+class PdfUrlTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmpdir.cleanup)
+        self.books_dir = Path(self._tmpdir.name) / "books"
+        self.books_dir.mkdir()
+
+    def _touch(self, relative: str) -> Path:
+        path = self.books_dir / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"%PDF-1.4")
+        return path
+
+    def test_pdf_url_returns_view_path(self) -> None:
+        self._touch("tech/example.pdf")
+        url = pdf_url("tech/example.pdf", self.books_dir)
+        self.assertEqual(url, "/view/tech/example.pdf")
+
+    def test_pdf_url_appends_page_query(self) -> None:
+        self._touch("example.pdf")
+        url = pdf_url("example.pdf", self.books_dir, page_number=5)
+        self.assertEqual(url, "/view/example.pdf?page=5")
+
+    def test_pdf_url_returns_none_when_unresolvable(self) -> None:
+        url = pdf_url("missing.pdf", self.books_dir)
+        self.assertIsNone(url)
+
+    def test_pdf_url_encodes_special_characters(self) -> None:
+        relative = "資料 本棚/日本語 タイトル.pdf"
+        self._touch(relative)
+        url = pdf_url(relative, self.books_dir)
+        expected = f"/view/{quote(relative)}"
+        self.assertEqual(url, expected)
+
+    def test_raw_pdf_url_returns_pdf_path(self) -> None:
+        self._touch("tech/example.pdf")
+        url = raw_pdf_url("tech/example.pdf", self.books_dir)
+        self.assertEqual(url, "/pdf/tech/example.pdf")
+
+    def test_raw_pdf_url_appends_page_fragment(self) -> None:
+        self._touch("example.pdf")
+        url = raw_pdf_url("example.pdf", self.books_dir, page_number=5)
+        self.assertEqual(url, "/pdf/example.pdf#page=5")
+
+    def test_raw_pdf_url_returns_none_when_unresolvable(self) -> None:
+        url = raw_pdf_url("missing.pdf", self.books_dir)
+        self.assertIsNone(url)
+
+    def test_raw_pdf_url_encodes_special_characters(self) -> None:
+        relative = "資料 本棚/日本語 タイトル.pdf"
+        self._touch(relative)
+        url = raw_pdf_url(relative, self.books_dir)
+        expected = f"/pdf/{quote(relative)}"
+        self.assertEqual(url, expected)
+
+
+class UniqueDestinationPathTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmpdir.cleanup)
+        self.tmp_path = Path(self._tmpdir.name)
+
+    def test_returns_same_path_when_missing(self) -> None:
+        destination = self.tmp_path / "example.pdf"
+        result = _unique_destination_path(destination)
+        self.assertEqual(result, destination)
+
+    def test_increments_suffix_in_parentheses_when_exists(self) -> None:
+        destination = self.tmp_path / "example.pdf"
+        destination.write_bytes(b"%PDF-1.4")
+        result = _unique_destination_path(destination)
+        self.assertEqual(result, self.tmp_path / "example (2).pdf")
+
+    def test_increments_further_when_second_also_exists(self) -> None:
+        destination = self.tmp_path / "example.pdf"
+        destination.write_bytes(b"%PDF-1.4")
+        (self.tmp_path / "example (2).pdf").write_bytes(b"%PDF-1.4")
+        result = _unique_destination_path(destination)
+        self.assertEqual(result, self.tmp_path / "example (3).pdf")
+
+
+class UniqueExportDestinationPathTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmpdir.cleanup)
+        self.tmp_path = Path(self._tmpdir.name)
+
+    def test_returns_same_path_when_missing(self) -> None:
+        destination = self.tmp_path / "example.pdf"
+        result = _unique_export_destination_path(destination)
+        self.assertEqual(result, destination)
+
+    def test_increments_with_underscore_when_exists(self) -> None:
+        destination = self.tmp_path / "example.pdf"
+        destination.write_bytes(b"%PDF-1.4")
+        result = _unique_export_destination_path(destination)
+        self.assertEqual(result, self.tmp_path / "example_2.pdf")
+
+    def test_increments_further_when_second_also_exists(self) -> None:
+        destination = self.tmp_path / "example.pdf"
+        destination.write_bytes(b"%PDF-1.4")
+        (self.tmp_path / "example_2.pdf").write_bytes(b"%PDF-1.4")
+        result = _unique_export_destination_path(destination)
+        self.assertEqual(result, self.tmp_path / "example_3.pdf")
 
 
 class PackApiTest(unittest.TestCase):
