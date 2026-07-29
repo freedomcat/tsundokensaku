@@ -1228,7 +1228,7 @@ class HighlightQueryTest(unittest.TestCase):
 
     def test_build_search_scrapbox_body_uses_fixed_creation_time(self) -> None:
         fixed_now = datetime(2026, 7, 29, 12, 34, tzinfo=ZoneInfo("Asia/Tokyo"))
-        with patch("tsundokensaku.web._now_jst", return_value=fixed_now):
+        with patch("tsundokensaku.search_view._now_jst", return_value=fixed_now):
             page_title, body = build_search_scrapbox_body(
                 query="SQLite", scope="all", sort="rank", group="none", results=[]
             )
