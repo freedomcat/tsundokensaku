@@ -47,6 +47,9 @@ from tsundokensaku.web import (
     raw_pdf_url,
     import_scrapbox_export_bytes,
     format_indexed_at,
+    get_books_dir,
+    get_db_path,
+    get_pdf_export_save_dir,
     is_demo_mode,
     normalize_search_group,
     normalize_search_match,
@@ -56,6 +59,7 @@ from tsundokensaku.web import (
     save_pdf_export_to_configured_dir,
     save_uploaded_pdf,
     search_pages,
+    update_env_setting,
     update_pdf_export_save_dir,
     upload_pdf,
     upload_scrapbox_json,
@@ -3215,6 +3219,118 @@ class _FakeUploadRequest:
 
     async def body(self) -> bytes:
         return self._body
+
+
+class ConfigResolutionTest(unittest.TestCase):
+    """R2（設定・環境変数の解決）の現在挙動を固定する characterization test。
+
+    config.py への切り出し前の挙動そのものを固定する（望ましい仕様への変更ではない）。
+    """
+
+    def test_get_books_dir_uses_env_var_as_is(self) -> None:
+        with patch.dict(os.environ, {"BOOKS_DIR": "/tmp/example-books"}):
+            self.assertEqual(get_books_dir(), Path("/tmp/example-books"))
+
+    def test_get_books_dir_keeps_relative_env_var_as_is(self) -> None:
+        with patch.dict(os.environ, {"BOOKS_DIR": "./relative/books"}):
+            self.assertEqual(get_books_dir(), Path("./relative/books"))
+
+    def test_get_books_dir_defaults_when_unset(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(get_books_dir(), Path("data/books"))
+
+    def test_get_db_path_uses_env_var_dir_with_fixed_filename(self) -> None:
+        with patch.dict(os.environ, {"DB_DIR": "/tmp/example-db"}):
+            self.assertEqual(get_db_path(), Path("/tmp/example-db/index.db"))
+
+    def test_get_db_path_keeps_relative_env_var_as_is(self) -> None:
+        with patch.dict(os.environ, {"DB_DIR": "./relative/db"}):
+            self.assertEqual(get_db_path(), Path("relative/db/index.db"))
+
+    def test_get_db_path_defaults_when_unset(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(get_db_path(), Path("data/index.db"))
+
+    def test_get_pdf_export_save_dir_none_when_unset(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertIsNone(get_pdf_export_save_dir())
+
+    def test_get_pdf_export_save_dir_none_when_blank(self) -> None:
+        with patch.dict(os.environ, {"PDF_EXPORT_SAVE_DIR": "   "}):
+            self.assertIsNone(get_pdf_export_save_dir())
+
+    def test_get_pdf_export_save_dir_expands_user(self) -> None:
+        with patch.dict(os.environ, {"PDF_EXPORT_SAVE_DIR": "~/exports"}):
+            self.assertEqual(get_pdf_export_save_dir(), Path("~/exports").expanduser())
+
+    def test_get_pdf_export_save_dir_keeps_absolute_path_as_is(self) -> None:
+        with patch.dict(os.environ, {"PDF_EXPORT_SAVE_DIR": "/mnt/c/exports"}):
+            self.assertEqual(get_pdf_export_save_dir(), Path("/mnt/c/exports"))
+
+    def test_update_env_setting_updates_existing_key_and_keeps_other_lines(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            env_file = Path(temp_dir) / ".env"
+            env_file.write_text(
+                "# comment line\n"
+                "BOOKS_DIR=./data/books\n"
+                "\n"
+                "DB_DIR=./data\n",
+                encoding="utf-8",
+            )
+            with patch.dict(os.environ, {}, clear=True):
+                update_env_setting("DB_DIR", "/tmp/new-db", env_file=env_file)
+                self.assertEqual(os.environ["DB_DIR"], "/tmp/new-db")
+            self.assertEqual(
+                env_file.read_text(encoding="utf-8"),
+                "# comment line\n"
+                "BOOKS_DIR=./data/books\n"
+                "\n"
+                "DB_DIR=/tmp/new-db\n",
+            )
+
+    def test_update_env_setting_appends_new_key_with_blank_line_separator(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            env_file = Path(temp_dir) / ".env"
+            env_file.write_text("BOOKS_DIR=./data/books\n", encoding="utf-8")
+            with patch.dict(os.environ, {}, clear=True):
+                update_env_setting("NEW_KEY", "new-value", env_file=env_file)
+                self.assertEqual(os.environ["NEW_KEY"], "new-value")
+            self.assertEqual(
+                env_file.read_text(encoding="utf-8"),
+                "BOOKS_DIR=./data/books\n\nNEW_KEY=new-value\n",
+            )
+
+    def test_update_env_setting_creates_file_when_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            env_file = Path(temp_dir) / ".env"
+            self.assertFalse(env_file.exists())
+            with patch.dict(os.environ, {}, clear=True):
+                update_env_setting("PDF_EXPORT_SAVE_DIR", "/tmp/out", env_file=env_file)
+            self.assertEqual(env_file.read_text(encoding="utf-8"), "PDF_EXPORT_SAVE_DIR=/tmp/out\n")
+
+    def test_update_env_setting_ignores_commented_key_and_appends_instead(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            env_file = Path(temp_dir) / ".env"
+            env_file.write_text("# BOOKS_DIR=old-commented-out\n", encoding="utf-8")
+            with patch.dict(os.environ, {}, clear=True):
+                update_env_setting("BOOKS_DIR", "/tmp/new-books", env_file=env_file)
+            self.assertEqual(
+                env_file.read_text(encoding="utf-8"),
+                "# BOOKS_DIR=old-commented-out\n\nBOOKS_DIR=/tmp/new-books\n",
+            )
+
+    def test_update_env_setting_preserves_value_with_spaces_and_symbols(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            env_file = Path(temp_dir) / ".env"
+            env_file.write_text("PDF_EXPORT_SAVE_DIR=\n", encoding="utf-8")
+            value = "/mnt/c/Users/name/Google Drive/PDF切り出し (2026)"
+            with patch.dict(os.environ, {}, clear=True):
+                update_env_setting("PDF_EXPORT_SAVE_DIR", value, env_file=env_file)
+                self.assertEqual(os.environ["PDF_EXPORT_SAVE_DIR"], value)
+            self.assertEqual(
+                env_file.read_text(encoding="utf-8"),
+                f"PDF_EXPORT_SAVE_DIR={value}\n",
+            )
 
 
 class DemoModeUploadTest(unittest.TestCase):
