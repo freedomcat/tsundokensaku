@@ -3,10 +3,12 @@ import os
 import tempfile
 import unittest
 import zipfile
+from datetime import datetime
 from io import BytesIO
 from unittest.mock import patch
 from pathlib import Path
 from urllib.parse import quote, unquote
+from zoneinfo import ZoneInfo
 import json
 
 from pypdf import PdfReader, PdfWriter
@@ -31,12 +33,16 @@ from tsundokensaku.web import (
     build_export_preview_payload_for_profile,
     build_export_preview_warnings,
     build_scrapbox_page_url,
+    build_search_result_rows,
     build_search_scrapbox_body,
     _now_jst,
+    _scrapbox_page_label,
+    _sanitize_scrapbox_title,
     _unique_destination_path,
     _unique_export_destination_path,
     export_markdown,
     export_pdf,
+    finalize_search_result_rows,
     group_pdf_results,
     highlight_query,
     import_pdf_directory,
@@ -59,6 +65,7 @@ from tsundokensaku.web import (
     save_pdf_export_to_configured_dir,
     save_uploaded_pdf,
     search_pages,
+    sort_results,
     update_env_setting,
     update_pdf_export_save_dir,
     upload_pdf,
@@ -67,7 +74,7 @@ from tsundokensaku.web import (
     workspace_page,
 )
 from tsundokensaku.web import app as tsundokensaku_app
-from tsundokensaku.database import PackItemRecord, connect, initialize, upsert_book
+from tsundokensaku.database import PackItemRecord, SearchResult, connect, initialize, upsert_book
 from tsundokensaku.export_stats import ItemStats
 from tsundokensaku.token_estimate import TextStats
 
@@ -916,6 +923,338 @@ class HighlightQueryTest(unittest.TestCase):
 
         self.assertIn("21. 本21", body)
         self.assertNotIn("他 ", body)
+
+    # --- R4検索結果整形の回帰挙動（search_view.py分離前のcharacterization test） ---
+
+    def test_highlight_query_returns_empty_markup_for_blank_text(self) -> None:
+        self.assertEqual(str(highlight_query("", "query")), "")
+
+    def test_highlight_query_escapes_text_when_no_terms_match(self) -> None:
+        rendered = str(highlight_query("<b>plain</b> text", ""))
+        self.assertIn("&lt;b&gt;plain&lt;/b&gt;", rendered)
+        self.assertNotIn("<mark>", rendered)
+
+    def test_highlight_query_marks_multiple_ordinary_terms(self) -> None:
+        rendered = str(highlight_query("SQLiteとFTS5の話", "SQLite FTS5"))
+        self.assertIn("<mark>SQLite</mark>", rendered)
+        self.assertIn("<mark>FTS5</mark>", rendered)
+
+    def test_format_indexed_at_returns_empty_for_none_and_blank(self) -> None:
+        self.assertEqual(format_indexed_at(None), "")
+        self.assertEqual(format_indexed_at(""), "")
+
+    def test_format_indexed_at_assumes_utc_when_timezone_missing(self) -> None:
+        self.assertEqual(format_indexed_at("2026-06-29T03:55:59"), "2026/06/29 12:55")
+
+    def test_build_scrapbox_page_url_returns_none_when_unset(self) -> None:
+        with patch.dict("os.environ", {}, clear=True):
+            self.assertIsNone(build_scrapbox_page_url("title", "body"))
+
+    def test_build_scrapbox_page_url_returns_none_when_blank(self) -> None:
+        with patch.dict("os.environ", {"SCRAPBOX_BASE_URL": ""}, clear=False):
+            self.assertIsNone(build_scrapbox_page_url("title", "body"))
+
+    def test_scrapbox_page_label_extracts_page_name(self) -> None:
+        label = _scrapbox_page_label(
+            "https://scrapbox.io/project/%E6%9C%AC%E4%B8%80", "fallback"
+        )
+        self.assertEqual(label, "本一")
+
+    def test_scrapbox_page_label_falls_back_when_url_missing(self) -> None:
+        self.assertEqual(_scrapbox_page_label(None, "fallback"), "fallback")
+        self.assertEqual(_scrapbox_page_label("", "fallback"), "fallback")
+
+    def test_scrapbox_page_label_falls_back_when_path_has_no_name(self) -> None:
+        self.assertEqual(_scrapbox_page_label("https://scrapbox.io/", "fallback"), "fallback")
+
+    def test_sanitize_scrapbox_title_trims_and_normalizes_whitespace(self) -> None:
+        self.assertEqual(_sanitize_scrapbox_title("  タイトル  "), "タイトル")
+        self.assertEqual(_sanitize_scrapbox_title("タイトル   本文"), "タイトル 本文")
+
+    def test_sanitize_scrapbox_title_converts_newlines_to_space(self) -> None:
+        self.assertEqual(_sanitize_scrapbox_title("行1\n行2\r行3"), "行1 行2 行3")
+
+    def test_sanitize_scrapbox_title_replaces_slash_with_fullwidth(self) -> None:
+        self.assertEqual(_sanitize_scrapbox_title("A/B"), "A／B")
+
+    def test_sanitize_scrapbox_title_truncates_long_titles(self) -> None:
+        long_title = "あ" * 100
+        result = _sanitize_scrapbox_title(long_title)
+        self.assertEqual(result, "あ" * 80)
+
+    def test_sanitize_scrapbox_title_falls_back_to_default_for_blank_input(self) -> None:
+        self.assertEqual(_sanitize_scrapbox_title(""), "検索結果")
+        self.assertEqual(_sanitize_scrapbox_title("   "), "検索結果")
+
+    def test_sort_results_orders_by_title(self) -> None:
+        results = [
+            {"title": "B", "page_number": 1, "scrapbox_url": None},
+            {"title": "A", "page_number": 2, "scrapbox_url": None},
+        ]
+        self.assertEqual([r["title"] for r in sort_results(results, "title")], ["A", "B"])
+
+    def test_sort_results_orders_by_page(self) -> None:
+        results = [
+            {"title": "A", "page_number": 5, "scrapbox_url": None},
+            {"title": "B", "page_number": 1, "scrapbox_url": None},
+        ]
+        self.assertEqual(
+            [r["page_number"] for r in sort_results(results, "page")], [1, 5]
+        )
+
+    def test_sort_results_orders_by_scrapbox_availability(self) -> None:
+        results = [
+            {"title": "A", "page_number": 1, "scrapbox_url": None},
+            {"title": "B", "page_number": 1, "scrapbox_url": "https://scrapbox.io/x/B"},
+        ]
+        self.assertEqual(
+            [r["title"] for r in sort_results(results, "scrapbox")], ["B", "A"]
+        )
+
+    def test_sort_results_keeps_input_order_for_unknown_sort(self) -> None:
+        results = [
+            {"title": "B", "page_number": 1, "scrapbox_url": None},
+            {"title": "A", "page_number": 2, "scrapbox_url": None},
+        ]
+        self.assertEqual(sort_results(results, "bogus"), results)
+
+    def test_sort_results_empty_list(self) -> None:
+        self.assertEqual(sort_results([], "title"), [])
+
+    def test_group_pdf_results_keeps_separate_titles_as_distinct_groups(self) -> None:
+        results = [
+            {
+                "kind": "pdf",
+                "title": "本A",
+                "path": "a.pdf",
+                "page_number": 1,
+                "snippet": "s1",
+                "open_url": "/pdf/a.pdf#page=1",
+                "scrapbox_url": None,
+                "cover_url": None,
+            },
+            {
+                "kind": "pdf",
+                "title": "本B",
+                "path": "b.pdf",
+                "page_number": 3,
+                "snippet": "s2",
+                "open_url": "/pdf/b.pdf#page=3",
+                "scrapbox_url": None,
+                "cover_url": None,
+            },
+        ]
+        grouped = group_pdf_results(results)
+        self.assertEqual([g["title"] for g in grouped], ["本A", "本B"])
+
+    def test_group_pdf_results_preserves_non_pdf_order_when_mixed(self) -> None:
+        results = [
+            {
+                "kind": "memo",
+                "title": "メモ1",
+                "path": "メモ1",
+                "page_number": None,
+                "snippet": "m1",
+                "open_url": "https://scrapbox.io/x/メモ1",
+                "scrapbox_url": "https://scrapbox.io/x/メモ1",
+                "cover_url": None,
+            },
+            {
+                "kind": "pdf",
+                "title": "本A",
+                "path": "a.pdf",
+                "page_number": 1,
+                "snippet": "s1",
+                "open_url": "/pdf/a.pdf#page=1",
+                "scrapbox_url": None,
+                "cover_url": None,
+            },
+            {
+                "kind": "memo",
+                "title": "メモ2",
+                "path": "メモ2",
+                "page_number": None,
+                "snippet": "m2",
+                "open_url": "https://scrapbox.io/x/メモ2",
+                "scrapbox_url": "https://scrapbox.io/x/メモ2",
+                "cover_url": None,
+            },
+        ]
+        grouped = group_pdf_results(results)
+        self.assertEqual([g["kind"] for g in grouped], ["memo", "pdf", "memo"])
+        self.assertEqual(grouped[0]["title"], "メモ1")
+        self.assertEqual(grouped[2]["title"], "メモ2")
+
+    def test_group_pdf_results_empty_input(self) -> None:
+        self.assertEqual(group_pdf_results([]), [])
+
+    def test_build_search_result_rows_pdf_result_with_existing_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            books_dir = Path(temp_dir)
+            (books_dir / "book-a.pdf").write_bytes(b"%PDF-1.4")
+            results = [
+                SearchResult(
+                    title="本A", path="book-a.pdf", page_number=3, snippet="snippet", kind="pdf"
+                )
+            ]
+            rows = build_search_result_rows(results, books_dir=books_dir, metadata_by_stem={})
+        row = rows[0]
+        self.assertEqual(row["title"], "本A")
+        self.assertEqual(row["kind"], "pdf")
+        self.assertEqual(row["page_number"], 3)
+        self.assertIsNotNone(row["open_url"])
+        self.assertEqual(row["page_urls"], [row["open_url"]])
+
+    def test_build_search_result_rows_pdf_result_with_missing_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            books_dir = Path(temp_dir)
+            results = [
+                SearchResult(
+                    title="本B", path="missing.pdf", page_number=1, snippet="snippet", kind="pdf"
+                )
+            ]
+            rows = build_search_result_rows(results, books_dir=books_dir, metadata_by_stem={})
+        row = rows[0]
+        self.assertIsNone(row["open_url"])
+        self.assertEqual(row["page_urls"], [None])
+
+    def test_build_search_result_rows_non_pdf_result_keeps_urls(self) -> None:
+        results = [
+            SearchResult(
+                title="メモ",
+                path="メモ",
+                page_number=None,
+                snippet="本文",
+                kind="memo",
+                open_url="https://scrapbox.io/x/メモ",
+                scrapbox_url="https://scrapbox.io/x/メモ",
+                cover_url=None,
+            )
+        ]
+        rows = build_search_result_rows(results, books_dir=Path("."), metadata_by_stem={})
+        row = rows[0]
+        self.assertEqual(row["kind"], "memo")
+        self.assertEqual(row["open_url"], "https://scrapbox.io/x/メモ")
+        self.assertEqual(row["scrapbox_url"], "https://scrapbox.io/x/メモ")
+        self.assertNotIn("page_urls", row)
+
+    def test_finalize_search_result_rows_applies_sort(self) -> None:
+        rows = [
+            {"title": "B", "page_number": 1, "scrapbox_url": None, "kind": "memo"},
+            {"title": "A", "page_number": 2, "scrapbox_url": None, "kind": "memo"},
+        ]
+        finalized = finalize_search_result_rows(
+            rows, books_dir=Path("."), sort="title", group="none"
+        )
+        self.assertEqual([r["title"] for r in finalized], ["A", "B"])
+
+    def test_finalize_search_result_rows_groups_pdf_when_group_is_book(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            books_dir = Path(temp_dir)
+            (books_dir / "a.pdf").write_bytes(b"%PDF-1.4")
+            rows = [
+                {
+                    "title": "本A", "path": "a.pdf", "page_number": 1, "page_numbers": [1],
+                    "snippet": "s1", "kind": "pdf", "open_url": None, "scrapbox_url": None,
+                    "cover_url": None, "page_summary": "p.1",
+                },
+                {
+                    "title": "本A", "path": "a.pdf", "page_number": 3, "page_numbers": [3],
+                    "snippet": "s2", "kind": "pdf", "open_url": None, "scrapbox_url": None,
+                    "cover_url": None, "page_summary": "p.3",
+                },
+            ]
+            finalized = finalize_search_result_rows(
+                rows, books_dir=books_dir, sort="rank", group="book"
+            )
+        self.assertEqual(len(finalized), 1)
+        self.assertEqual(finalized[0]["page_numbers"], [1, 3])
+        self.assertEqual(len(finalized[0]["page_urls"]), 2)
+
+    def test_finalize_search_result_rows_keeps_individual_results_when_group_none(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            books_dir = Path(temp_dir)
+            (books_dir / "a.pdf").write_bytes(b"%PDF-1.4")
+            rows = [
+                {
+                    "title": "本A", "path": "a.pdf", "page_number": 1, "page_numbers": [1],
+                    "snippet": "s1", "kind": "pdf", "open_url": None, "scrapbox_url": None,
+                    "cover_url": None,
+                },
+                {
+                    "title": "本A", "path": "a.pdf", "page_number": 3, "page_numbers": [3],
+                    "snippet": "s2", "kind": "pdf", "open_url": None, "scrapbox_url": None,
+                    "cover_url": None,
+                },
+            ]
+            finalized = finalize_search_result_rows(
+                rows, books_dir=books_dir, sort="rank", group="none"
+            )
+        self.assertEqual(len(finalized), 2)
+
+    def test_finalize_search_result_rows_keeps_non_pdf_results(self) -> None:
+        rows = [
+            {
+                "title": "メモ", "path": "メモ", "page_number": None, "snippet": "m",
+                "kind": "memo", "open_url": "url", "scrapbox_url": "url", "cover_url": None,
+            }
+        ]
+        finalized = finalize_search_result_rows(
+            rows, books_dir=Path("."), sort="rank", group="book"
+        )
+        self.assertEqual(len(finalized), 1)
+        self.assertEqual(finalized[0]["kind"], "memo")
+
+    def test_finalize_search_result_rows_empty_input(self) -> None:
+        self.assertEqual(
+            finalize_search_result_rows([], books_dir=Path("."), sort="rank", group="book"), []
+        )
+
+    def test_normalize_search_group_blank_values_default_to_book(self) -> None:
+        self.assertEqual(normalize_search_group(""), "book")
+        self.assertEqual(normalize_search_group(" "), "book")
+
+    def test_normalize_search_group_case_and_whitespace_sensitive(self) -> None:
+        self.assertEqual(normalize_search_group(["BOOK"]), "book")
+        self.assertEqual(normalize_search_group(["book "]), "book")
+
+    def test_normalize_search_match_blank_values_default_to_all(self) -> None:
+        self.assertEqual(normalize_search_match(""), "all")
+        self.assertEqual(normalize_search_match(" "), "all")
+
+    def test_normalize_search_match_case_and_whitespace_sensitive(self) -> None:
+        self.assertEqual(normalize_search_match(["ALL"]), "all")
+        self.assertEqual(normalize_search_match(["all "]), "all")
+
+    def test_build_search_scrapbox_body_uses_fixed_creation_time(self) -> None:
+        fixed_now = datetime(2026, 7, 29, 12, 34, tzinfo=ZoneInfo("Asia/Tokyo"))
+        with patch("tsundokensaku.web._now_jst", return_value=fixed_now):
+            page_title, body = build_search_scrapbox_body(
+                query="SQLite", scope="all", sort="rank", group="none", results=[]
+            )
+        self.assertIn("作成日時: 2026/07/29 12:34 JST", body)
+        self.assertIn("2026-07-29 12:34", page_title)
+
+    def test_build_search_scrapbox_body_empty_results(self) -> None:
+        _, body = build_search_scrapbox_body(
+            query="SQLite", scope="all", sort="rank", group="none", results=[]
+        )
+        self.assertIn("結果一覧", body)
+
+    def test_build_search_scrapbox_body_keeps_slash_in_result_title(self) -> None:
+        results = [
+            {
+                "title": "A/B",
+                "kind": "pdf",
+                "snippet": "s",
+                "path": "a.pdf",
+                "scrapbox_url": None,
+            }
+        ]
+        _, body = build_search_scrapbox_body(
+            query="SQLite", scope="all", sort="rank", group="none", results=results
+        )
+        self.assertIn("A/B", body)
 
 
 class ResolvePdfPathTest(unittest.TestCase):
