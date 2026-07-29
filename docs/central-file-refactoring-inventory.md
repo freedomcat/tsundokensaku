@@ -376,7 +376,7 @@ R4は当初「純粋関数群」と評価していたが、依存クロージャ
 | template/UI結合度 | **中**（filter登録2件に加え、検索結果の表示内容そのものを整形するため画面表示への影響範囲は無視できない） | なし | なし | なし |
 | monkeypatch影響 | なし（直接patchは0箇所） | なし（直接patchは0箇所） | なし（直接patchは0箇所） | なし（直接patchは0箇所） |
 | 外部仕様変更リスク | 低 | 中（グローバル状態の前提を崩すと進捗表示が壊れる） | 中〜高（デモモード制御・副作用と絡む） | 中（HTTP例外とビジネスロジックの分担が未確定、§10参照） |
-| characterization test追加難易度 | **中**（`build_search_result_rows`・`finalize_search_result_rows`・`sort_results`・`group_pdf_results`のidentity/破壊的更新の検証、`_scrapbox_page_label`・`_sanitize_scrapbox_title`の新規追加、`build_search_scrapbox_body`の時刻固定の確認が必要。他7関数は既存テストで充足） | 高（`_run_index_job`等・`/settings/index`・`/settings/progress`いずれも直接テストがゼロからの追加） | 中（一部関数は既存の統合テストで間接カバーあり、直接単体は薄い） | 低（`BuildExportPreviewPayloadTest`等の専用クラスが既に厚い。ただし`_export_pack_archive`等5関数は直接テストなし） |
+| characterization test追加難易度 | **中**（`build_search_result_rows`・`finalize_search_result_rows`・`sort_results`・`group_pdf_results`のidentity/破壊的更新の検証、`_scrapbox_page_label`・`_sanitize_scrapbox_title`の新規追加、`highlight_query`・`format_indexed_at`・`build_scrapbox_page_url`・`build_search_scrapbox_body`の境界値・時刻固定の追加が必要。真に既存テストで充足しているのは`normalize_search_group`・`normalize_search_match`の2関数のみ、§8参照） | 高（`_run_index_job`等・`/settings/index`・`/settings/progress`いずれも直接テストがゼロからの追加） | 中（一部関数は既存の統合テストで間接カバーあり、直接単体は薄い） | 低（`BuildExportPreviewPayloadTest`等の専用クラスが既に厚い。ただし`_export_pack_archive`等5関数は直接テストなし） |
 | PRの小ささ | 中（移動対象12関数＋複製1関数。R2の5関数より多いが1関数あたりは小さい） | 小（3関数＋グローバル変数）だがテスト新規追加の労力が大きい | 大（対象12関数、依存モジュールも多い） | 中〜大（対象9関数、HTTP例外の扱い判断を要する） |
 | レビューしやすさ | 高（副作用は小さいが明示的なため、差分と挙動の対応関係が追いやすい） | 中（グローバル状態の移動は読み手の注意力を要する） | 低（副作用・依存が多く差分が大きくなりがち） | 中 |
 | revertしやすさ | 高（ラッパー方式・DB非依存で即座に可逆） | 中（グローバル状態の前提が絡む） | 中〜低（副作用が大きい） | 中 |
@@ -389,7 +389,7 @@ R4は当初「純粋関数群」と評価していたが、依存クロージャ
 
 1. **R2完了によって何が簡単になったか**: R2で「web.py側に薄い委譲ラッパーを残し、`config.xxx()`へ内部呼び出しは置き換えない」という移行パターンが実績化された。R4でも同じパターン（`web.py`に同名ラッパーを残す）がそのまま適用でき、設計判断のコストが下がっている。
 2. 外部仕様を変えずに移動できる: 対象12関数（`build_search_result_rows_context`除く、`_now_jst`は複製）はDBに依存しない。ただし「純粋関数」ではなく、環境変数参照・現在時刻・filesystem存在確認・入力辞書の破壊的更新を含む（§3参照）。これらの現在挙動をcharacterization testで固定したうえで単純な移動で完結する。
-3. 既存テストで守れる: `highlight_query`・`group_pdf_results`・`format_indexed_at`・`build_scrapbox_page_url`・`normalize_search_match`・`normalize_search_group`・`build_search_scrapbox_body`の7関数はすでに直接単体テストがある。不足は`build_search_result_rows`・`finalize_search_result_rows`・`sort_results`・`_scrapbox_page_label`・`_sanitize_scrapbox_title`の5関数と、`build_search_scrapbox_body`の時刻固定確認で、追加量は中程度。
+3. 既存テストで守れる: 対象12関数のうち7関数（`highlight_query`・`group_pdf_results`・`format_indexed_at`・`build_scrapbox_page_url`・`normalize_search_match`・`normalize_search_group`・`build_search_scrapbox_body`）にはすでに何らかの直接単体テストがある。ただし実装本文とテスト本文を精読した結果、このうち境界値・identity・外部依存隔離まで固定できているのは`normalize_search_group`・`normalize_search_match`の2関数のみで、残り5関数（`highlight_query`・`format_indexed_at`・`build_scrapbox_page_url`・`build_search_scrapbox_body`・`group_pdf_results`）は一部保証にとどまる。不足は`build_search_result_rows`・`finalize_search_result_rows`・`sort_results`・`_scrapbox_page_label`・`_sanitize_scrapbox_title`の新規5関数に加え、上記5関数の境界値・時刻固定・identity検証の追加で、追加量は中程度（§8参照）。
 4. FastAPIルートの大規模分割を伴わない: `templates.env.filters`登録2件をweb.py側に残すだけで済む（R2の`templates.env.globals`と同型）。
 5. DBスキーマ変更を伴わない: 対象12関数はDBに一切依存しない。
 6. UI変更を伴わない: 検索結果の内容・順序・表示は不変。
@@ -443,7 +443,10 @@ R4は当初「純粋関数群」と評価していたが、依存クロージャ
   - `sort_results()`
   - `group_pdf_results()`
 - **複製する関数（1関数、`web.py`からは移動しない）**:
-  - `_now_jst()`: R7（`render_markdown_export`）・R8（`_export_pack_json`・`_export_pack_archive`）からも呼ばれる横断的ユーティリティのため、`web.py`側は変更せずそのまま残す。`search_view.py`側には同一の1行実装（`datetime.now(ZoneInfo("Asia/Tokyo"))`）を複製し、`build_search_scrapbox_body`から参照する。将来的な一本化（`config.py`や新設の時刻ユーティリティへの統合）は今回のPRの対象外とし、必要になった段階で別途検討する。
+  - `_now_jst()`: R7（`render_markdown_export`）・R8（`_export_pack_json`・`_export_pack_archive`）からも呼ばれる横断的ユーティリティのため、`web.py`側は変更せずそのまま残す。`search_view.py`側には同一の1行実装（`datetime.now(ZoneInfo("Asia/Tokyo"))`）を複製し、`build_search_scrapbox_body`から参照する。
+    - **複製を選ぶ理由**: 今回のR4抽出だけのために新しい共通time utilityモジュールを作るとPR範囲が広がる（対象がR7/R8にもまたがる横断的ユーティリティの切り出しは、今回選定した「安全に独立して実施できる」という基準から外れ、段階6・7以降の対象にすべき）。`web.py`側ではR7/R8関連処理が引き続き`_now_jst`を使用し、`search_view.py`側では`build_search_scrapbox_body`だけが使用する。複製することで`search_view → web`という循環importを避けられる。実装が1行の単純なものであるため、今回に限り複製を許容する。
+    - **ドリフト防止規則**: `web.py`側と`search_view.py`側の`_now_jst`は同一仕様として扱う。具体的には、(1) タイムゾーンは常に`Asia/Tokyo`、(2) timezone-awareな`datetime`を返す、(3) 片方だけを変更してはいけない（実装を変える場合は両方の実装と両方のテストを同時に更新する）。共通化（`config.py`や新設の時刻ユーティリティへの統合）は今回のPRの対象外とし、必要になった段階で別PRとして検討する。
+    - **契約テスト**: 次の実装PRの第1コミットに、2つの`_now_jst`のドリフトを検知する契約テストを追加する。`web._now_jst()`と`search_view._now_jst()`をそれぞれ呼び出し、(1) 両方がtimezone-aware（`tzinfo`が`None`でない）であること、(2) 両方の`tzinfo`が`Asia/Tokyo`相当（UTCオフセットが一致する、または`str(tzinfo)`が同じ）であること、を検証する。`datetime.now()`を直接同時実行して完全一致（同一マイクロ秒）を期待するテストは作らない（実行タイミングのズレでflakyになるため）。実装本文の文字列比較ではなく、上記のような外部から観測できる契約を比較する。
 - **対象外（`build_search_result_rows_context()`は移動しない）**: DB接続を伴うため、下記「`web.py`に残すもの」参照。
 - **`web.py`に残すもの**:
   - `build_search_result_rows_context()` はそのまま`web.py`に残す。**内部の呼び出し経路はR2と同じ方針を踏襲し、`search_view.build_search_result_rows()`のような直接呼び出しへは変更しない**。`build_search_result_rows_context`内部の`build_search_result_rows(...)`・`finalize_search_result_rows(...)`という既存の呼び出しは、`web.py`内に残す同名の委譲ラッパー（下記）をそのまま呼び続ける形にする（関数本体は無変更）。これにより、将来`patch("tsundokensaku.web.build_search_result_rows", ...)`のようなmonkeypatchを行っても、`build_search_result_rows_context`経由の呼び出しに対して意図通り効く（`search_view`側を直接呼ぶ実装だとpatchが効かない可能性があるため、安全側に倒す）。
@@ -452,20 +455,36 @@ R4は当初「純粋関数群」と評価していたが、依存クロージャ
   - `templates.env.filters["highlight_query"]`・`["format_indexed_at"]`の登録はそのまま`web.py`に残す。
 - **`search_view.py`の依存関係**: `tokenizer`（`query_highlight_terms`）、`metadata`（`get_scrapbox_project_url`・`metadata_for_pdf`・`BookMetadata`）、`paths`（`raw_pdf_url`）、`datetime`/`zoneinfo`（`_now_jst`複製分）のみ。`database`・FastAPI・`web.py`はimportしない。
 - **直接importしている既存テストとの互換性**: `tests/test_web.py`は`build_scrapbox_page_url`・`build_search_scrapbox_body`・`group_pdf_results`・`highlight_query`・`format_indexed_at`・`normalize_search_group`・`normalize_search_match`の**7関数**と`_now_jst`を`from tsundokensaku.web import (...)`で直接importしている（`_now_jst`はR4以外のテストからも参照される）。移動後もこれらは`web.py`側の委譲ラッパー（`_now_jst`は無変更の実体）経由で同じimport文が動作する。既存テストを一括で`search_view`直接importへ書き換えることはしない。新規に追加するcharacterization testは、`search_view.py`を直接テストしてよい範囲（新モジュールの単体テストとして`tests/test_search_view.py`等に置く案、または`tests/test_web.py`に`web.py`経由で追加する案のいずれか。次の実装PR着手時に既存ファイル構成を見て判断する）と、`web.py`側の互換入口が壊れていないことを確認する範囲を分けて考える。
-- **事前に追加すべきcharacterization test**（コード移動前に追加。関数単位で既存テストの有無を整理）:
-  - `highlight_query`（既存5件で充足。追加不要）: 日本語、複数語、HTML特殊文字のエスケープ、空文字、除外語・フレーズのtokenizer境界、`Markup`型での戻り値、をすでにカバー。
-  - `format_indexed_at`（既存1件で充足。追加不要）: JST変換の正常系はカバー済み。`None`・不正値・timezoneなし文字列のケースが薄ければ追加を検討。
-  - `build_scrapbox_page_url`（既存1件で充足。追加不要）: project URLありのケースはカバー済み。project URLなし（`None`）のケースが既存になければ追加する。
-  - `_scrapbox_page_label`（**新規**）: 正常なscrapbox URLからのページ名抽出、`None`/空文字時のfallback、日本語ページ名のURLデコード。
-  - `build_search_result_rows`（**新規**）: pdf種別・非pdf種別それぞれの辞書変換、`raw_pdf_url`あり＋実ファイルありのケース、`raw_pdf_url`あり＋実ファイルなし（`resolve_pdf_path`が`None`を返し`page_urls`が空になるケース）、欠落キー、日本語タイトル、同一PDFの重複結果。
-  - `finalize_search_result_rows`（**新規**）: 戻り値の内容に加え、**入力辞書`page_urls`が破壊的に更新されること**（同じdictオブジェクトの`id()`が呼び出し前後で変わらないことを確認）、pdf結果と非pdf結果で更新有無が異なること、`sort`/`group`指定による`sort_results`・`group_pdf_results`の呼び出し、空入力（空リスト）での挙動。
-  - `normalize_search_group`（既存2件で充足。追加不要）: 対応値・チェックボックス状態はカバー済み。
-  - `normalize_search_match`（既存3件で充足。追加不要）。
-  - `build_search_scrapbox_body`（既存3件で充足。ただし**時刻固定の方法を明記**）: 既存3件は`_now_jst`をmonkeypatchせず実行時刻に依存したまま検証している可能性があるため、実装時に`patch("tsundokensaku.web._now_jst", return_value=<固定datetime>)`（移動後は`patch("tsundokensaku.search_view._now_jst", ...)`）で時刻を固定しているか確認し、固定されていなければ追加する。タイトルsanitize・空結果・日本語結果・改行を含むsnippetの扱いは既存3件でカバーされているか個別確認する。
-  - `_sanitize_scrapbox_title`（**新規**）: 空文字、空白のみ、改行を含む文字列、`/`を含む文字列、80文字超の長い文字列、通常の日本語タイトル。`None`や非文字列は現在の型ヒント上想定されていないため、現在のエラー挙動（`AttributeError`等）を無理に固定しない。
-  - `sort_results`（**新規**）: `title`/`page`/`scrapbox`の対応済みsort値、未知のsort値（`None`・空文字・任意の文字列）で**入力リストがidentity維持（同一オブジェクト）のまま返ること**、同値要素の順序（安定ソートであること）。
-  - `group_pdf_results`（**新規**）: pdf結果の新規辞書へのまとめ、非pdf結果は**元のdictオブジェクト参照が保持されること**（`id()`比較）、入力リスト自体は変更されないこと、重複pdfの集約、page情報の欠落、空入力。
-  - `_now_jst`（複製のみ。テスト追加は不要。`web.py`側の既存挙動は無変更のため）。
+- **「既存テストで充足」の判定基準**: 正常系だけでなく重要な境界値が固定されている、identityや破壊的更新など今回の移動で変わりやすい挙動が固定されている、外部状態依存（環境変数・時刻・filesystem）が隔離されている、現在の例外・fallback挙動が固定されている、の4条件をすべて満たす場合のみ「充足」と評価する。1つでも満たさない場合は「既存テストで一部保証。第1コミットで不足分を追加」と表記する。実装本文とテスト本文を実際に読んで再判定した結果、旧文書の「7関数は既存テストで充足」という評価は過大だった（下記の通り、7関数のうち充足条件を満たすのは`normalize_search_group`・`normalize_search_match`の2関数のみ）。
+- **事前に追加すべきcharacterization test**（コード移動前に追加。関数単位で既存テストの保証範囲と不足を整理）:
+  - `highlight_query`（既存テストで一部保証。第1コミットで不足分を追加）: 既存5件は日本語マッチ・HTMLエスケープ・除外語スキップ・除外のみでマークなし・フレーズマッチをカバーするが、**空文字・クエリなしのケースがない**。追加候補: 空文字入力、クエリが空文字/空白のみ、複数語（除外語との組み合わせでない単純な複数マッチ）、戻り値が`Markup`型（またはそれと同等の安全な文字列型）であることの型検証、元の`text`引数を破壊しないこと（呼び出し前後で入力文字列が変化しないこと）。
+  - `format_indexed_at`（既存テストで一部保証。第1コミットで不足分を追加）: 既存1件はUTC→JST変換の正常系のみ。**`None`・空文字・不正値・timezoneあり/なしのケースがない**。追加候補: `None`、空文字、不正な日時文字列での現在の例外またはfallback挙動、timezone情報を含む文字列、timezone情報を含まない文字列、表示フォーマット（`%Y/%m/%d %H:%M`）の固定。現在挙動を変更せず、例外が出るなら例外が出ることを固定する。
+  - `build_scrapbox_page_url`（既存テストで一部保証。第1コミットで不足分を追加）: 既存1件は`SCRAPBOX_BASE_URL`設定ありのケースのみ。**未設定・空文字のケースがない**。追加候補: `SCRAPBOX_BASE_URL`あり、未設定（`monkeypatch.delenv`相当で戻り値`None`になること）、空文字設定、日本語ページ名・空白・`/`・`#`を含むタイトルのURLエンコード、戻り値が`None`になる条件の固定。
+  - `_scrapbox_page_label`（既存テストなし。第1コミットで新規追加）: 正常なscrapbox URLからのページ名抽出、`None`/空文字時のfallback、日本語ページ名のURLデコード。
+  - `build_search_result_rows`（既存テストなし。第1コミットで新規追加）: 通常結果、空入力、欠落キー、pdf種別・非pdf種別それぞれの辞書変換、`raw_pdf_url`なし、`raw_pdf_url`あり＋実ファイルあり、`raw_pdf_url`あり＋実ファイルなし（`resolve_pdf_path`が`None`を返し`page_urls`が空になるケース）、日本語タイトル、同一PDFの重複結果、不正値、入力の保持、出力順。filesystem依存部分の隔離方針は下記「filesystemテスト隔離」参照。
+  - `finalize_search_result_rows`（既存テストなし。第1コミットで新規追加）: **入力辞書`page_urls`の破壊的更新**（同じdictオブジェクトの`id()`が呼び出し前後で変わらないことを確認）、戻り値の内容、**元dictのidentity**、`sort`/`group`指定、未知の`sort`/`group`値、空入力、pdf/非pdf混在、重複、**入力リスト自体のidentity**。
+  - `normalize_search_group`（既存テストで充足）: 既存2件が対応値（`book`/`none`）・未知値・`None`・空文字・チェックボックス併送パターンをカバーしている。実装は完全一致判定（大文字小文字を区別する）であり、大文字小文字・前後空白のテストは既存にないが、現在の実装がそれらを正規化しないことは自明でありcharacterization testとしての追加は不要と判断する。
+  - `normalize_search_match`（既存テストで充足）: 既存3件が対応値（`all`/`any`）・未知値・`None`・空文字・チェックボックス併送パターンをカバーしている。`normalize_search_group`と同じ理由で大文字小文字・空白の追加は不要と判断する。
+  - `build_search_scrapbox_body`（既存テストで一部保証。第1コミットで不足分を追加）: 既存3件は`match`モード表示・結果内容・21件までの結果保持を検証するが、**`_now_jst`をmonkeypatchせず実行時刻のまま検証しており、「作成日時」行・日時を含むページタイトルの具体的な値は検証されていない**。追加候補: `_now_jst`を固定した日時でのJST表記・ページタイトルの日時部分、sanitize前後のタイトル、改行を含むsnippet、空結果、1件、複数件、日本語、長いタイトル、`/`を含むタイトル、空白だけのタイトル、本文の改行・区切り形式、入力順、Scrapbox本文の現在形式。時刻固定の方法は下記「`_now_jst`複製する関数」のドリフト防止規則を参照。
+  - `_sanitize_scrapbox_title`（既存テストなし。第1コミットで新規追加）: 前後空白、連続空白、改行（`\n`/`\r`）、タブ、`/`、日本語、80文字以内、80文字超、空文字、空白だけ、fallbackの`"検索結果"`が返る条件。`None`や非文字列は現在の型ヒント上想定されていないため、無理に固定せず現在の型エラー挙動（`AttributeError`等が出るなら出ることを含めて）を固定するかどうかは実装時に判断する。
+  - `sort_results`（既存テストなし。第1コミットで新規追加）: `title`/`page`/`scrapbox`の対応済みsort値、未知のsort値（`None`・空文字・任意の文字列）で**入力リストがidentity維持（同一オブジェクト）のまま返ること**、入力順の維持、同値要素の安定順序、空入力。
+  - `group_pdf_results`（既存テストで一部保証。第1コミットで不足分を追加）: 既存1件（`test_group_pdf_results_combines_pages_by_title`）はpdf結果の集約を検証するが、**非pdf結果の参照関係・入力リスト自体のidentity・空入力は未検証**。追加候補: pdfのみ、非pdfのみ、混在、空入力、pdf結果は新規dict生成、**非pdf結果は元dict参照が保持されること**（`id()`比較）、入力リスト自体を変更しないこと、順序、重複、欠落キー、page情報。
+  - `_now_jst`（複製元は`web.py`側で無変更のため個別テスト追加は不要。ドリフト防止契約テストは上記「複製する関数」参照）。
+- **filesystemテスト隔離方針**（`build_search_result_rows`・`finalize_search_result_rows`の`raw_pdf_url`経由の実存確認テスト向け）:
+  - 一時ディレクトリ（`tempfile.TemporaryDirectory()`等）を使用し、`BOOKS_DIR`相当の`books_dir`引数をテスト用一時ディレクトリへ固定する。
+  - 一時PDFファイルはテスト内で作成する。実ファイル内容を読む必要はないため、空ファイルまたは最小サイズのダミーファイルで「存在確認だけ」を満たせばよい（`paths.resolve_pdf_path`は`is_file()`のみ見るため）。
+  - 「実ファイルが存在するケース」と「存在しないケース」を分けたテストケースを用意する。
+  - テスト終了後に一時ディレクトリが自動削除されることを確認する（`with tempfile.TemporaryDirectory()`のコンテキスト終了で自動的に満たされる）。
+  - ユーザーの蔵書ディレクトリ（実際の`BOOKS_DIR`）・実PDFは使用・読み書きしない。
+  - OS依存の絶対パス文字列（`/home/...`や`C:\...`等）をテストへ直書きしない。一時ディレクトリのパスは`tempfile`が返すオブジェクトから取得する。
+  - `paths.resolve_pdf_path`自体の現在挙動（境界外パス・シンボリックリンク検証等）は段階0で既に固定済みのため、今回はそれを再検証せず、`build_search_result_rows`等が`raw_pdf_url`の戻り値（URLまたは`None`）をどう`page_urls`へ反映するかだけを検証する。
+- **環境変数テスト隔離方針**（`build_scrapbox_page_url`等の`SCRAPBOX_BASE_URL`依存テスト向け）:
+  - `unittest.mock.patch.dict("os.environ", {...})`（`pytest`の`monkeypatch.setenv`に相当）を使用し、テスト終了後に自動復元されるコンテキストマネージャ形式で環境変数を設定する。
+  - 未設定ケースの検証では、既存の環境変数を明示的に除去する（`patch.dict("os.environ", {}, clear=True)`、または対象キーだけを除去する形。`pytest`であれば`monkeypatch.delenv("SCRAPBOX_BASE_URL", raising=False)`に相当）。
+  - ユーザーの`.env`ファイルは編集しない。ユーザーのシェル環境（実行プロセス外）を永続変更しない。
+  - `SCRAPBOX_BASE_URL`の「あり」「なし」「空文字」の3ケースを区別してテストする。
+  - `metadata.get_scrapbox_project_url()`を直接`patch`するか、環境変数側を`patch.dict`するかは、今回は環境変数側への`patch.dict`で統一する（既存の`test_build_scrapbox_page_url_includes_prefilled_body`が`patch.dict("os.environ", ...)`を使っており、既存方針と一致させるため）。
+  - `.env`ファイルの読込み自体（`metadata.load_env_file`）のテストと、`build_scrapbox_page_url`のURL生成テストを混同しない。後者は環境変数がすでにプロセスへ反映された状態からの挙動のみを検証する。
 - **変更してはいけない外部契約**:
   - 検索結果のJSON/HTML表示内容・順序・ハイライト規則
   - `sort`/`group`/`match`パラメータの正規化規則
@@ -484,7 +503,7 @@ R4は当初「純粋関数群」と評価していたが、依存クロージャ
   - `search_view.py`が`web.py`を含む他のtsundokensakuモジュールをimportしない
 - **推奨ブランチ名**: `refactor/extract-search-view-module`
 - **推奨コミット分割**:
-  1. `test: 検索結果整形の回帰挙動を固定`（`build_search_result_rows`・`finalize_search_result_rows`・`sort_results`・`group_pdf_results`・`_scrapbox_page_label`・`_sanitize_scrapbox_title`のcharacterization test、および`build_search_scrapbox_body`の時刻固定テストを`tests/test_web.py`に追加するのみ。本体コード無変更）
+  1. `test: 検索結果整形の回帰挙動を固定`（新規5関数`build_search_result_rows`・`finalize_search_result_rows`・`sort_results`・`_scrapbox_page_label`・`_sanitize_scrapbox_title`のcharacterization testに加え、`highlight_query`・`format_indexed_at`・`build_scrapbox_page_url`・`build_search_scrapbox_body`・`group_pdf_results`の不足境界値・時刻固定・identity検証を`tests/test_web.py`に追加するのみ。本体コード無変更。`_now_jst`のドリフト防止契約テストもこのコミットに含める）
   2. `refactor: 検索結果整形をsearch_viewモジュールへ分離`（`search_view.py`新設＋`web.py`の委譲ラッパー化。`build_search_result_rows_context`本体は無変更）
 - **想定リスクと確認方法**:
   - `finalize_search_result_rows`の破壊的更新・`sort_results`のidentity維持・`group_pdf_results`の参照関係を、移動時にうっかり新しいオブジェクトを返す実装へ書き換えてしまうリスク。→ characterization testの`id()`比較アサーションが成功することで確認する。
