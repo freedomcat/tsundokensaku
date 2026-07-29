@@ -939,12 +939,25 @@ class HighlightQueryTest(unittest.TestCase):
         self.assertIn("<mark>SQLite</mark>", rendered)
         self.assertIn("<mark>FTS5</mark>", rendered)
 
+    def test_highlight_query_returns_markup_instance(self) -> None:
+        from markupsafe import Markup
+
+        self.assertIsInstance(highlight_query("コードレビュー", "コードレビュー"), Markup)
+        self.assertIsInstance(highlight_query("", "query"), Markup)
+
     def test_format_indexed_at_returns_empty_for_none_and_blank(self) -> None:
         self.assertEqual(format_indexed_at(None), "")
         self.assertEqual(format_indexed_at(""), "")
 
     def test_format_indexed_at_assumes_utc_when_timezone_missing(self) -> None:
         self.assertEqual(format_indexed_at("2026-06-29T03:55:59"), "2026/06/29 12:55")
+
+    def test_format_indexed_at_keeps_explicit_timezone(self) -> None:
+        self.assertEqual(format_indexed_at("2026-06-29T12:55:59+09:00"), "2026/06/29 12:55")
+
+    def test_format_indexed_at_raises_for_invalid_value(self) -> None:
+        with self.assertRaises(ValueError):
+            format_indexed_at("not-a-date")
 
     def test_build_scrapbox_page_url_returns_none_when_unset(self) -> None:
         with patch.dict("os.environ", {}, clear=True):
@@ -953,6 +966,18 @@ class HighlightQueryTest(unittest.TestCase):
     def test_build_scrapbox_page_url_returns_none_when_blank(self) -> None:
         with patch.dict("os.environ", {"SCRAPBOX_BASE_URL": ""}, clear=False):
             self.assertIsNone(build_scrapbox_page_url("title", "body"))
+
+    def test_build_scrapbox_page_url_encodes_title_and_body(self) -> None:
+        with patch.dict(
+            "os.environ", {"SCRAPBOX_BASE_URL": "https://scrapbox.io/project"}, clear=False
+        ):
+            url = build_scrapbox_page_url("日本語 タイトル/本#1", "body#1")
+        self.assertTrue(url.startswith("https://scrapbox.io/project/"))
+        self.assertIn("%E6%97%A5%E6%9C%AC%E8%AA%9E", url)  # 日本語
+        self.assertIn("%20", url)  # 空白
+        self.assertIn("%2F", url)  # /
+        self.assertIn("%23", url)  # #
+        self.assertIn("body=body%231", url)
 
     def test_scrapbox_page_label_extracts_page_name(self) -> None:
         label = _scrapbox_page_label(
@@ -986,6 +1011,12 @@ class HighlightQueryTest(unittest.TestCase):
         self.assertEqual(_sanitize_scrapbox_title(""), "検索結果")
         self.assertEqual(_sanitize_scrapbox_title("   "), "検索結果")
 
+    def test_sanitize_scrapbox_title_raises_typeerror_for_non_string_input(self) -> None:
+        for value in (None, 123, ["a"], {"a": 1}):
+            with self.subTest(value=value):
+                with self.assertRaises(TypeError):
+                    _sanitize_scrapbox_title(value)
+
     def test_sort_results_orders_by_title(self) -> None:
         results = [
             {"title": "B", "page_number": 1, "scrapbox_url": None},
@@ -1016,10 +1047,21 @@ class HighlightQueryTest(unittest.TestCase):
             {"title": "B", "page_number": 1, "scrapbox_url": None},
             {"title": "A", "page_number": 2, "scrapbox_url": None},
         ]
-        self.assertEqual(sort_results(results, "bogus"), results)
+        sorted_results = sort_results(results, "bogus")
+        self.assertEqual(sorted_results, results)
+        # 未知sort値では新しいリストを作らず、入力リストと要素をidentityのまま返す
+        self.assertIs(sorted_results, results)
+        for original, returned in zip(results, sorted_results):
+            self.assertIs(original, returned)
 
     def test_sort_results_empty_list(self) -> None:
         self.assertEqual(sort_results([], "title"), [])
+
+    def test_sort_results_is_stable_for_equal_keys(self) -> None:
+        first = {"title": "A", "page_number": 1, "scrapbox_url": None, "tag": "first"}
+        second = {"title": "A", "page_number": 1, "scrapbox_url": None, "tag": "second"}
+        sorted_results = sort_results([first, second], "title")
+        self.assertEqual([r["tag"] for r in sorted_results], ["first", "second"])
 
     def test_group_pdf_results_keeps_separate_titles_as_distinct_groups(self) -> None:
         results = [
@@ -1048,42 +1090,48 @@ class HighlightQueryTest(unittest.TestCase):
         self.assertEqual([g["title"] for g in grouped], ["本A", "本B"])
 
     def test_group_pdf_results_preserves_non_pdf_order_when_mixed(self) -> None:
-        results = [
-            {
-                "kind": "memo",
-                "title": "メモ1",
-                "path": "メモ1",
-                "page_number": None,
-                "snippet": "m1",
-                "open_url": "https://scrapbox.io/x/メモ1",
-                "scrapbox_url": "https://scrapbox.io/x/メモ1",
-                "cover_url": None,
-            },
-            {
-                "kind": "pdf",
-                "title": "本A",
-                "path": "a.pdf",
-                "page_number": 1,
-                "snippet": "s1",
-                "open_url": "/pdf/a.pdf#page=1",
-                "scrapbox_url": None,
-                "cover_url": None,
-            },
-            {
-                "kind": "memo",
-                "title": "メモ2",
-                "path": "メモ2",
-                "page_number": None,
-                "snippet": "m2",
-                "open_url": "https://scrapbox.io/x/メモ2",
-                "scrapbox_url": "https://scrapbox.io/x/メモ2",
-                "cover_url": None,
-            },
-        ]
+        memo1 = {
+            "kind": "memo",
+            "title": "メモ1",
+            "path": "メモ1",
+            "page_number": None,
+            "snippet": "m1",
+            "open_url": "https://scrapbox.io/x/メモ1",
+            "scrapbox_url": "https://scrapbox.io/x/メモ1",
+            "cover_url": None,
+        }
+        pdf_entry = {
+            "kind": "pdf",
+            "title": "本A",
+            "path": "a.pdf",
+            "page_number": 1,
+            "snippet": "s1",
+            "open_url": "/pdf/a.pdf#page=1",
+            "scrapbox_url": None,
+            "cover_url": None,
+        }
+        memo2 = {
+            "kind": "memo",
+            "title": "メモ2",
+            "path": "メモ2",
+            "page_number": None,
+            "snippet": "m2",
+            "open_url": "https://scrapbox.io/x/メモ2",
+            "scrapbox_url": "https://scrapbox.io/x/メモ2",
+            "cover_url": None,
+        }
+        results = [memo1, pdf_entry, memo2]
         grouped = group_pdf_results(results)
         self.assertEqual([g["kind"] for g in grouped], ["memo", "pdf", "memo"])
         self.assertEqual(grouped[0]["title"], "メモ1")
         self.assertEqual(grouped[2]["title"], "メモ2")
+        # 非PDF結果は元の辞書オブジェクトをそのまま保持する
+        self.assertIs(grouped[0], memo1)
+        self.assertIs(grouped[2], memo2)
+        # PDFのグループ結果は新しい辞書として生成される（元のresultではない）
+        self.assertIsNot(grouped[1], pdf_entry)
+        # 入力リスト自体をそのまま返すわけではない
+        self.assertIsNot(grouped, results)
 
     def test_group_pdf_results_empty_input(self) -> None:
         self.assertEqual(group_pdf_results([]), [])
@@ -1138,6 +1186,18 @@ class HighlightQueryTest(unittest.TestCase):
         self.assertEqual(row["scrapbox_url"], "https://scrapbox.io/x/メモ")
         self.assertNotIn("page_urls", row)
 
+    def test_build_search_result_rows_keeps_duplicate_pdf_hits_as_separate_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            books_dir = Path(temp_dir)
+            (books_dir / "a.pdf").write_bytes(b"%PDF-1.4")
+            results = [
+                SearchResult(title="本A", path="a.pdf", page_number=1, snippet="s1", kind="pdf"),
+                SearchResult(title="本A", path="a.pdf", page_number=5, snippet="s5", kind="pdf"),
+            ]
+            rows = build_search_result_rows(results, books_dir=books_dir, metadata_by_stem={})
+        self.assertEqual(len(rows), 2)
+        self.assertEqual([r["page_number"] for r in rows], [1, 5])
+
     def test_finalize_search_result_rows_applies_sort(self) -> None:
         rows = [
             {"title": "B", "page_number": 1, "scrapbox_url": None, "kind": "memo"},
@@ -1152,58 +1212,65 @@ class HighlightQueryTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             books_dir = Path(temp_dir)
             (books_dir / "a.pdf").write_bytes(b"%PDF-1.4")
-            rows = [
-                {
-                    "title": "本A", "path": "a.pdf", "page_number": 1, "page_numbers": [1],
-                    "snippet": "s1", "kind": "pdf", "open_url": None, "scrapbox_url": None,
-                    "cover_url": None, "page_summary": "p.1",
-                },
-                {
-                    "title": "本A", "path": "a.pdf", "page_number": 3, "page_numbers": [3],
-                    "snippet": "s2", "kind": "pdf", "open_url": None, "scrapbox_url": None,
-                    "cover_url": None, "page_summary": "p.3",
-                },
-            ]
+            row1 = {
+                "title": "本A", "path": "a.pdf", "page_number": 1, "page_numbers": [1],
+                "snippet": "s1", "kind": "pdf", "open_url": None, "scrapbox_url": None,
+                "cover_url": None, "page_summary": "p.1",
+            }
+            row2 = {
+                "title": "本A", "path": "a.pdf", "page_number": 3, "page_numbers": [3],
+                "snippet": "s2", "kind": "pdf", "open_url": None, "scrapbox_url": None,
+                "cover_url": None, "page_summary": "p.3",
+            }
+            rows = [row1, row2]
             finalized = finalize_search_result_rows(
                 rows, books_dir=books_dir, sort="rank", group="book"
             )
         self.assertEqual(len(finalized), 1)
         self.assertEqual(finalized[0]["page_numbers"], [1, 3])
         self.assertEqual(len(finalized[0]["page_urls"]), 2)
+        # group="book"ではPDFグループの辞書は新規生成される（元の行辞書ではない）
+        self.assertIsNot(finalized[0], row1)
+        self.assertIsNot(finalized[0], row2)
 
     def test_finalize_search_result_rows_keeps_individual_results_when_group_none(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             books_dir = Path(temp_dir)
             (books_dir / "a.pdf").write_bytes(b"%PDF-1.4")
-            rows = [
-                {
-                    "title": "本A", "path": "a.pdf", "page_number": 1, "page_numbers": [1],
-                    "snippet": "s1", "kind": "pdf", "open_url": None, "scrapbox_url": None,
-                    "cover_url": None,
-                },
-                {
-                    "title": "本A", "path": "a.pdf", "page_number": 3, "page_numbers": [3],
-                    "snippet": "s2", "kind": "pdf", "open_url": None, "scrapbox_url": None,
-                    "cover_url": None,
-                },
-            ]
+            row1 = {
+                "title": "本A", "path": "a.pdf", "page_number": 1, "page_numbers": [1],
+                "snippet": "s1", "kind": "pdf", "open_url": None, "scrapbox_url": None,
+                "cover_url": None,
+            }
+            row2 = {
+                "title": "本A", "path": "a.pdf", "page_number": 3, "page_numbers": [3],
+                "snippet": "s2", "kind": "pdf", "open_url": None, "scrapbox_url": None,
+                "cover_url": None,
+            }
+            rows = [row1, row2]
             finalized = finalize_search_result_rows(
                 rows, books_dir=books_dir, sort="rank", group="none"
             )
         self.assertEqual(len(finalized), 2)
+        # group="none"では元の行辞書が破壊的に更新されたうえで、そのまま参照される
+        self.assertIs(finalized[0], row1)
+        self.assertIs(finalized[1], row2)
+        self.assertIn("page_urls", row1)
+        self.assertIn("page_urls", row2)
 
     def test_finalize_search_result_rows_keeps_non_pdf_results(self) -> None:
-        rows = [
-            {
-                "title": "メモ", "path": "メモ", "page_number": None, "snippet": "m",
-                "kind": "memo", "open_url": "url", "scrapbox_url": "url", "cover_url": None,
-            }
-        ]
+        memo_row = {
+            "title": "メモ", "path": "メモ", "page_number": None, "snippet": "m",
+            "kind": "memo", "open_url": "url", "scrapbox_url": "url", "cover_url": None,
+        }
+        rows = [memo_row]
         finalized = finalize_search_result_rows(
             rows, books_dir=Path("."), sort="rank", group="book"
         )
         self.assertEqual(len(finalized), 1)
         self.assertEqual(finalized[0]["kind"], "memo")
+        # 非PDF結果はgroup="book"でも元の辞書オブジェクトのまま参照される
+        self.assertIs(finalized[0], memo_row)
 
     def test_finalize_search_result_rows_empty_input(self) -> None:
         self.assertEqual(
