@@ -63,6 +63,7 @@ from tsundokensaku.metadata import (
     get_scrapbox_project_url,
 )
 from tsundokensaku.markdown_export import default_markdown_output_name, render_markdown_pages
+from tsundokensaku import config
 from tsundokensaku import paths
 from tsundokensaku.pdf_export import default_output_path, parse_page_selection, render_selected_pages
 from tsundokensaku.pdf_outline import get_page_count, list_chapters
@@ -83,10 +84,10 @@ from tsundokensaku.zip_export import (
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_BOOKS_DIR = Path("data/books")
+DEFAULT_BOOKS_DIR = config.DEFAULT_BOOKS_DIR
 CONTAINER_BOOKS_DIRS = paths.CONTAINER_BOOKS_DIRS
-DEFAULT_DB_PATH = Path("data/index.db")
-PDF_EXPORT_SAVE_DIR_ENV = "PDF_EXPORT_SAVE_DIR"
+DEFAULT_DB_PATH = config.DEFAULT_DB_PATH
+PDF_EXPORT_SAVE_DIR_ENV = config.PDF_EXPORT_SAVE_DIR_ENV
 EXTERNALLY_AVAILABLE_EXPORT_PROFILES = frozenset({"standard", "chat", "chapter"})
 
 
@@ -132,17 +133,15 @@ templates.env.filters["format_indexed_at"] = lambda value: format_indexed_at(val
 
 
 def get_books_dir() -> Path:
-    return Path(os.environ.get("BOOKS_DIR", str(DEFAULT_BOOKS_DIR)))
+    return config.get_books_dir()
 
 
 def get_db_path() -> Path:
-    db_dir = Path(os.environ.get("DB_DIR", str(DEFAULT_DB_PATH.parent)))
-    return db_dir / DEFAULT_DB_PATH.name
+    return config.get_db_path()
 
 
 def get_pdf_export_save_dir() -> Path | None:
-    configured = os.environ.get(PDF_EXPORT_SAVE_DIR_ENV, "").strip()
-    return Path(configured).expanduser() if configured else None
+    return config.get_pdf_export_save_dir()
 
 
 templates.env.globals["pdf_export_save_dir"] = get_pdf_export_save_dir
@@ -154,7 +153,7 @@ DEMO_MODE_SETTING_MESSAGE = "デモモードのため無効です"
 
 
 def is_demo_mode() -> bool:
-    return os.environ.get("DEMO_MODE", "").strip().lower() == "true"
+    return config.is_demo_mode()
 
 
 templates.env.globals["is_demo_mode"] = is_demo_mode
@@ -654,26 +653,7 @@ def _unique_export_destination_path(destination: Path) -> Path:
 
 
 def update_env_setting(key: str, value: str, env_file: Path = ENV_FILE) -> None:
-    lines = env_file.read_text(encoding="utf-8").splitlines() if env_file.exists() else []
-    updated = False
-    rendered: list[str] = []
-    for line in lines:
-        stripped = line.strip()
-        if stripped and not stripped.startswith("#") and "=" in stripped:
-            current_key, _current_value = stripped.split("=", 1)
-            if current_key.strip() == key:
-                rendered.append(f"{key}={value}")
-                updated = True
-                continue
-        rendered.append(line)
-
-    if not updated:
-        if rendered and rendered[-1].strip():
-            rendered.append("")
-        rendered.append(f"{key}={value}")
-
-    env_file.write_text("\n".join(rendered) + "\n", encoding="utf-8")
-    os.environ[key] = value
+    return config.update_env_setting(key, value, env_file)
 
 
 def save_uploaded_pdf(filename: str, content: bytes, books_dir: Path, *, relative_path: str | None = None) -> Path:
