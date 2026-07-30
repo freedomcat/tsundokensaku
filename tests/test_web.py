@@ -1047,12 +1047,14 @@ class HighlightQueryTest(unittest.TestCase):
             {"title": "B", "page_number": 1, "scrapbox_url": None},
             {"title": "A", "page_number": 2, "scrapbox_url": None},
         ]
-        sorted_results = sort_results(results, "bogus")
-        self.assertEqual(sorted_results, results)
-        # 未知sort値では新しいリストを作らず、入力リストと要素をidentityのまま返す
-        self.assertIs(sorted_results, results)
-        for original, returned in zip(results, sorted_results):
-            self.assertIs(original, returned)
+        for sort_value in ("bogus", None, ""):
+            with self.subTest(sort=sort_value):
+                sorted_results = sort_results(results, sort_value)
+                self.assertEqual(sorted_results, results)
+                # 未知sort値では新しいリストを作らず、入力リストと要素をidentityのまま返す
+                self.assertIs(sorted_results, results)
+                for original, returned in zip(results, sorted_results):
+                    self.assertIs(original, returned)
 
     def test_sort_results_empty_list(self) -> None:
         self.assertEqual(sort_results([], "title"), [])
@@ -1135,6 +1137,39 @@ class HighlightQueryTest(unittest.TestCase):
 
     def test_group_pdf_results_empty_input(self) -> None:
         self.assertEqual(group_pdf_results([]), [])
+
+    def test_group_pdf_results_page_number_missing_or_none_yields_empty_page_numbers(self) -> None:
+        # page_numberキー欠落・None のいずれも例外にならず、page_numbers/page_summaryが
+        # 空のままフォールバックする（現在挙動）。
+        cases = {
+            "missing_key": {"kind": "pdf", "title": "本X", "path": "x.pdf", "snippet": "s"},
+            "none_value": {
+                "kind": "pdf", "title": "本X", "path": "x.pdf", "page_number": None, "snippet": "s",
+            },
+        }
+        for label, result in cases.items():
+            with self.subTest(case=label):
+                grouped = group_pdf_results([result])
+                self.assertEqual(len(grouped), 1)
+                self.assertEqual(grouped[0]["page_numbers"], [])
+                self.assertEqual(grouped[0]["page_summary"], "")
+
+    def test_group_pdf_results_empty_string_page_number_is_kept_as_is(self) -> None:
+        # 空文字はNoneと異なり除外判定に引っかからず、そのままpage_numbers/page_summaryへ反映される
+        result = {"kind": "pdf", "title": "本E", "path": "e.pdf", "page_number": "", "snippet": "s"}
+        grouped = group_pdf_results([result])
+        self.assertEqual(grouped[0]["page_numbers"], [""])
+        self.assertEqual(grouped[0]["page_summary"], "p.")
+
+    def test_group_pdf_results_missing_title_key_groups_under_empty_string_key(self) -> None:
+        # titleキー欠落は空文字titleとして扱われ、同じ空文字titleを持つ結果同士が
+        # 同一グループへ集約される（例外にならない）。グループ辞書自体にもtitleキーは含まれない。
+        result_1 = {"kind": "pdf", "path": "z1.pdf", "page_number": 1, "snippet": "s1"}
+        result_2 = {"kind": "pdf", "path": "z2.pdf", "page_number": 2, "snippet": "s2"}
+        grouped = group_pdf_results([result_1, result_2])
+        self.assertEqual(len(grouped), 1)
+        self.assertNotIn("title", grouped[0])
+        self.assertEqual(grouped[0]["page_numbers"], [1, 2])
 
     def test_build_search_result_rows_pdf_result_with_existing_file(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1272,6 +1307,34 @@ class HighlightQueryTest(unittest.TestCase):
         # 非PDF結果はgroup="book"でも元の辞書オブジェクトのまま参照される
         self.assertIs(finalized[0], memo_row)
 
+    def test_finalize_search_result_rows_unknown_group_bypasses_grouping(self) -> None:
+        # normalize_search_groupを経由しない未知group値（"book"以外）は、
+        # 現在の実装では group_pdf_results を呼ばず、group="none"相当としてそのまま扱われる。
+        with tempfile.TemporaryDirectory() as temp_dir:
+            books_dir = Path(temp_dir)
+            (books_dir / "a.pdf").write_bytes(b"%PDF-1.4")
+            row1 = {
+                "title": "本A", "path": "a.pdf", "page_number": 1, "page_numbers": [1],
+                "snippet": "s1", "kind": "pdf", "open_url": None, "scrapbox_url": None,
+                "cover_url": None,
+            }
+            row2 = {
+                "title": "本A", "path": "a.pdf", "page_number": 3, "page_numbers": [3],
+                "snippet": "s2", "kind": "pdf", "open_url": None, "scrapbox_url": None,
+                "cover_url": None,
+            }
+            rows = [row1, row2]
+            finalized = finalize_search_result_rows(
+                rows, books_dir=books_dir, sort="rank", group="bogus"
+            )
+        self.assertEqual(len(finalized), 2)
+        # 入力リスト自体・各行辞書のidentityが維持されたまま、page_urlsだけ破壊的に更新される
+        self.assertIs(finalized, rows)
+        self.assertIs(finalized[0], row1)
+        self.assertIs(finalized[1], row2)
+        self.assertIn("page_urls", row1)
+        self.assertIn("page_urls", row2)
+
     def test_finalize_search_result_rows_empty_input(self) -> None:
         self.assertEqual(
             finalize_search_result_rows([], books_dir=Path("."), sort="rank", group="book"), []
@@ -1322,6 +1385,69 @@ class HighlightQueryTest(unittest.TestCase):
             query="SQLite", scope="all", sort="rank", group="none", results=results
         )
         self.assertIn("A/B", body)
+
+    def test_build_search_scrapbox_body_line_structure_and_snippet_newlines(self) -> None:
+        # snippet内の \n のみ半角空白へ正規化され、\r はそのまま残る（現在挙動）。
+        # 1件ごとの本文構造（タイトル行/詳細行/snippet行/scrapbox行/区切りの空行）と、
+        # 本文全体の改行形式（\n区切り・末尾strip）を完全一致で固定する。
+        fixed_now = datetime(2026, 7, 29, 12, 34, tzinfo=ZoneInfo("Asia/Tokyo"))
+        results = [
+            {
+                "title": "本A",
+                "kind": "pdf",
+                "page_summary": "p.1",
+                "snippet": "行1\n行2\r\n行3",
+                "path": "a.pdf",
+                "scrapbox_url": "https://scrapbox.io/x/本A",
+            },
+            {
+                "title": "本B",
+                "kind": "memo",
+                "page_summary": "",
+                "snippet": "",
+                "path": "本B",
+                "scrapbox_url": None,
+            },
+        ]
+        with patch("tsundokensaku.search_view._now_jst", return_value=fixed_now):
+            _, body = build_search_scrapbox_body(
+                query="q", scope="all", sort="rank", group="none", results=results
+            )
+        expected = "\n".join(
+            [
+                "#つんどけんさく",
+                "",
+                "検索語: q",
+                "検索範囲: all",
+                "語の一致: すべての語を含む",
+                "並び順: rank",
+                "まとめ方: none",
+                "作成日時: 2026/07/29 12:34 JST",
+                "",
+                "結果一覧",
+                "1. 本A",
+                "   pdf / p.1",
+                "   行1 行2\r 行3",
+                "   scrapbox: [本A]",
+                "",
+                "2. 本B",
+                "   memo",
+            ]
+        )
+        self.assertEqual(body, expected)
+
+    def test_build_search_scrapbox_body_keeps_input_order(self) -> None:
+        results = [
+            {"title": "本Z", "kind": "pdf", "snippet": "s-Z", "path": "z.pdf", "scrapbox_url": None},
+            {"title": "本A", "kind": "pdf", "snippet": "s-A", "path": "a.pdf", "scrapbox_url": None},
+            {"title": "本M", "kind": "pdf", "snippet": "s-M", "path": "m.pdf", "scrapbox_url": None},
+        ]
+        _, body = build_search_scrapbox_body(
+            query="q", scope="all", sort="rank", group="none", results=results
+        )
+        # 並べ替えは行わず、入力順のまま本文へ反映される
+        self.assertLess(body.index("本Z"), body.index("本A"))
+        self.assertLess(body.index("本A"), body.index("本M"))
 
 
 class ResolvePdfPathTest(unittest.TestCase):
