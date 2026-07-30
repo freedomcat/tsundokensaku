@@ -550,11 +550,187 @@ R4は当初「純粋関数群」と評価していたが、依存クロージャ
 - 回帰テスト: エクスポート履歴の TestClient / DB テスト。
 - ロールバック: PR revert。
 
-### 段階6: インデックスジョブの切り出し
+### 段階6: インデックスジョブの切り出し（次の実装PRとして選定・設計のみ）
 
-- 責務: R6 → `index_job.py`。
-- 回帰テスト: `/settings/index` `/settings/progress` の TestClient テスト。グローバル状態のライフサイクルに注意。
-- ロールバック: PR revert。
+段階4・5（`database.py`側）は未着手のまま、`web.py`側に残る責務のうち次に着手する候補として、本セクションでR6を段階3（検索結果整形）と同水準まで詳細化する。**このセクションは設計であり、本体コードは未変更。**（Codexによる現状調査、独立レビューによる妥当性確認を経て2026-07-30に詳細化）
+
+#### なぜ段階4・5を先行させず段階6へ進むか
+
+- 段階4（`schema.py`）・段階5（`export_events_repo.py`）は`database.py`側の責務分離であり、段階6（`index_job.py`）は`web.py`側の責務分離である。両系列は互いに技術的な依存を持たない別系統として扱ってきた。実際、`database.py`側の段階1（`records.py`、D1）は未着手のまま、`web.py`側の段階2（R2、`config.py`）・段階3（R4、`search_view.py`）を先行させた実績がある。
+- `index_job.py`が依存するのは`threading`・`tsundokensaku.indexer`（`index_books`はDB接続を伴うが、`index_job.py`自身が`database`を直接importするわけではない）・`tsundokensaku.config`のみで、`schema.py`にも`export_events_repo.py`にも技術的に依存しない。
+- 本節（§8）冒頭の段階番号は実施順の強制ではなく、リスク・独立性に基づく候補整理の順序であり、段階1の先送りが既にこの前提を裏付けている。
+- `web.py`側の残り候補のうち、R5（生SQL集計）は独立性が低く後回し（本節「段階8以降」参照）、R7（`pdf_service`）は副作用が大きく後回し（§3参照）、R8（`export_service`）は`_resolve_export_profile_or_400`のHTTPException混在という分担方針が未決のまま（§10未決事項）である。したがって`web.py`側の残り候補の中では境界とリスクが相対的に明確なR6が次点として妥当である（§3「他候補を見送る理由」参照）。
+
+#### 目的
+
+- インデックス進捗状態（`INDEX_PROGRESS`）・排他制御（`INDEX_PROGRESS_LOCK`）・バックグラウンド実行（`threading.Thread`によるジョブ起動）を`web.py`から独立した`index_job.py`へ移動し、FastAPIルートをHTTP入力の受け取りとレスポンス生成中心の薄い層に整理する。
+- 公開URL・HTTPメソッド・redirect先・status code・JSONレスポンス形式・画面表示（進捗snapshotの内容）は変更しない。
+- 今回はTOCTOU競合・マルチworker制約・進捗の永続化方式など、既存の制約を改善しない（詳細は「非目標」参照）。
+
+#### 対象責務（現在の行番号、`develop` HEAD `a2ffa2dd`時点で確認済み）
+
+- `INDEX_PROGRESS`（117-125行）: 進捗状態を保持するモジュールレベルのグローバル辞書。初期値は`{"running": False, "current": 0, "total": 0, "title": "", "message": "", "updated_at": ""}`。
+- `INDEX_PROGRESS_LOCK`（117行）: `threading.Lock()`。
+- `_set_index_progress`（278-288行）: `running`/`current`/`total`/`title`/`message`をlock内で`INDEX_PROGRESS.update(...)`により**in-place更新**する。`updated_at`は現在いずれの呼び出しでも更新されない。
+- `_get_index_progress`（291-293行）: lock内で`dict(INDEX_PROGRESS)`によるshallow copyを返す。
+- `_run_index_job`（296-320行）: `config`経由で解決した`books_dir`/`db_path`を使い、`indexer.index_books`を`progress_callback=_set_index_progress`付きで呼ぶ。成功時・例外時それぞれで`_set_index_progress`により終了状態を反映する。
+- `run_index`（`POST /settings/index`、1597-1611行）内の進捗初期化（`_set_index_progress(True, 0, 0, "", "準備中")`）とスレッド生成・起動（`threading.Thread(target=_run_index_job, args=(force_paths,), daemon=True)`）。
+
+#### `web.py`に残すもの
+
+- `POST /settings/index`（`run_index`）・`GET /settings/progress`（`settings_progress`）のFastAPIルート定義そのもの。
+- `Form`入力の受け取り（`force: list[str] = Form(default=[])`）。
+- `running`中の判定と分岐（実行中なら新しいジョブを起動せず、日本語メッセージ付きでredirectする）。
+- 日本語メッセージ文言（「インデックス実行中です」「インデックスを開始しました」「選択した{n}件の強制再インデックスを開始しました」）。
+- redirect先（`/settings?message=...`）・status code（303）。
+- `JSONResponse`によるレスポンス生成。
+- `templates`へ渡す`"index_progress"`（home/search/settings、715・772・1461行）は、呼び出し先が`index_job.get_progress()`相当に変わるだけで、渡し方自体は変更しない。
+
+**`force`の重複除去・空リストから`None`への変換の配置**: 現在`run_index`内で`force_paths = set(force) if force else None`として行われている。この変換は`web.py`に残す。
+1. 変換元の`force`はFastAPIの`Form(default=[])`が返す`list[str]`であり、HTTPフォーム送信の性質（同名キー複数送信でリストになる）に起因するHTTP層特有の入力形式である。
+2. `index_job`側の公開APIを「既に正規化された`set[str] | None`を受け取る」形にすることで、`index_job.py`は`Form`・FastAPI型に一切依存しないクリーンな境界を保てる。
+3. 変換の実体（`list`→`set`、空→`None`）をハンドラ内で完結させることで、`index_job.py`の依存を`config`・`indexer`だけに保てる。
+
+#### 依存方向
+
+```
+web.py
+  ↓
+index_job.py
+  ↓
+config.py（books_dir/db_path解決）
+indexer.py（index_books実行）
+```
+
+禁止する依存: `index_job.py → web.py`。`index_job.py`は`web.py`をimportしない。`books_dir`/`db_path`の解決は`web.py`の委譲ラッパー経由ではなく`config.get_books_dir()`/`config.get_db_path()`を直接呼ぶ（`web.py`を経由せず`config.py`を直接参照する初めての呼び出し元になる）。
+
+#### 公開API案
+
+```python
+def get_progress() -> dict[str, object]:
+    """進捗状態の独立したコピーを返す。"""
+
+def is_running() -> bool:
+    """現在ジョブが実行中かどうかを返す。"""
+
+def start(force_paths: set[str] | None = None) -> None:
+    """進捗状態をrunning=Trueへ更新し、バックグラウンドスレッドでindex_booksを実行する。"""
+```
+
+- `get_progress()`
+  - 引数: なし。戻り値: `dict[str, object]`（`INDEX_PROGRESS`のshallow copy。現在の`_get_index_progress`と同じ）。副作用: なし（読み取りのみ）。lock取得範囲: 辞書読み取り中のみ。例外方針: 例外を送出しない。呼び出し側の責務: なし。
+- `is_running()`
+  - 引数: なし。戻り値: `bool`（`get_progress()["running"]`相当）。副作用: なし。lock取得範囲: `get_progress()`経由。例外方針: 例外を送出しない。呼び出し側の責務: この結果を見て「実行中なら拒否してredirectする」という分岐は`web.py`側（`run_index`）の責務とする。
+- `start(force_paths)`
+  - 引数: `force_paths: set[str] | None`（正規化済み）。戻り値: `None`。副作用: `INDEX_PROGRESS`を`running=True`へ更新し、新規デーモンスレッドを起動する。lock取得範囲: 状態更新時のみ（現在の`_set_index_progress`と同じ範囲）。例外方針: バックグラウンドスレッド内部の例外は捕捉し`running=False`・`message=f"Error: {exc}"`へ変換する（現状維持）。`start()`自体（スレッド起動前まで）で例外が発生した場合の挙動は現状のまま未定義とし、今回変更しない。呼び出し側の責務: `start()`を呼ぶ前に`is_running()`で判定するのは呼び出し側（`web.py`）の責務。`start()`自体はrunning判定を行わない。
+
+**重要な設計制約**:
+- `is_running()`の判定と`start()`の実行を1つの原子的操作（例: `try_start() -> bool`）へまとめない。現在の`run_index()`は「`_get_index_progress()`で読む→判定→`_set_index_progress`で書く」という2段階構造であり、今回のリファクタではこの構造をそのまま維持する。
+- 上記の分離により、現在存在するTOCTOU競合（2つのリクエストがほぼ同時に来た場合、両方が`running=False`を読んでどちらも実行に進みうる）は今回解消しない。「移動」の副産物として偶然この競合が変化しないよう注意する。
+- `thread.start()`自体が失敗した場合の挙動も現状維持とする（明示的なハンドリングを追加しない）。
+
+#### 互換ラッパー方針
+
+`web.INDEX_PROGRESS`・`web._set_index_progress`・`web._get_index_progress`・`web._run_index_job`について、`tests/test_web.py`・`tests/playwright/`・`docs/`（本設計書を除く）・`src/`配下の他モジュールを検索したが、直接参照は存在しない（2026-07-30時点で確認済み）。`tsundokensaku.web.`へのmonkeypatch対象（R2/R4時点で140箇所超と確認済み、§10付録参照）にも、これら4つのシンボルへの直接patchは含まれない。
+
+**方針: B（内部実装であり外部参照がないため、`web.py`から除去する）を採用する。**
+
+R2（`config.py`）・R4（`search_view.py`）ではA（委譲ラッパーを残す）を採用したが、その理由は「既存133箇所超のmonkeypatchを維持するため」であり、今回はこの前提が成立しない。private関数・グローバル変数まで一律に委譲ラッパーとして残すと、外部参照がないにもかかわらず`web.py`に間接層が増えるだけでなく、`index_job.py`分離後も`web.py`がこれらのシンボルを再エクスポートし続ける形骸化した依存が残る。
+
+ただし次の2つはFastAPIルートハンドラそのものであり、「private実装の委譲ラッパー」ではなく「HTTP層の公開API」として`web.py`に残る（移動対象ではない、上記「`web.py`に残すもの」参照）。
+- `run_index`（`POST /settings/index`）
+- `settings_progress`（`GET /settings/progress`）
+
+#### `index_job.py`の依存関係
+
+`tsundokensaku.config`（`get_books_dir`・`get_db_path`）、`tsundokensaku.indexer`（`index_books`）、`threading`のみ。`database`・FastAPI・`web.py`はimportしない。
+
+#### 変更してはいけない現在契約
+
+- 進捗辞書の初期キーと初期値: `{"running": False, "current": 0, "total": 0, "title": "", "message": "", "updated_at": ""}`。
+- `get_progress()`（現`_get_index_progress`）は呼び出しごとに新しい`dict`を返し、返り値を変更してもグローバル状態へ波及しない。
+- 状態更新は同じ共有辞書（`INDEX_PROGRESS`）への**in-place更新**であり、新しい辞書オブジェクトを作らない。
+- `updated_at`は現在いかなる更新でも変化しない（初期値`""`のまま）。この現在挙動を「不足」として今回のPRで実装しない。
+- `running`中は新しい実行を開始せず、303 + `/settings?message=インデックス実行中です`（URLエンコード済み）へredirectする。
+- `force`パラメータの重複除去（`set()`化）。
+- 空の`force`（`[]`）は`None`（＝全件対象）に変換される。
+- 実行開始前（スレッド起動前）に`running=True`へ更新される（メインスレッド側で同期的に行われる）。
+- バックグラウンドジョブ内部の例外はHTTPリクエストへ伝播しない（`_run_index_job`内で`try/except Exception`により捕捉）。
+- 例外発生時、`message`は`f"Error: {exc}"`形式になる。
+- 例外発生時、`current`/`total`は例外発生直前の値が保持されたまま`running=False`になる。
+- 成功時、`message`は`f"Indexed books under {books_dir}"`形式になる。
+- `GET /settings/progress`は`_get_index_progress()`の内容をそのままJSON化して返す。
+- home・search・settings画面のtemplate contextへ`"index_progress"`キーで進捗snapshotが渡る。
+
+#### 非目標（今回行わないこと）
+
+TOCTOU競合（running確認からthread開始までの競合）の解消、atomicな`try_start()`のような原子的操作の導入、複数FastAPI worker間での進捗共有、進捗のDB・ファイルへの永続化、task queue・thread pool・asyncio化・WebSocket/SSE化の導入、`updated_at`の実装、メッセージ文言・redirect先・status codeの変更、FastAPI API仕様の変更、インデックス処理自体（`indexer.index_books`）の最適化。これらは将来の改善候補であり、必要になった段階で個別に検討する。
+
+#### characterization test計画
+
+**既存テストによる保証**: `tests/test_web.py`に`INDEX_PROGRESS`・`_set_index_progress`・`_get_index_progress`・`_run_index_job`・`run_index`・`settings_progress`への直接テストは現状ゼロ（2026-07-30時点で確認済み、§3・§10でも既述の通り）。既存の統合テストによる間接カバーもない。したがって対象は全て「PR1で新規追加」となる。
+
+**PR1（characterization test、コード移動なし）で固定する必須候補**:
+- 進捗辞書の初期状態（`running`/`current`/`total`/`title`/`message`/`updated_at`の初期値）
+- `get_progress()`が呼び出しごとに独立した`dict`を返すこと（返り値変更が共有状態に影響しないこと）
+- 状態更新が共有辞書へのin-place更新であること
+- `updated_at`がいかなる更新でも変化しないこと
+- running中に`/settings/index`を叩くと303・`/settings?message=インデックス実行中です`へredirectされ、新しい実行が開始されないこと
+- `force`の重複除去
+- 空の`force`が`None`（全件対象）へ変換されること
+- 成功時の状態（`running=False`・`message`形式）
+- 例外時の状態（`running=False`・`message=f"Error: {exc}"`形式）
+- 失敗時に`current`/`total`が直前の値のまま保持されること
+- `GET /settings/progress`のJSON構造
+
+**実threadを起動しない方法**:
+- `_run_index_job`相当の関数は同期関数のままテストできるため、直接呼び出して`index_books`をstub/mockし、進捗状態への反映のみを検証する。
+- `run_index`（ルートハンドラ）のテストでは、`threading.Thread`をmonkeypatchして`start()`をno-op化する、またはThreadクラス自体をテスト用の同期実行スタブへ差し替え、実際のバックグラウンド実行を発生させない。
+- 各テストの前後で共有状態（`INDEX_PROGRESS`相当）を初期値へ明示的にリセットする（`setUp`/`tearDown`等）。モジュールレベルのグローバル変数は複数テスト間で状態が漏れうるため、テスト順序に依存しない設計にする。
+
+**PR2（`index_job.py`への分離）**:
+- PR1で追加した契約テストを、内容を変えずに全て通過させることを完了条件とする。
+- 進捗状態・排他制御・スレッド実行・成功失敗状態更新に関するテストは、新規`tests/test_index_job.py`へ移し、`tsundokensaku.index_job`を直接importする形に書き換える（互換ラッパーを残さない方針のため、PR1時点で`tsundokensaku.web`からimportしていたテストのimport元を、PR2のコミットで`tsundokensaku.index_job`へ付け替える）。
+- `POST /settings/index`・`GET /settings/progress`のHTTP契約（TestClient経由、redirect・status code・JSON形式・running中の分岐）は`tests/test_web.py`に残す。
+- Python全件・Playwright全件の成功を完了条件とする。
+
+**過剰固定として避ける項目**: thread targetのprivate関数名の直接assert、`daemon`属性の直接assert（`thread.daemon is True`のような検証）、private関数の呼び出し回数、実装都合だけのlock取得回数、`index_books`の呼び出し回数だけを目的とするテスト。
+
+`daemon=True`はアプリケーション終了時にジョブスレッドがプロセスをブロックしないという重要な契約だが、直接assertするのではなく、設計上の維持条件として本設計書に明記し、実装時にコードレビューで確認する運用とする（`Thread(..., daemon=True)`という記述をコード上で維持することが条件）。
+
+#### PR構成
+
+**PR1: characterization test**
+- 目的: `index_job.py`分離前に、現在のインデックスジョブ状態管理・実行に関する挙動をテストで固定する。
+- 変更予定ファイル: `tests/test_web.py`のみ。
+- 変更しないファイル: `src/`配下すべて。
+- 完了条件: 上記「必須候補」のテストが全て追加され、Python全件が成功する。
+- 停止条件: 対象の現在挙動が本設計書の記述と一致しない、またはテストで固定できない（例: threadを起動せずに`run_index`を検証できない）場合は、実装を止めて設計を再検討する。
+- 想定コミット: `test: インデックス進捗管理の回帰挙動を固定`（1コミット）。
+- レビュー観点: 現在挙動の記述のみを固定しているか（改善を混ぜていないか）、実threadを起動しない設計になっているか、テスト間で状態が漏れない設計になっているか。
+
+**PR2: `index_job.py`への分離**
+- 目的: `INDEX_PROGRESS`・`INDEX_PROGRESS_LOCK`・`_set_index_progress`・`_get_index_progress`・`_run_index_job`・スレッド起動処理を`index_job.py`へ移動し、`web.py`のルートハンドラを薄くする。
+- 変更予定ファイル: 新規`src/tsundokensaku/index_job.py`、`src/tsundokensaku/web.py`（該当関数・変数の削除とルートハンドラからの呼び出し変更）、`tests/test_web.py`（該当テストの移動・import変更）、新規`tests/test_index_job.py`。
+- 変更しないファイル: `src/tsundokensaku/indexer.py`・`src/tsundokensaku/config.py`・その他の`web.py`内の責務（R5/R7/R8関連）。
+- 完了条件: PR1の契約テストが（import元の変更を除き）内容を変えず全て通過する、Python全件成功、Playwright全件成功、`index_job.py`が`web.py`をimportしない。
+- 停止条件: `is_running()`と`start()`の分離を保てない、`index_job.py`が`web.py`または`database`への依存を必要とする、既存URL・HTTP契約・画面挙動の変更が必要になる、のいずれかに該当する場合は実装を止め設計を再検討する。
+- 想定コミット: `refactor: インデックスジョブをindex_jobモジュールへ分離`（1コミット）。
+- レビュー観点: `web.py`に残るのがHTTP入力・レスポンス生成・running判定の分岐のみになっているか、TOCTOU挙動が変わっていないか、`daemon=True`が維持されているか。
+
+#### R6全体の完了条件
+
+- `index_job.py`が進捗状態・lock・バックグラウンド実行を所有する。
+- `web.py`がFastAPI入力の受け取りとレスポンス生成中心の薄い層になる。
+- `index_job.py`が`web.py`をimportしない（`python -c "import tsundokensaku.index_job; import tsundokensaku.web"`で循環importがないことを確認する）。
+- 既存の公開URL・HTTPメソッド・redirect先・status code・JSON形式・画面表示が変更されていない。
+- PR1で固定した契約が全て維持されている。
+- Python全件成功。
+- Playwright全件成功。
+- 本設計書の記述と実装が一致している。
+- ROADMAPでは「`web.py`の責務分離」の子項目としてR6相当の完了だけを記録し、親項目（`web.py`の責務分離）自体は未完了のまま維持する（R5/R7/R8が残るため）。
+
+- ロールバック: PR revert（互換ラッパーを残さないためA案より復元範囲は広いが、2PR構成のうちPR2のみのrevertで完結する。PR1のテスト追加は移動と独立して残しても害はない）。
 
 ### 段階7: エクスポート業務ロジックの切り出し
 
