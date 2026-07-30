@@ -16,6 +16,7 @@ from pypdf import PdfReader, PdfWriter
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
+import tsundokensaku.web as web
 from tsundokensaku.web import (
     api_activate_pack,
     api_create_pack,
@@ -1448,6 +1449,253 @@ class HighlightQueryTest(unittest.TestCase):
         # 並べ替えは行わず、入力順のまま本文へ反映される
         self.assertLess(body.index("本Z"), body.index("本A"))
         self.assertLess(body.index("本A"), body.index("本M"))
+
+
+class IndexJobCharacterizationTest(unittest.TestCase):
+    INITIAL_PROGRESS = {
+        "running": False,
+        "current": 0,
+        "total": 0,
+        "title": "",
+        "message": "",
+        "updated_at": "",
+    }
+    IMPORTED_PROGRESS = web._get_index_progress()
+
+    def setUp(self) -> None:
+        self._saved_progress = web._get_index_progress()
+        self._replace_progress(self.INITIAL_PROGRESS)
+
+    def tearDown(self) -> None:
+        self._replace_progress(self._saved_progress)
+
+    def _replace_progress(self, progress: dict[str, object]) -> None:
+        with web.INDEX_PROGRESS_LOCK:
+            web.INDEX_PROGRESS.clear()
+            web.INDEX_PROGRESS.update(progress)
+
+    def test_index_progress_initial_state(self) -> None:
+        self.assertEqual(self.IMPORTED_PROGRESS, self.INITIAL_PROGRESS)
+
+    def test_get_index_progress_returns_independent_snapshot(self) -> None:
+        self._replace_progress(
+            {
+                "running": True,
+                "current": 2,
+                "total": 5,
+                "title": "現在の本",
+                "message": "INDEX 現在の本",
+                "updated_at": "",
+            }
+        )
+
+        snapshot = web._get_index_progress()
+
+        self.assertIsNot(snapshot, web.INDEX_PROGRESS)
+        self.assertEqual(snapshot, web.INDEX_PROGRESS)
+        snapshot["message"] = "変更済み"
+        self.assertEqual(web.INDEX_PROGRESS["message"], "INDEX 現在の本")
+
+    def test_set_index_progress_updates_shared_dict_in_place(self) -> None:
+        shared_progress = web.INDEX_PROGRESS
+        self._replace_progress(
+            {
+                "running": False,
+                "current": 1,
+                "total": 4,
+                "title": "以前の本",
+                "message": "以前のメッセージ",
+                "updated_at": "",
+            }
+        )
+
+        web._set_index_progress(True, 2, 4)
+
+        self.assertIs(web.INDEX_PROGRESS, shared_progress)
+        self.assertEqual(
+            web.INDEX_PROGRESS,
+            {
+                "running": True,
+                "current": 2,
+                "total": 4,
+                "title": "",
+                "message": "",
+                "updated_at": "",
+            },
+        )
+
+    def test_set_index_progress_does_not_update_updated_at(self) -> None:
+        web.INDEX_PROGRESS["updated_at"] = "2026-07-30T12:34:56+09:00"
+
+        web._set_index_progress(True, 1, 3, "対象の本", "INDEX 対象の本")
+
+        self.assertEqual(web.INDEX_PROGRESS["updated_at"], "2026-07-30T12:34:56+09:00")
+
+    def test_post_index_rejects_new_job_while_running(self) -> None:
+        self._replace_progress(
+            {
+                "running": True,
+                "current": 2,
+                "total": 5,
+                "title": "処理中の本",
+                "message": "INDEX 処理中の本",
+                "updated_at": "",
+            }
+        )
+        progress_before_request = web._get_index_progress()
+        thread_observation = {"created": False, "started": False}
+
+        class FakeThread:
+            def __init__(self, *_args: object, **_kwargs: object) -> None:
+                thread_observation["created"] = True
+
+            def start(self) -> None:
+                thread_observation["started"] = True
+
+        class FakeThreading:
+            Thread = FakeThread
+
+        with patch("tsundokensaku.web.threading", FakeThreading):
+            response = TestClient(tsundokensaku_app).post("/settings/index", follow_redirects=False)
+
+        self.assertEqual(response.status_code, 303)
+        self.assertEqual(
+            response.headers["location"],
+            f"/settings?message={quote('インデックス実行中です')}",
+        )
+        self.assertEqual(thread_observation, {"created": False, "started": False})
+        self.assertEqual(web._get_index_progress(), progress_before_request)
+
+    def test_post_index_deduplicates_force_paths(self) -> None:
+        thread_observation: dict[str, object] = {}
+
+        class FakeThread:
+            def __init__(self, *_args: object, **kwargs: object) -> None:
+                thread_observation["job_args"] = kwargs["args"]
+
+            def start(self) -> None:
+                thread_observation["started"] = True
+
+        class FakeThreading:
+            Thread = FakeThread
+
+        with patch("tsundokensaku.web.threading", FakeThreading):
+            response = TestClient(tsundokensaku_app).post(
+                "/settings/index",
+                data={"force": ["books/a.pdf", "books/a.pdf", "books/b.pdf"]},
+                follow_redirects=False,
+            )
+
+        self.assertEqual(response.status_code, 303)
+        self.assertEqual(
+            response.headers["location"],
+            f"/settings?message={quote('選択した 2 件の強制再インデックスを開始しました')}",
+        )
+        self.assertEqual(thread_observation["job_args"], ({"books/a.pdf", "books/b.pdf"},))
+        self.assertTrue(thread_observation["started"])
+
+    def test_post_index_converts_empty_force_to_none(self) -> None:
+        thread_observation: dict[str, object] = {}
+
+        class FakeThread:
+            def __init__(self, *_args: object, **kwargs: object) -> None:
+                thread_observation["job_args"] = kwargs["args"]
+
+            def start(self) -> None:
+                thread_observation["started"] = True
+
+        class FakeThreading:
+            Thread = FakeThread
+
+        with patch("tsundokensaku.web.threading", FakeThreading):
+            response = TestClient(tsundokensaku_app).post(
+                "/settings/index",
+                follow_redirects=False,
+            )
+
+        self.assertEqual(response.status_code, 303)
+        self.assertEqual(
+            response.headers["location"],
+            f"/settings?message={quote('インデックスを開始しました')}",
+        )
+        self.assertEqual(thread_observation["job_args"], (None,))
+        self.assertTrue(thread_observation["started"])
+
+    def test_run_index_job_preserves_final_counts_on_success(self) -> None:
+        books_dir = Path("/virtual/books")
+        db_path = Path("/virtual/index.db")
+        web.INDEX_PROGRESS["updated_at"] = "unchanged"
+
+        def index_books_stub(*, progress_callback, **_kwargs: object) -> list[object]:
+            progress_callback(True, 7, 7, "最後の本", "DONE 最後の本")
+            return []
+
+        with (
+            patch("tsundokensaku.web.get_books_dir", return_value=books_dir),
+            patch("tsundokensaku.web.get_db_path", return_value=db_path),
+            patch("tsundokensaku.web.index_books", index_books_stub),
+        ):
+            web._run_index_job({"books/last.pdf"})
+
+        self.assertEqual(
+            web._get_index_progress(),
+            {
+                "running": False,
+                "current": 7,
+                "total": 7,
+                "title": "",
+                "message": f"Indexed books under {books_dir}",
+                "updated_at": "unchanged",
+            },
+        )
+
+    def test_run_index_job_catches_error_and_preserves_progress(self) -> None:
+        web.INDEX_PROGRESS["updated_at"] = "unchanged"
+        web.INDEX_PROGRESS["extension"] = "keep"
+
+        def failing_index_books(*, progress_callback, **_kwargs: object) -> list[object]:
+            progress_callback(True, 3, 8, "壊れた本", "INDEX 壊れた本")
+            raise RuntimeError("broken PDF")
+
+        with (
+            patch("tsundokensaku.web.get_books_dir", return_value=Path("/virtual/books")),
+            patch("tsundokensaku.web.get_db_path", return_value=Path("/virtual/index.db")),
+            patch("tsundokensaku.web.index_books", failing_index_books),
+        ):
+            web._run_index_job()
+
+        self.assertEqual(
+            web._get_index_progress(),
+            {
+                "running": False,
+                "current": 3,
+                "total": 8,
+                "title": "",
+                "message": "Error: broken PDF",
+                "updated_at": "unchanged",
+                "extension": "keep",
+            },
+        )
+
+    def test_settings_progress_returns_current_snapshot_as_json(self) -> None:
+        expected = {
+            "running": True,
+            "current": 4,
+            "total": 9,
+            "title": "JSON対象",
+            "message": "INDEX JSON対象",
+            "updated_at": "",
+        }
+        self._replace_progress(expected)
+
+        response = TestClient(tsundokensaku_app).get("/settings/progress")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload, expected)
+        self.assertEqual(set(payload), set(self.INITIAL_PROGRESS))
+        payload["message"] = "レスポンス側の変更"
+        self.assertEqual(web.INDEX_PROGRESS["message"], "INDEX JSON対象")
 
 
 class ResolvePdfPathTest(unittest.TestCase):
