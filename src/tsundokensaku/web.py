@@ -6,7 +6,6 @@ import base64
 import json
 import re
 import sqlite3
-import threading
 import time
 import shutil
 from datetime import datetime, timezone
@@ -52,7 +51,7 @@ from tsundokensaku.database import (
 from tsundokensaku.database import initialize
 from tsundokensaku.export_profiles import PROFILES, ExportProfile, RenderContext, resolve_profile
 from tsundokensaku.export_stats import ItemStats, collect_item_stats
-from tsundokensaku.indexer import find_pdfs, index_books
+from tsundokensaku.indexer import find_pdfs
 from tsundokensaku.metadata import (
     BookMetadata,
     ENV_FILE,
@@ -63,6 +62,7 @@ from tsundokensaku.metadata import (
 )
 from tsundokensaku.markdown_export import default_markdown_output_name, render_markdown_pages
 from tsundokensaku import config
+from tsundokensaku import index_job
 from tsundokensaku import paths
 from tsundokensaku import search_view
 from tsundokensaku.pdf_export import default_output_path, parse_page_selection, render_selected_pages
@@ -113,16 +113,6 @@ if not LOGGER.handlers:
     handler.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
     LOGGER.addHandler(handler)
 LOGGER.propagate = False
-
-INDEX_PROGRESS_LOCK = threading.Lock()
-INDEX_PROGRESS: dict[str, object] = {
-    "running": False,
-    "current": 0,
-    "total": 0,
-    "title": "",
-    "message": "",
-    "updated_at": "",
-}
 
 app = FastAPI(title="tsundokensaku")
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
@@ -273,51 +263,6 @@ def build_search_scrapbox_body(
     return search_view.build_search_scrapbox_body(
         query=query, scope=scope, sort=sort, group=group, match=match, results=results
     )
-
-
-def _set_index_progress(running: bool, current: int, total: int, title: str = "", message: str = "") -> None:
-    with INDEX_PROGRESS_LOCK:
-        INDEX_PROGRESS.update(
-            {
-                "running": running,
-                "current": current,
-                "total": total,
-                "title": title,
-                "message": message,
-            }
-        )
-
-
-def _get_index_progress() -> dict[str, object]:
-    with INDEX_PROGRESS_LOCK:
-        return dict(INDEX_PROGRESS)
-
-
-def _run_index_job(force_paths: set[str] | None = None) -> None:
-    books_dir = get_books_dir()
-    db_path = get_db_path()
-    try:
-        index_books(
-            books_dir=books_dir,
-            db_path=db_path,
-            progress_callback=_set_index_progress,
-            force_paths=force_paths,
-        )
-        _set_index_progress(
-            False,
-            int(_get_index_progress().get("current", 0)),
-            int(_get_index_progress().get("total", 0)),
-            "",
-            f"Indexed books under {books_dir}",
-        )
-    except Exception as exc:  # pragma: no cover - surfaced in browser
-        _set_index_progress(
-            False,
-            int(_get_index_progress().get("current", 0)),
-            int(_get_index_progress().get("total", 0)),
-            "",
-            f"Error: {exc}",
-        )
 
 
 def resolve_pdf_path(pdf_path: str | Path, books_dir: Path) -> Path | None:
@@ -712,7 +657,7 @@ def home(request: Request) -> HTMLResponse:
             "scope": "all",
             "scope_options": SEARCH_SCOPE_OPTIONS,
             "match": "all",
-            "index_progress": _get_index_progress(),
+            "index_progress": index_job.get_progress(),
         },
     )
 
@@ -769,7 +714,7 @@ def search_page(
             "results": rendered_results,
             "result_count": len(rendered_results),
             "scrapbox_export_url": scrapbox_export_url,
-            "index_progress": _get_index_progress(),
+            "index_progress": index_job.get_progress(),
         },
     )
 
@@ -1458,7 +1403,7 @@ def settings_page(request: Request, message: str = "") -> HTMLResponse:
             "default_export_json": find_export_json(PROJECT_ROOT),
             "pdf_export_save_dir": get_pdf_export_save_dir(),
             "message": message,
-            "index_progress": _get_index_progress(),
+            "index_progress": index_job.get_progress(),
         },
     )
 
@@ -1596,15 +1541,12 @@ async def upload_pdf(request: Request, filename: str = "", relative_path: str = 
 
 @app.post("/settings/index")
 def run_index(force: list[str] = Form(default=[])) -> RedirectResponse:
-    progress = _get_index_progress()
-    if bool(progress.get("running")):
+    if index_job.is_running():
         message = quote("インデックス実行中です")
         return RedirectResponse(url=f"/settings?message={message}", status_code=303)
 
     force_paths = set(force) if force else None
-    _set_index_progress(True, 0, 0, "", "準備中")
-    thread = threading.Thread(target=_run_index_job, args=(force_paths,), daemon=True)
-    thread.start()
+    index_job.start(force_paths)
     message = quote(
         f"選択した {len(force_paths)} 件の強制再インデックスを開始しました" if force_paths else "インデックスを開始しました"
     )
@@ -1613,7 +1555,7 @@ def run_index(force: list[str] = Form(default=[])) -> RedirectResponse:
 
 @app.get("/settings/progress")
 def settings_progress() -> JSONResponse:
-    return JSONResponse(_get_index_progress())
+    return JSONResponse(index_job.get_progress())
 
 
 @app.post("/settings/pdf-export-save-dir")
