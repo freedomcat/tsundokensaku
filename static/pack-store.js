@@ -13,6 +13,7 @@ window.TsundokuCart = (() => {
   let dirty = false;
   let saveTimer = null;
   let saveTargetPackId = null; // save() 時点の書込み先。切替後の誤書込み防止
+  let activeSavePromise = null;
   let initialized = false;
 
   function emptyCart() {
@@ -269,11 +270,16 @@ window.TsundokuCart = (() => {
     }
     saveTimer = setTimeout(() => {
       saveTimer = null;
-      void pushToServer();
+      void pushToServer().catch((error) => {
+        console.warn('Failed to save pack', error);
+      });
     }, SAVE_DEBOUNCE_MS);
   }
 
   async function pushToServer(keepalive = false) {
+    if (activeSavePromise !== null) {
+      await activeSavePromise;
+    }
     if (!dirty || !activePack) {
       return;
     }
@@ -285,53 +291,71 @@ window.TsundokuCart = (() => {
     const currentSavingPackId = activePack.id;
     const currentSavingItems = clone(cache.items);
     dirty = false;
-    try {
+    const savePromise = (async () => {
       const response = await fetch(`/api/packs/${currentSavingPackId}/items`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(cartForSave(cache)),
         keepalive,
       });
-      if (response.ok) {
-        const payload = await response.json();
-        if (!activePack || activePack.id !== currentSavingPackId) {
-          return;
-        }
-        const serverCart = normalizeCart(payload);
-        const mergedServerItems = mergeServerItems(serverCart.items, currentSavingItems);
-        if (dirty) {
-          const idMap = new Map();
-          for (const serverItem of mergedServerItems) {
-            if (serverItem && serverItem.clientId && Number.isInteger(serverItem.id)) {
-              idMap.set(serverItem.clientId, serverItem.id);
-            }
-          }
-          for (const item of cache.items) {
-            const key = itemKey(item);
-            if (idMap.has(key)) {
-              item.id = idMap.get(key);
-            }
-          }
-        } else {
-          serverCart.items = mergedServerItems;
-          cache = serverCart;
-        }
-        notifyUpdated();
-      } else {
-        throw new Error(`PUT /api/packs/${activePack.id}/items -> ${response.status}`);
+      if (!response.ok) {
+        throw new Error(`PUT /api/packs/${currentSavingPackId}/items -> ${response.status}`);
       }
+      const payload = await response.json();
+      if (!activePack || activePack.id !== currentSavingPackId) {
+        return;
+      }
+      const serverCart = normalizeCart(payload);
+      const mergedServerItems = mergeServerItems(serverCart.items, currentSavingItems);
+      if (dirty) {
+        const idMap = new Map();
+        for (const serverItem of mergedServerItems) {
+          if (serverItem && serverItem.clientId && Number.isInteger(serverItem.id)) {
+            idMap.set(serverItem.clientId, serverItem.id);
+          }
+        }
+        for (const item of cache.items) {
+          const key = itemKey(item);
+          if (idMap.has(key)) {
+            item.id = idMap.get(key);
+          }
+        }
+      } else {
+        serverCart.items = mergedServerItems;
+        cache = serverCart;
+      }
+      notifyUpdated();
+    })();
+    activeSavePromise = savePromise;
+    try {
+      await savePromise;
     } catch (error) {
       dirty = true; // 次の save / focus 時にリトライ
-      console.warn('Failed to save pack', error);
+      throw error;
+    } finally {
+      if (activeSavePromise === savePromise) {
+        activeSavePromise = null;
+      }
     }
   }
 
-  function flushPendingSave() {
+  async function flushPendingSave() {
     if (saveTimer !== null) {
       clearTimeout(saveTimer);
       saveTimer = null;
     }
-    return pushToServer(true);
+    try {
+      do {
+        await pushToServer(true);
+        if (saveTimer !== null) {
+          clearTimeout(saveTimer);
+          saveTimer = null;
+        }
+      } while (dirty && activePack);
+    } catch (error) {
+      console.warn('Failed to save pack', error);
+      throw error;
+    }
   }
 
   async function refresh() {
@@ -460,10 +484,12 @@ window.TsundokuCart = (() => {
   });
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'hidden') {
-      flushPendingSave();
+      void flushPendingSave().catch(() => {});
     }
   });
-  window.addEventListener('pagehide', flushPendingSave);
+  window.addEventListener('pagehide', () => {
+    void flushPendingSave().catch(() => {});
+  });
 
   const ready = init();
 

@@ -20,7 +20,13 @@ async function addOneBookToActivePack(page) {
   const checkbox = page.locator('.cart-checkbox').first();
   await expect(checkbox).toBeVisible();
   await checkbox.check();
+  const saveResponsePromise = page.waitForResponse((response) => (
+    response.request().method() === 'PUT'
+      && /\/api\/packs\/\d+\/items$/.test(new URL(response.url()).pathname)
+  ));
   await page.locator('#add-selected-btn').click();
+  const saveResponse = await saveResponsePromise;
+  expect(saveResponse.ok()).toBe(true);
   await expect(page.locator('#cart-message')).toContainText('1件を資料');
   await page.goto('/workspace');
   await expect(page.locator('.ws-book')).toHaveCount(1);

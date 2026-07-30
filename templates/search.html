@@ -292,6 +292,20 @@
         TsundokuCart.save(cart);
 
         const msgSpan = document.getElementById('cart-message');
+        try {
+          await TsundokuCart.flushPendingSave();
+        } catch (error) {
+          if (msgSpan) {
+            msgSpan.textContent = '資料への追加を保存できませんでした';
+          }
+          for (const checkbox of checked) {
+            checkbox.checked = false;
+          }
+          updateAddButtonState();
+          void renderBar(cart);
+          return;
+        }
+
         if (msgSpan) {
           const packName = activePack ? activePack.name : '資料';
           msgSpan.textContent = `${checked.length}件を資料「${packName}」に追加しました`;
