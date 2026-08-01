@@ -2,7 +2,7 @@
 
 対象: `src/tsundokensaku/web.py`（1729行、R2・R3・R4・R6・R7-1分離後）・`src/tsundokensaku/database.py`（1922行、責務分離は未着手）
 位置づけ: ROADMAP「Phase 5着手前: 構造改善と回帰保証」の「構造と依存関係の棚卸し」の成果物
-状態: `web.py`系列はR2（`config.py`）・R3（`paths.py`）・R4（`search_view.py`）・R6（`index_job.py`）・R7-1（`pdf_import_service.py`）が完了。R7-2〜R7-4は詳細設計済み・未実装。R1・R9はHTTP層として分離不要、R5・R8は未実装。R7親項目は未完了。`database.py`系列（D1〜D7）は未実装。現行コードの確認基準は2026-08-01、R7-4詳細設計は`develop`のコミット `8a0cff0cb996c2ace2c2032016470bf7f5c6820c`を基準とする。
+状態: `web.py`系列はR2（`config.py`）・R3（`paths.py`）・R4（`search_view.py`）・R6（`index_job.py`）・R7-1（`pdf_import_service.py`）が完了。R7-2〜R7-4とR8は詳細設計済み・実装未着手。R1・R9はHTTP層として分離不要、R5は候補整理のみ、R7親項目は未完了。R8のcharacterization test・実装・完了反映は未実施。`database.py`系列（D1〜D7）は未実装。現行コードの確認基準は2026-08-01、R7-4詳細設計は`develop`のコミット `8a0cff0cb996c2ace2c2032016470bf7f5c6820c`、R8詳細設計は同 `5cd645cbb116983e5b8c77ee61fcb3ee22948a06`を基準とする。
 
 ### 番号体系とROADMAPとの対応
 
@@ -19,7 +19,7 @@
 | R5 | ライブラリ/統計の集計 | `books_repo.py`側へ寄せる候補（`database.py`系列へ合流） | 候補のみ | `web.py`の責務分離 |
 | R6 | インデックスジョブ | `index_job.py` | 完了 | `web.py`の責務分離 |
 | R7 | ファイル入出力・取り込み（4子責務、§3参照） | 単一モジュールへ集約せず子責務ごとに分割。R7-1（PDFアップロード保存）は`pdf_import_service.py`へ分離済み。R7-2（PDFディレクトリ取り込み）、R7-3（Scrapbox JSON保存・同期）、R7-4（PDF閲覧・変換・本文検索のHTTPオーケストレーション）は詳細設計済み・未実装 | 一部完了 | `web.py`の責務分離 |
-| R8 | エクスポート業務ロジック | `export_service.py`候補 | 設計済み・未実装 | `web.py`の責務分離 |
+| R8 | エクスポート業務ロジック | 単一`export_service.py`から開始し、既存の集計・profile・生成・永続化module境界を維持（[詳細設計](refactoring/r8-export-service.md)） | 詳細設計済み・実装未着手（契約固定未実施） | `web.py`の責務分離 |
 | R9 | ルートハンドラ | `web.py`に維持 | 分離不要 | `web.py`の責務分離 |
 | D1 | レコード定義 | `records.py`候補 | 設計済み・未実装 | `database.py`の責務分離 |
 | D2 | 接続管理 | 分離先未定 | 候補のみ | `database.py`の責務分離 |
@@ -250,12 +250,14 @@ R7-2はDB依存がなく最小範囲で、R7-1で確立した`web` → `pdf_impo
 
 各PRでは対象子責務だけについて、責務境界、公開service API、例外方針、characterization test計画、セキュリティ境界、実装PR構成、非目標、完了条件を決定する。横断調査PRではこれらを確定せず、コード・テスト・ROADMAPの変更も行わない。
 
-### R8. エクスポート業務ロジック（分離候補）
+### R8. エクスポート業務ロジック — 詳細設計済み・実装未着手
 
-- 主な定義（2026-07-29調査時）: `_export_preview_warning`（1229）、`build_export_preview_warnings`（1233）、`_preview_base_stats`（1272）、`build_export_preview_payload`（1291）、`build_export_preview_payload_for_profile`（1300）、`_export_pack_json`（1396）、`_placeholder_item_stats_for_export`（1422）、`_export_pack_archive`（1442）、`_resolve_export_profile_or_400`（1539）。
-- 依存: `export_profiles`, `export_stats`, `zip_export`, `database`（pack取得）。
-- テスト状況: `build_export_preview_warnings`・`build_export_preview_payload`・`build_export_preview_payload_for_profile`は`BuildExportPreviewPayloadTest`等の専用クラスで直接検証されている（非常に厚い）。`_preview_base_stats`・`_export_pack_json`・`_export_pack_archive`・`_placeholder_item_stats_for_export`・`_resolve_export_profile_or_400`は直接単体テストがなく、`PackExportPreviewTest`等HTTP経由の統合テストでのみ検証される。monkeypatch対象は0件。
-- 判断: HTTP層とプレゼンテーションの中間にある業務ロジック。`export_service.py`（仮）へ。ただし `_resolve_export_profile_or_400` は HTTPException を投げるため HTTP寄り。**リスク: 中**。
+- 詳細設計: [R8エクスポート業務ロジックの詳細設計](refactoring/r8-export-service.md)。従来の「設計済み」は対象関数と分離先候補の整理を指していたが、2026-08-01に現行コード、DB/event順、利用側、出力契約、R7-4依存、PR分割まで再調査し、詳細設計へ更新した。
+- 現在の主な定義（`develop` HEAD `5cd645c`）: `_export_preview_warning`（962）、`build_export_preview_warnings`（966）、`_preview_base_stats`（1005）、`build_export_preview_payload`（1024）、`build_export_preview_payload_for_profile`（1033）、`_export_pack_json`（1129）、`_placeholder_item_stats_for_export`（1155）、`_export_pack_archive`（1175）、`_resolve_export_profile_or_400`（1272）。候補9関数はすべて現存する。
+- 範囲: 上記9関数だけでなく、preview/export route内のprofile/format、DB read、生成進行、Response生成後のexport event記録時点を含む。`/api/packs/stats`、event永続化本体、PDF/Markdown低レベル生成はそれぞれR5/D7/R7-4または既存moduleの責務に残す。
+- 判断: **B**（単一`export_service.py`から開始し、内部の補助module境界を明示）。`export_profiles`、`export_stats`、`zip_export`、PDF/Markdown module、`database`へ低レベル責務を残し、serviceはユースケース進行を担う。`_preview_base_stats`の共有集計はR5からserviceへの依存を避けるため`export_stats.py`側へ置く案を優先する。
+- HTTP境界: profile検索・外部許可判定とHTTP 400変換を分け、service公開APIへFastAPI型・`HTTPException`を持ち込まない。archiveの完成形への移動は、R7-4の非HTTP PDF/Markdown APIまたは同等の例外契約が確定してから行う。
+- テスト: preview/profile/ZIP/eventの既存統合testは厚いが、warning全種と順序、JSON exact bytes/header、placeholder分岐、固定時刻、DB close/event順、unlisted profile分岐のcharacterization testは未追加。production code、test、`export_service.py`はいずれも未変更・未作成。
 
 ### R9. ルートハンドラ（HTTP層に残す）
 
@@ -436,7 +438,7 @@ graph TD
 | `config.py` | 環境変数・設定解決・.env書込 | web R2 | `get_books_dir`, `get_db_path`, `get_pdf_export_save_dir`, `is_demo_mode`, `update_env_setting` | os, fs, metadata | web | **完了**（コミット `590c96a`） |
 | `search_view.py` | 表示整形中心の責務（検索結果整形） | web R4 | `build_search_result_rows*`, `highlight_query`, `group_pdf_results`, `normalize_*` | tokenizer, metadata, paths | web | **完了**（PR #14・#16） |
 | `index_job.py` | インデックスジョブ | web R6 | `_run_index_job`, `_*_index_progress`, 進捗グローバル | threading, indexer, config | web | **完了**（PR #17・#18） |
-| `export_service.py` | エクスポートのプレビュー/アーカイブ組立 | web R8 | `build_export_preview_*`, `_export_pack_archive`, `_export_pack_json` | export_profiles, export_stats, zip_export, packs_repo | web | 中盤 |
+| `export_service.py` | エクスポートのプレビュー/JSON/アーカイブ組立と成功履歴の呼出し | web R8 | `build_export_preview_*`, `_export_pack_archive`, `_export_pack_json`、profile/format解決 | export_profiles, export_stats, zip_export, database、R7-4非HTTP API | web | 詳細設計済み・実装未着手（[詳細](refactoring/r8-export-service.md)）。characterization test未実施 |
 | `pdf_import_service.py` | PDF取り込み。R7-1の単一upload保存と、R7-2のdirectory一括取り込みを別の公開関数として所有する | web R7-1・R7-2 | `save_uploaded_pdf`（実装済み）、`import_pdfs_from_directory`（詳細設計の独立レビュー指摘反映済み・未実装） | pathlib, fs（R7-1はpathsも利用） | web | R7-1完了（[詳細](refactoring/r7-1-pdf-upload-storage.md)）、R7-2詳細設計の独立レビュー指摘反映済み（[詳細](refactoring/r7-2-pdf-directory-import.md)） |
 | `scrapbox_import_service.py` | Scrapbox export JSONの固定cache保存とメモ・Kindle DB同期のオーケストレーション | web R7-3 | `import_scrapbox_export_bytes`、path importの重複処理 | pathlib, fs, database | web | 詳細設計済み・未実装（[詳細](refactoring/r7-3-scrapbox-sync.md)） |
 | `pdf_export.py`（既存moduleを拡張） | page specに基づくPDF生成とserver directory保存 | web R7-4 | `render_pdf_export`、`save_pdf_export_to_configured_dir` | pypdf, paths, fs | web, export_profiles callback | 詳細設計済み・未実装（[詳細](refactoring/r7-4-http-orchestration.md)） |
@@ -879,11 +881,12 @@ R7の全体像、共通する責務境界・依存方向・進捗は§3を正と
 - R7-4 PDF閲覧・変換・本文検索のHTTPオーケストレーション: [詳細設計済み・未実装](refactoring/r7-4-http-orchestration.md)。
 - R7親項目は未完了のままとする。
 
-### 段階7: エクスポート業務ロジックの切り出し（計画時の候補・未実装）
+### 段階7: エクスポート業務ロジックの切り出し（詳細設計済み・実装未着手）
 
-- 責務: R8 → `export_service.py`。`_resolve_export_profile_or_400` の HTTPException はハンドラ側に残す（HTTP関心事）。
-- 回帰テスト: pack export preview / zip / markdown の TestClient テスト（既存が厚い）。
-- ロールバック: PR revert。
+- 責務とPR分割: [R8詳細設計](refactoring/r8-export-service.md)に確定。単一`export_service.py`から開始し、契約固定、preview、JSON、R7-4非HTTP API接続後のarchive、成功履歴/HTTP adapter仕上げへ分ける。
+- `_resolve_export_profile_or_400`は検索・外部許可をserviceへ移し、HTTPExceptionへの変換だけをハンドラへ残す。
+- 回帰テスト: pack export preview / JSON / ZIP / Markdown / PDF / export eventのunit・TestClient・Playwright。既存testは厚いが、詳細設計で特定したcharacterization testは未追加。
+- 現在状態: characterization test、実装、完了反映は未実施。ロールバックは実装PR単位のrevert。
 
 ### 段階8以降（計画時の候補・未実装）
 
@@ -929,7 +932,7 @@ R7の全体像、共通する責務境界・依存方向・進捗は§3を正と
 - L4の repo 群（books/search/packs）を最後まで分割するか、`schema`＋`records` の分離で止めるか。**推測**: 個人開発の規模では後者で十分な可能性が高い。段階4完了後に再評価する。
 - 「関数内スキーマ保証」（`ensure_pack_schema` 相当）を起動時の一度きり初期化へ寄せられるか。**推測・要確認**: 目標構造では CRUD → schema の依存を作らないため寄せたいが、新規DBに対する遅延初期化の挙動を壊さないか、呼び出し実態を段階4で確認してから判断する。寄せられない場合は現状維持（CRUD 側からの保証呼び出しを残す）。
 - ルートハンドラを `APIRouter` で機能別ファイルに分けるか。今回は対象外。web.py が薄くなった後に判断。
-- `_resolve_export_profile_or_400` のような「業務＋HTTP例外」関数の置き場所。**方針案**: 業務判定は service、HTTPException 変換はハンドラ、という分担。段階7で確定する。
+- `_resolve_export_profile_or_400` のような「業務＋HTTP例外」関数の置き場所。**R8詳細設計で確定**: profile検索・外部許可判定はservice、HTTPException変換はハンドラ。非HTTPのPDF source失敗表現など実装型の名称は[詳細設計](refactoring/r8-export-service.md)の実装前判断事項として残す。
 - ARCHITECTURE.md の更新タイミング。各段階では追記程度にとどめ、段階4（schema分離）と最終段階でまとめて反映するのが現実的。
 
 ---

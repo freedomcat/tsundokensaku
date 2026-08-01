@@ -162,7 +162,7 @@ Python・Playwrightの自動テストで継続的に確認できる。
     - [ ] R7-2 PDFディレクトリ取り込み — 詳細設計済み・未実装。設計はPR #23で`develop`へ反映済み（[docs/refactoring/r7-2-pdf-directory-import.md](docs/refactoring/r7-2-pdf-directory-import.md)参照）
     - [ ] R7-3 Scrapbox JSON保存・同期 — 詳細設計済み・未実装（[docs/refactoring/r7-3-scrapbox-sync.md](docs/refactoring/r7-3-scrapbox-sync.md)参照）
     - [ ] R7-4 PDF閲覧・変換・本文検索のHTTPオーケストレーション — 詳細設計済み・未実装（[docs/refactoring/r7-4-http-orchestration.md](docs/refactoring/r7-4-http-orchestration.md)参照）
-  - [ ] R8 エクスポート業務ロジック — `export_service.py`候補（設計済み・未実装）
+  - [ ] R8 エクスポート業務ロジック — 詳細設計済み・実装未着手。単一`export_service.py`から開始し、集計・profile・ZIP・PDF/Markdown・履歴永続化は既存モジュール境界に残す方針（[docs/refactoring/r8-export-service.md](docs/refactoring/r8-export-service.md)参照）。characterization test・実装・完了反映は未実施
   - R7-1完了後の次の実装対象は未選定。R5・R7-2〜R7-4・R8の着手順は未確定
   - FastAPIのルーティング・入力検証・レスポンス生成を薄い層へ整理する
   - 検索、資料、PDFプレビュー、エクスポート、本の登録・設定の業務処理を分ける
