@@ -64,6 +64,7 @@ from tsundokensaku.markdown_export import default_markdown_output_name, render_m
 from tsundokensaku import config
 from tsundokensaku import index_job
 from tsundokensaku import paths
+from tsundokensaku import pdf_import_service
 from tsundokensaku import search_view
 from tsundokensaku.pdf_export import default_output_path, parse_page_selection, render_selected_pages
 from tsundokensaku.pdf_outline import get_page_count, list_chapters
@@ -406,26 +407,6 @@ def _unique_export_destination_path(destination: Path) -> Path:
 
 def update_env_setting(key: str, value: str, env_file: Path = ENV_FILE) -> None:
     return config.update_env_setting(key, value, env_file)
-
-
-def save_uploaded_pdf(filename: str, content: bytes, books_dir: Path, *, relative_path: str | None = None) -> Path:
-    books_root = books_dir.expanduser().resolve()
-    books_root.mkdir(parents=True, exist_ok=True)
-
-    base_name = Path(relative_path or filename)
-    if base_name.name.lower().endswith(".pdf") is False:
-        raise ValueError("PDF ファイルのみ受け付けます")
-
-    destination = (books_root / base_name).resolve()
-    try:
-        destination.relative_to(books_root)
-    except ValueError as exc:
-        raise ValueError("保存先が不正です") from exc
-
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    destination = _unique_destination_path(destination)
-    destination.write_bytes(content)
-    return destination
 
 
 def _resolve_pdf_file_or_404(pdf_path: str, books_dir: Path) -> Path:
@@ -1532,7 +1513,12 @@ async def upload_pdf(request: Request, filename: str = "", relative_path: str = 
         return PlainTextResponse("PDF 以外は受け付けません", status_code=400)
 
     try:
-        saved = save_uploaded_pdf(filename, content, books_dir, relative_path=relative_path or None)
+        saved = pdf_import_service.save_uploaded_pdf(
+            filename,
+            content,
+            books_dir,
+            relative_path=relative_path or None,
+        )
     except Exception as exc:
         return PlainTextResponse(str(exc), status_code=400)
 
