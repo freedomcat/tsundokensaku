@@ -1,8 +1,33 @@
 # 中心ファイルの責務棚卸しと段階的分割設計
 
-対象: `src/tsundokensaku/web.py`（1994行、`paths.py`・`config.py`分離後）・`src/tsundokensaku/database.py`（1922行、未着手）
+対象: `src/tsundokensaku/web.py`（1743行、R2・R3・R4・R6分離後）・`src/tsundokensaku/database.py`（1922行、責務分離は未着手）
 位置づけ: ROADMAP「Phase 5着手前: 構造改善と回帰保証」の「構造と依存関係の棚卸し」の成果物
-状態: 段階0（パス解決の一元化、0a・0bとも）・段階2（設定・環境変数解決、R2）は実装済み（コミット `7f7e6ddaa9089b75f0c07a2b11f92abcd9a55b3f`・`20a04417b8c58b4a828964e3199e9d51d4dd3643`・R2マージコミット `590c96a01dd12c70e2248c5e54dac6d6fddd2be9`）。段階1・段階3以降は未着手・本体コード未変更。本文書は段階0・R2完了を踏まえ、次に着手する責務（R4：検索結果整形）を選定するための再調査版（2026-07-29時点）。
+状態: `web.py`系列はR2（`config.py`）・R3（`paths.py`）・R4（`search_view.py`）・R6（`index_job.py`）が完了。R1・R9はHTTP層として分離不要、R5・R7・R8は未実装。`database.py`系列（D1〜D7）は未実装。現在状態は2026-08-01、`develop`のコミット `87c890ca5ba4162053e8af9a8030de251bc026a1`で確認した。
+
+### 番号体系とROADMAPとの対応
+
+- R番号は`web.py`の**責務識別子**、D番号は`database.py`の**責務識別子**であり、実施順を表さない。
+- §8の「段階」は策定当時の移行計画上の順序である。`web.py`系列と`database.py`系列は別系列で技術的に独立しているため、段階番号どおりに実施する必要はなく、実際の完了順とも一致しない。
+- 技術的な責務境界・依存関係は本文書を正本とし、ROADMAP「Phase 5着手前: 構造改善と回帰保証」には次の進捗要約を載せる。
+
+| 識別子 | 正式名称 | 分離先・配置 | 状態 | ROADMAPの対応 |
+|---|---|---|---|---|
+| R1 | アプリ初期化・静的資産 | `web.py`に維持 | 分離不要 | `web.py`の責務分離 |
+| R2 | 設定・環境変数の解決 | `config.py` | 完了 | `web.py`の責務分離 |
+| R3 | パス解決・URL生成 | `paths.py` | 完了 | `web.py`の責務分離 |
+| R4 | 表示整形中心の責務（検索結果整形） | `search_view.py` | 完了 | `web.py`の責務分離 |
+| R5 | ライブラリ/統計の集計 | `books_repo.py`側へ寄せる候補（`database.py`系列へ合流） | 候補のみ | `web.py`の責務分離 |
+| R6 | インデックスジョブ | `index_job.py` | 完了 | `web.py`の責務分離 |
+| R7 | ファイル入出力・取り込み | `pdf_service.py`候補 | 設計済み・未実装 | `web.py`の責務分離 |
+| R8 | エクスポート業務ロジック | `export_service.py`候補 | 設計済み・未実装 | `web.py`の責務分離 |
+| R9 | ルートハンドラ | `web.py`に維持 | 分離不要 | `web.py`の責務分離 |
+| D1 | レコード定義 | `records.py`候補 | 設計済み・未実装 | `database.py`の責務分離 |
+| D2 | 接続管理 | 分離先未定 | 候補のみ | `database.py`の責務分離 |
+| D3 | スキーマ初期化・保証・移行 | `schema.py`候補 | 設計済み・未実装 | `database.py`の責務分離 |
+| D4 | 書籍・ページ・メモ・ノートの永続化 | `books_repo.py`候補 | 候補のみ | `database.py`の責務分離 |
+| D5 | 検索 | `search_repo.py`候補 | 候補のみ | `database.py`の責務分離 |
+| D6 | 資料（pack）と資料項目 | `packs_repo.py`候補 | 候補のみ | `database.py`の責務分離 |
+| D7 | エクスポート履歴 | `export_events_repo.py`候補 | 設計済み・未実装 | `database.py`の責務分離 |
 
 ---
 
@@ -24,8 +49,8 @@
 ### 前提（確認済み）
 
 - 個人開発・ローカル利用が中心。SQLite単一ファイル、追加サーバープロセスなし。
-- すでに多くの処理が専用モジュールへ分離済み: `export_profiles` / `export_stats` / `pdf_export` / `pdf_extract` / `pdf_outline` / `pdf_thumbnail` / `markdown_export` / `metadata` / `tokenizer` / `token_estimate` / `zip_export` / `indexer` / `paths`（段階0で新設）/ `config`（段階2で新設）。残る大物が `web.py` と `database.py` の2つ。
-- 回帰の安全網は厚い: `tests/test_web.py`（3647行、FastAPI TestClient 経由。段階0でパス関連23件・R2で設定関連15件を追加）・`tests/test_database.py`（1236行）。Playwright は5 spec・29テスト。
+- すでに多くの処理が専用モジュールへ分離済み: `export_profiles` / `export_stats` / `pdf_export` / `pdf_extract` / `pdf_outline` / `pdf_thumbnail` / `markdown_export` / `metadata` / `tokenizer` / `token_estimate` / `zip_export` / `indexer` / `paths`（R3）/ `config`（R2）/ `search_view`（R4）/ `index_job`（R6）。残る大物が `web.py` と `database.py` の2つ。
+- 回帰の安全網は厚い: `tests/test_web.py`（4295行、FastAPI TestClient経由）・`tests/test_database.py`（1236行）・`tests/test_search_view.py`（88行）・`tests/test_index_job.py`（168行）。2026-08-01時点のテスト定義はPython 481件、Playwright 29件。
 - CI（`.github/workflows/ci.yml`）は Python unittest と Playwright の両方を別jobで実行済み（ROADMAP Must「Playwright テストの CI 実行」は2026-07-26完了）。
 
 ---
@@ -33,18 +58,19 @@
 ## 2. 現在の構造
 
 ```
-web.py (1994)  ── database から27個の関数/定数をimport
+web.py (1743)  ── database から27個の関数/定数をimport
    │            ── metadata / export_profiles / export_stats / indexer
    │            ── markdown_export / pdf_export / pdf_outline / pdf_thumbnail
-   │            ── token_estimate / tokenizer / zip_export / paths / config
+   │            ── token_estimate / tokenizer / zip_export
+   │            ── paths / config / search_view / index_job
    │
    ├─ FastAPI app 初期化・テンプレート・静的配信
    ├─ 環境変数/設定の解決（books_dir, db_path, demo_mode ...）── 段階2で `config.py` へ実体移動済み。
    │  web.py側は `config.xxx()` を呼ぶだけの薄い委譲ラッパー（既存133箇所超のmonkeypatch互換のため関数として残置）
-   ├─ 純粋な整形ロジック（検索結果行, ハイライト, scrapbox本文組立）
+   ├─ 検索結果整形 ── R4で `search_view.py` へ実体移動済み。web.py側は薄い委譲ラッパー
+   ├─ インデックスジョブ ── R6で `index_job.py` へ完全移動済み。互換ラッパーなし
    ├─ ファイル操作（アップロード保存, env書き込み, PDFエクスポート保存）
    ├─ 生SQL集計（get_db_stats, get_library_items 内で connection.execute）★
-   ├─ インデックスジョブ（threading + 進捗状態のグローバル辞書）
    ├─ エクスポートのプレビュー/アーカイブ組立（業務ロジック）
    └─ 約40本のルートハンドラ（HTTP層）
 
@@ -67,7 +93,7 @@ ARCHITECTURE.md には `database.py` を「資料棚の永続化」と記載し�
 
 ## 3. web.py の責務一覧
 
-行番号は特記のない限り2026-07-29時点（develop / `590c96a`、R2完了後）のもの。R2・R3・R7・R8・R9は今回の再調査で現在の行番号に更新済み。分類は変更理由（＝いつ書き換わるか）で行う。
+分類は変更理由（＝いつ書き換わるか）で行う。各節の「主な定義」「テスト状況」と行番号は、特記のない限り2026-07-29のR2完了時点（develop / `590c96a`）に行った分離前調査の歴史的記録であり、現在の所在・件数を示すものではない。現在の完了状態と配置は冒頭の対応表を正とする。
 
 ### R1. アプリ初期化・静的資産（HTTP層に残す）
 
@@ -90,9 +116,11 @@ ARCHITECTURE.md には `database.py` を「資料棚の永続化」と記載し�
 - 依存: ファイルシステム、`CONTAINER_BOOKS_DIRS`。
 - 判断: `resolve_pdf_path` は `export_stats._resolve_pdf_path` と意図的に複製されている（web.py 469-471 の TODO(phase3b-path-resolution-dedup) が明記。循環import回避のため）。**この重複解消がパス層を切り出す主目的**。`paths.py`（仮）へ集約すれば export_stats からも参照でき、循環importも起きない。**リスク: 中**（パストラバーサル検証を含むため、切り出し時にセキュリティ回帰テストで固定する）。
 
-### R4. 表示整形中心の責務（分離候補・次に選定。§8参照）
+### R4. 表示整形中心の責務（検索結果整形）— 完了（PR #14・#16）
 
-- 主な定義（現在の行番号、2026-07-29時点）: `highlight_query`（166）、`format_indexed_at`（189）、`_now_jst`（198、複数責務から参照される横断的ユーティリティ。下記参照）、`_sanitize_scrapbox_title`（202、内部補助）、`build_scrapbox_page_url`（209）、`_scrapbox_page_label`（216、内部補助）、`build_search_result_rows`（223）、`finalize_search_result_rows`（269）、`normalize_search_group`（291）、`normalize_search_match`（309）、`build_search_result_rows_context`（326）、`build_search_scrapbox_body`（380）、`sort_results`（485）、`group_pdf_results`（495）。
+PR #14（マージコミット `6b6527800af330aa98818de87aea5c8cbbe9964e`）で`search_view.py`へ分離し、PR #16（マージコミット `bd71d8284761a78ebdc928e60cc43412ac4c9547`）で残存する境界契約のテストを補完した。`web.py`には既存importとの互換性を保つ薄い委譲ラッパーを維持している。以下は分離前調査と実装時の設計記録である。
+
+- 分離前の主な定義（2026-07-29時点）: `highlight_query`（166）、`format_indexed_at`（189）、`_now_jst`（198、複数責務から参照される横断的ユーティリティ。下記参照）、`_sanitize_scrapbox_title`（202、内部補助）、`build_scrapbox_page_url`（209）、`_scrapbox_page_label`（216、内部補助）、`build_search_result_rows`（223）、`finalize_search_result_rows`（269）、`normalize_search_group`（291）、`normalize_search_match`（309）、`build_search_result_rows_context`（326）、`build_search_scrapbox_body`（380）、`sort_results`（485）、`group_pdf_results`（495）。
 - 依存: `tokenizer`（`query_highlight_terms`）、`metadata`（`get_scrapbox_project_url`・`metadata_for_pdf`・`BookMetadata`）、`paths`（`raw_pdf_url`経由。内部で`resolve_pdf_path`→ファイルの実存確認 `is_file()` を行う）、`datetime`/`zoneinfo`（`_now_jst`経由の現在時刻）。
 - **訂正（旧記述の誤り、2回目の再調査で判明）**:
   1. `_page_snippet`（772）は本節の対象ではない。PDF内テキスト検索のスニペット生成専用で、`search_book_pages`（R7）からのみ呼ばれる。
@@ -109,38 +137,40 @@ ARCHITECTURE.md には `database.py` を「資料棚の永続化」と記載し�
   - `_sanitize_scrapbox_title`（202行目）: `build_search_scrapbox_body`からのみ呼ばれるR4専用の内部補助関数（他の呼び出し元なし、grep確認済み）。実装は「連続空白を1個へ正規化→前後空白除去→改行(`\n`/`\r`)を半角空白へ置換→`/`を全角`／`へ置換→`max_length`（既定80文字）で切り詰め→結果が空文字なら`"検索結果"`を返す」。**`search_view.py`へ完全移動する対象に含める**。
   - `_now_jst`（198行目）: `build_search_scrapbox_body`（380行目）だけでなく、`render_markdown_export`（R7、835行目）、`_export_pack_json`（R8、1414行目）、`_export_pack_archive`（R8、1453行目）からも呼ばれる**横断的ユーティリティ**（JST基準の現在時刻取得）。R4専用に`search_view.py`へ完全移動すると、R7/R8が`search_view.py`に依存することになり、責務のまとまりを新たに壊す。**`web.py`に残し、`search_view.py`側には同一実装（`datetime.now(ZoneInfo("Asia/Tokyo"))`、1行）を複製する**方針とする（詳細は§8「段階3」）。将来的にR7/R8も含めた日時ユーティリティの一本化は今回の対象外とし、必要になった段階で別PRとして検討する。
 - 判断: 上記の発見を踏まえ、`search_view.py`（仮）へ移す対象は**DB非依存の12関数**（旧11関数＋`_sanitize_scrapbox_title`、`_now_jst`は複製）に絞り、`build_search_result_rows_context`は`web.py`側に残す（§8「段階3」で詳細化）。**リスク: 低〜中**（副作用が完全にゼロではないため、characterization testでの固定が前提）。
-- テスト状況（現在の実態）: 直接単体テストがある関数は `highlight_query`（5件）、`group_pdf_results`（1件）、`format_indexed_at`（1件）、`build_scrapbox_page_url`（1件）、`normalize_search_match`（3件）、`normalize_search_group`（2件）、`build_search_scrapbox_body`（3件）の**7関数**。`_now_jst`も`tests/test_web.py`から直接importされているが専用テストはなく、他関数のテスト内で暗黙に使われる程度。**直接単体テストがない関数**: `build_search_result_rows`、`finalize_search_result_rows`、`sort_results`、`_sanitize_scrapbox_title`、`_scrapbox_page_label`（いずれもHTTP経由の統合テストでのみ間接的に検証）。既存テストはいずれも`tests/test_web.py`の`HighlightQueryTest`クラス（75〜920行、PDF関連・ルートハンドラ系テストも同居する大きめのクラス）内に存在する。monkeypatch対象は0件（直接importして呼ぶため）。
+- 分離前のテスト状況: 直接単体テストがある関数は `highlight_query`（5件）、`group_pdf_results`（1件）、`format_indexed_at`（1件）、`build_scrapbox_page_url`（1件）、`normalize_search_match`（3件）、`normalize_search_group`（2件）、`build_search_scrapbox_body`（3件）の**7関数**。`_now_jst`も`tests/test_web.py`から直接importされているが専用テストはなく、他関数のテスト内で暗黙に使われる程度。**直接単体テストがない関数**: `build_search_result_rows`、`finalize_search_result_rows`、`sort_results`、`_sanitize_scrapbox_title`、`_scrapbox_page_label`（いずれもHTTP経由の統合テストでのみ間接的に検証）。既存テストはいずれも`tests/test_web.py`の`HighlightQueryTest`クラス（75〜920行、PDF関連・ルートハンドラ系テストも同居する大きめのクラス）内に存在する。monkeypatch対象は0件（直接importして呼ぶため）。
 
 ### R5. ライブラリ/統計の集計（分離候補・生SQL漏れ）★
 
-- 主な定義（現在の行番号）: `get_pdf_stats`（480）、`get_db_stats`（541）、`get_library_items`（563）。
+- 主な定義（2026-07-29調査時）: `get_pdf_stats`（480）、`get_db_stats`（541）、`get_library_items`（563）。
 - 依存: `connect`、**web.py 内で生SQL `connection.execute("SELECT COUNT(*) ...")` を直接実行**、`metadata`。
 - 判断: 集計SQLが HTTP 層に漏れている。生SQLは `database.py`（またはその後継の書籍ドメインモジュール）へ移し、web.py は集計済み値を受け取る形にする。**リスク: 中**（`get_library_items` は metadata と URL 生成も混ぜており、DB集計部分だけを先に押し出す）。
 
-### R6. インデックスジョブ（分離候補・状態を持つ）
+### R6. インデックスジョブ — 完了（PR #17・#18）
 
-- 主な定義（現在の行番号）: `_set_index_progress`（423）、`_get_index_progress`（436）、`_run_index_job`（441）、`INDEX_PROGRESS`/`INDEX_PROGRESS_LOCK`（モジュール変数、117-125）。
+PR #17（マージコミット `2c45ed1a245c2cb6ef29a924e2e31b2c3e5db06e`）で既存挙動を固定し、PR #18（マージコミット `52e9f7540026efbef1228af315893818883fac40`）で`index_job.py`へ分離した。`web.py`に互換ラッパーは残していない。以下は分離前調査と実装時の設計記録である。
+
+- 分離前の主な定義（2026-07-29調査時）: `_set_index_progress`（423）、`_get_index_progress`（436）、`_run_index_job`（441）、`INDEX_PROGRESS`/`INDEX_PROGRESS_LOCK`（モジュール変数、117-125）。
 - 依存: `threading`、`indexer.index_books`、`config.get_books_dir`/`config.get_db_path`（`web.py`のラッパー経由）。
-- テスト状況（現在の実態）: `_run_index_job`・`_set_index_progress`・`_get_index_progress`・`/settings/index`・`/settings/progress`いずれも`tests/test_web.py`に直接テストなし（今回の再調査でも変化なし）。
-- 判断: バックグラウンド実行の進捗をグローバル辞書＋ロックで保持。HTTP層から切り離して `index_job.py`（仮）へ。**リスク: 中**（グローバル状態のライフサイクル。プロセス内シングルトン前提を崩さないこと）。テストがゼロからの追加になるため、R4より着手コストが高い（§8参照）。
+- 分離前のテスト状況: `_run_index_job`・`_set_index_progress`・`_get_index_progress`・`/settings/index`・`/settings/progress`はいずれも`tests/test_web.py`に直接テストがなかった。
+- 分離前の判断: バックグラウンド実行の進捗をグローバル辞書＋ロックで保持していたため、HTTP層から切り離して`index_job.py`へ移す方針とした。**リスク: 中**（グローバル状態のライフサイクル。プロセス内シングルトン前提を崩さないこと）。当時はテストをゼロから追加する必要があり、R4より着手コストが高いと評価した（§8参照）。
 
 ### R7. ファイル入出力・取り込み（分離候補）
 
-- 主な定義（現在の行番号）: `import_pdfs_from_directory`（619）、`save_uploaded_pdf`（659）、`_resolve_pdf_file_or_404`（679）、`render_pdf_export`（687）、`save_pdf_export_to_configured_dir`（701）、`_get_indexed_book`（724）、`load_pages_text`（743）、`_page_snippet`（772、内部補助。旧記述ではR4に誤分類していたが本節が正しい所属）、`search_book_pages`（784）、`render_markdown_export`（815）、`resolve_pdf_scrapbox_url`（840）、`import_scrapbox_export_bytes`（863）。
+- 主な定義（2026-07-29調査時）: `import_pdfs_from_directory`（619）、`save_uploaded_pdf`（659）、`_resolve_pdf_file_or_404`（679）、`render_pdf_export`（687）、`save_pdf_export_to_configured_dir`（701）、`_get_indexed_book`（724）、`load_pages_text`（743）、`_page_snippet`（772、内部補助。旧記述ではR4に誤分類していたが本節が正しい所属）、`search_book_pages`（784）、`render_markdown_export`（815）、`resolve_pdf_scrapbox_url`（840）、`import_scrapbox_export_bytes`（863）。
 - 依存: ファイルシステム、`pdf_export` / `markdown_export` / `pdf_extract`、`database`（`connect`・`get_book`・`sync_memos`・`sync_kindle_books`・`initialize`）、`config`（`web.py`のラッパー経由）。
 - テスト状況: `save_uploaded_pdf`・`import_pdfs_from_directory`・`save_pdf_export_to_configured_dir`・`render_markdown_export`・`resolve_pdf_scrapbox_url`・`import_scrapbox_export_bytes`はHTTP経由の統合テストで間接的に参照されるが、`render_pdf_export`・`load_pages_text`・`search_book_pages`・`_get_indexed_book`は直接参照なし。monkeypatch対象は0件。
 - 判断: 「PDFファイルに対する業務操作」。R3のパス層に依存する。`pdf_service.py`（仮）へ集約候補だが、粒度が大きいので後半の段階に回す。**リスク: 中〜高**（アップロード・保存の副作用。デモモード制御と絡む）。
 
 ### R8. エクスポート業務ロジック（分離候補）
 
-- 主な定義（現在の行番号）: `_export_preview_warning`（1229）、`build_export_preview_warnings`（1233）、`_preview_base_stats`（1272）、`build_export_preview_payload`（1291）、`build_export_preview_payload_for_profile`（1300）、`_export_pack_json`（1396）、`_placeholder_item_stats_for_export`（1422）、`_export_pack_archive`（1442）、`_resolve_export_profile_or_400`（1539）。
+- 主な定義（2026-07-29調査時）: `_export_preview_warning`（1229）、`build_export_preview_warnings`（1233）、`_preview_base_stats`（1272）、`build_export_preview_payload`（1291）、`build_export_preview_payload_for_profile`（1300）、`_export_pack_json`（1396）、`_placeholder_item_stats_for_export`（1422）、`_export_pack_archive`（1442）、`_resolve_export_profile_or_400`（1539）。
 - 依存: `export_profiles`, `export_stats`, `zip_export`, `database`（pack取得）。
 - テスト状況: `build_export_preview_warnings`・`build_export_preview_payload`・`build_export_preview_payload_for_profile`は`BuildExportPreviewPayloadTest`等の専用クラスで直接検証されている（非常に厚い）。`_preview_base_stats`・`_export_pack_json`・`_export_pack_archive`・`_placeholder_item_stats_for_export`・`_resolve_export_profile_or_400`は直接単体テストがなく、`PackExportPreviewTest`等HTTP経由の統合テストでのみ検証される。monkeypatch対象は0件。
 - 判断: HTTP層とプレゼンテーションの中間にある業務ロジック。`export_service.py`（仮）へ。ただし `_resolve_export_profile_or_400` は HTTPException を投げるため HTTP寄り。**リスク: 中**。
 
 ### R9. ルートハンドラ（HTTP層に残す）
 
-- 主な定義: 約40本の `@app.get/post/put/patch/delete`（886〜1993、現在の行番号）。ページ表示（`home`, `search_page`, `workspace_page`, `pack_list_page`, `settings_page` ...）、pack API（`api_*`）、PDF系（`open_pdf`, `pdf_outline`, `pdf_thumbnails`, `export_pdf`, `export_markdown`, `view_pdf` ...）、設定系（`upload_pdf`, `run_index`, `settings_progress` ...）。
+- 主な定義（2026-07-29調査時）: 約40本の `@app.get/post/put/patch/delete`（886〜1993）。ページ表示（`home`, `search_page`, `workspace_page`, `pack_list_page`, `settings_page` ...）、pack API（`api_*`）、PDF系（`open_pdf`, `pdf_outline`, `pdf_thumbnails`, `export_pdf`, `export_markdown`, `view_pdf` ...）、設定系（`upload_pdf`, `run_index`, `settings_progress` ...）。
 - 判断: ルーティング・入力検証・レスポンス生成は HTTP層に残す。ただし body に混ざった業務処理を R4〜R8 の各サービスへ委譲し、ハンドラを薄くする。将来的に `APIRouter` で機能別分割も可能だが、**今回の対象外**（後回し可）。
 
 ### 補助（デモモード制御）
@@ -313,10 +343,10 @@ graph TD
 
 | 候補モジュール | 担当責務 | 移動元 | 主な対象 | 依存先 | 呼び出し元 | 先行/後回し |
 |---|---|---|---|---|---|---|
-| `paths.py` ★ | パス解決・PDF URL生成・一意保存先 | web R3 | `resolve_pdf_path`, `pdf_url`, `raw_pdf_url`, `_unique_*` | fs, config | web, export_stats | **完了**（コミット `7f7e6dd` ・ `20a0441`） |
+| `paths.py` ★ | パス解決・PDF URL生成・一意保存先 | web R3 | `resolve_pdf_path`, `pdf_url`, `raw_pdf_url`, `_unique_*` | fs | web, export_stats | **完了**（コミット `7f7e6dd`・`20a0441`） |
 | `config.py` | 環境変数・設定解決・.env書込 | web R2 | `get_books_dir`, `get_db_path`, `get_pdf_export_save_dir`, `is_demo_mode`, `update_env_setting` | os, fs, metadata | web | **完了**（コミット `590c96a`） |
-| `search_view.py` | 検索結果の整形・ハイライト・並替 | web R4 | `build_search_result_rows*`, `highlight_query`, `group_pdf_results`, `normalize_*` | tokenizer, metadata, paths | web | **次に選定**（段階3、§8参照） |
-| `index_job.py` | インデックスのバックグラウンド実行と進捗 | web R6 | `_run_index_job`, `_*_index_progress`, 進捗グローバル | threading, indexer, config | web | 中盤 |
+| `search_view.py` | 表示整形中心の責務（検索結果整形） | web R4 | `build_search_result_rows*`, `highlight_query`, `group_pdf_results`, `normalize_*` | tokenizer, metadata, paths | web | **完了**（PR #14・#16） |
+| `index_job.py` | インデックスジョブ | web R6 | `_run_index_job`, `_*_index_progress`, 進捗グローバル | threading, indexer, config | web | **完了**（PR #17・#18） |
 | `export_service.py` | エクスポートのプレビュー/アーカイブ組立 | web R8 | `build_export_preview_*`, `_export_pack_archive`, `_export_pack_json` | export_profiles, export_stats, zip_export, packs_repo | web | 中盤 |
 | `pdf_service.py` | PDFファイルに対する業務操作・取り込み | web R7 | `save_uploaded_pdf`, `render_pdf_export`, `load_pages_text`, `search_book_pages` ほか | paths, pdf_*, books_repo, config | web | 後半（副作用大） |
 | `schema.py` ★ | スキーマ初期化・保証・移行 | db D3 | `initialize`, `_ensure_*_schema`, `_migrate_*`, `_backfill_*` | sqlite3, records | 各repo, cli | **中核**（DB分割の起点） |
@@ -332,9 +362,11 @@ graph TD
 
 ---
 
-## 8. 段階的な移行順
+## 8. 段階的な移行計画（歴史的記録）
 
 前提: 1 PR = 1 責務の移動。既存の公開URL・HTTP API・画面表示・DBスキーマは不変。移動元には**委譲ラッパーを残し**、`from tsundokensaku.database import X` 等の既存importを壊さない。各段階でロールバックは「その PR を revert」で完結する（スキーマ不変のため）。
+
+本節の段階番号は策定当時の移行計画を参照するために維持する。R/D番号は責務識別子であり、段階番号とは別体系である。また、R6では設計判断により互換ラッパーを残さず、`web.py`系列を`database.py`系列より先行させたため、本節冒頭の共通方針や順序を現在の状態・次の着手順として読まないこと。現在状態は冒頭の対応表を正とする。
 
 **着手前提（ROADMAP Must）**: Playwright の CI 実行・テスト戦略明文化を先に整える。ただし本移行の各段階は Python の TestClient テストが主な安全網であり、UI変更を伴わないため Playwright は「無変更の確認」用途。
 
@@ -358,7 +390,7 @@ graph TD
 - 結果: Python全件396件成功。循環importなし（`paths.py` は他のtsundokensakuモジュールに依存しない。`export_stats.py` は `web.py` をimportしない）。
 - 次段階条件（達成済み）: `export_stats` のTODO(phase3b-path-resolution-dedup)が解消し、全テストが緑。
 
-### 次に切り出す責務の比較（R2完了時点での再評価、2026-07-29）
+### R2完了時点での次責務の比較（2026-07-29の歴史的記録）
 
 段階0・R2完了後、`web.py` に残る主要候補（R4・R6・R7・R8）を、現在のコード・テストの実態に基づいて再比較した。R2は完了済みのため比較対象から外す（実績は§8「段階2」参照）。R3も完了済み（段階0）。R5・R9は独立性が低い（R5はDB集計の切り出し先がdatabase.py寄りでweb.py側の切り出し効果が薄い、R9はHTTP層そのもので分離候補ではない）ため、現実的な次の候補として比較を広げすぎず、R4・R6・R7・R8の4件に絞った。
 
@@ -383,7 +415,7 @@ R4は当初「純粋関数群」と評価していたが、依存クロージャ
 | 循環importリスク | **依存クロージャ（`_sanitize_scrapbox_title`・`_scrapbox_page_label`・`_now_jst`複製）を閉じれば低**（`build_search_result_rows_context`を含めるとdatabase依存が入るため対象から除外する設計とする） | 低 | 中（複数モジュールを跨ぐ） | 低〜中 |
 | 将来の分離を容易にする効果 | 高（R5の生SQL集計切り出し時、整形と集計の境界が明確になる） | 中 | 中 | 中 |
 
-**選定: R4（検索結果整形）を次の実装PRで `search_view.py` へ切り出す。**
+**当時の選定: R4（検索結果整形）を次の実装PRで `search_view.py` へ切り出す。** この選定は実装済みであり、現在の次候補を示すものではない。
 
 選定理由:
 
@@ -404,7 +436,7 @@ R4は当初「純粋関数群」と評価していたが、依存クロージャ
 
 「一番価値が高そう」ではなく「現在の段階で一番安全に独立したPRとして実施できるもの」という基準で選ぶと、DB非依存・FastAPI非依存・monkeypatch影響ゼロ・既存テスト充実度が高いR4が最も安全である。
 
-### 段階1: レコード定義の切り出し（低リスク）
+### 段階1: レコード定義の切り出し（低リスク、計画時の候補・未実装）
 
 - 責務: D1 → `records.py`。`database.py` は re-export。
 - 回帰テスト: 全 Python（import経路の確認）。
@@ -422,9 +454,9 @@ R4は当初「純粋関数群」と評価していたが、依存クロージャ
 - ロールバック: PR revert（ラッパー方式のため即座に可逆）。実際には未実施。
 - 次段階条件（達成済み）: `tsundokensaku.web`から`get_books_dir`等が引き続きimportできる、`config.py`が`web.py`を含む他モジュールをimportしない。
 
-### 段階3: 検索結果整形の切り出し（次の実装PRとして選定・設計のみ）
+### 段階3: 検索結果整形の切り出し — 完了（R4、PR #14・#16）
 
-上記比較で選定した、次に着手すべき責務。**このセクションは設計であり、本体コードは未変更。**
+PR #14で`search_view.py`へ分離し、PR #16で残存する境界契約のテストを補完して完了した。以下は実装前に作成した設計記録であり、「予定」「次の実装PR」などの表現は当時の計画を示す。
 
 - **PRの目的**: `web.py` に残る「検索結果の整形・ハイライト・並替」責務を独立した `search_view.py` へ移動し、`web.py` を薄くする。ただしR4は純粋関数群ではなく副作用が比較的小さい表示整形中心の責務であるため（§3参照）、依存と現在挙動をcharacterization testで固定したうえで移動する。
 - **対象責務**: R4のうち、DB非依存の12関数（旧11関数＋依存クロージャを閉じるための`_sanitize_scrapbox_title`）。`_now_jst`は複製、`build_search_result_rows_context`は対象外（いずれも下記参照）。
@@ -535,7 +567,7 @@ R4は当初「純粋関数群」と評価していたが、依存クロージャ
 - 対象12関数の移動が1PRに収まらない（依存関係の見落としで対象が想定より大きく広がった場合）
 - Python全件またはPlaywright全件が失敗する（Playwrightの`.ws-book`関連flaky testについては下記「Playwright flaky testとの関係」を参照し、同一パターンの一度きりの失敗で即座に回帰と断定しない）
 
-### 段階4: スキーマ関心事の切り出し ★（DB分割の中核）
+### 段階4: スキーマ関心事の切り出し ★（DB分割の中核、計画時の候補・未実装）
 
 - 責務: D3 → `schema.py`。`initialize` などは `database.py` から re-export。
 - 変更対象: `schema.py`、`database.py`（移動＋re-export）。**SQLは1文字も変えない（純粋な移動）**。
@@ -544,7 +576,7 @@ R4は当初「純粋関数群」と評価していたが、依存クロージャ
 - ロールバック: PR revert。
 - 次段階条件: 新規DB作成・既存DB起動の双方でスキーマ保証が従来通り。
 
-### 段階5: エクスポート履歴 repo の切り出し（小さく独立）
+### 段階5: エクスポート履歴 repo の切り出し（小さく独立、計画時の候補・未実装）
 
 - 責務: D7 → `export_events_repo.py`。database.py は re-export。
 - 回帰テスト: エクスポート履歴の TestClient / DB テスト。
@@ -732,13 +764,17 @@ TOCTOU競合（running確認からthread開始までの競合）の解消、atom
 
 - ロールバック: PR revert（互換ラッパーを残さないためA案より復元範囲は広いが、2PR構成のうちPR2のみのrevertで完結する。PR1のテスト追加は移動と独立して残しても害はない）。
 
-### 段階7: エクスポート業務ロジックの切り出し
+### R6完了後の未実装責務（現在）
+
+`web.py`系列ではR5（ライブラリ/統計の集計）・R7（ファイル入出力・取り込み）・R8（エクスポート業務ロジック）が未実装である。`database.py`系列のD1〜D7も未実装で、両系列は実施順に依存しない。策定当時は下記の段階7・8以降を候補としていたが、R6完了後の次の実装対象は再評価しておらず、着手順は未確定とする。
+
+### 段階7: エクスポート業務ロジックの切り出し（計画時の候補・未実装）
 
 - 責務: R8 → `export_service.py`。`_resolve_export_profile_or_400` の HTTPException はハンドラ側に残す（HTTP関心事）。
 - 回帰テスト: pack export preview / zip / markdown の TestClient テスト（既存が厚い）。
 - ロールバック: PR revert。
 
-### 段階8以降（後回し可・効果を見て判断）
+### 段階8以降（計画時の候補・未実装）
 
 - R5（生SQL集計）→ 集計SQLを `books_repo` へ寄せ、web.py は値を受け取る。
 - R7（`pdf_service`）→ 副作用が大きいので最後。
@@ -755,13 +791,13 @@ TOCTOU競合（running確認からthread開始までの競合）の解消、atom
 - Playwright は本移行では「UI無変更の確認」用途。CI化（ROADMAP Must）が済んでいれば各段階で自動確認できる。未了なら段階ごとにローカル実行。
 - テストコードの移動・改名は本移行に含めない（挙動を変えない移動に集中）。
 
-### Playwright flaky testに関する注意事項
+### Playwright flaky testに関する注意事項（R4実装時の歴史的記録）
 
 `.ws-book`セレクタの表示待機（`toHaveCount`）と`pack-store.js`の非同期保存処理（`pushToServer`）が競合する既存のflaky挙動が確認されている（R2のPR #12で`ai_export_flow.spec.js`が1件timeout、developの過去コミットでも`search_multiple_adds.spec.js`が同一のエラーシグネチャ・同一の「28 passed / 1 failed」で失敗した実績があり、次のpushでは成功に戻っている）。これは資料机（workspace）画面のクライアント側状態管理に起因し、段階3（検索結果整形）を含むいずれの`web.py`責務分離作業とも直接の関係はない。
 
 - 段階3（検索結果整形）のPlaywright依存specは`ai_export_flow.spec.js`・`pdf_modal_overlay.spec.js`・`workspace_add_pdf.spec.js`・`search_multiple_adds.spec.js`が検索画面を経由するが、これらは検索結果の内容そのものではなく`.ws-book`表示待機・PDFモーダル・保存競合を検証するテストであり、R4の整形ロジック移動とは独立している。
-- 次の実装PR（段階3）では、このflaky testの修正を同時に行わない。修正は別PRで扱う。
-- 次の実装PRでPlaywrightが`.ws-book`関連の同一パターンで一度だけ失敗した場合、即座に回帰と断定せず、develop上の過去の同型失敗（同一セレクタ・同一`toHaveCount`タイムアウト・異なるテストファイル間での再現）を踏まえてログを調査すること。
+- R4実装PR（段階3）では、このflaky testの修正を同時に行わず、別PRで扱う方針とした。
+- R4実装PRでPlaywrightが`.ws-book`関連の同一パターンで一度だけ失敗した場合は、即座に回帰と断定せず、develop上の過去の同型失敗（同一セレクタ・同一`toHaveCount`タイムアウト・異なるテストファイル間での再現）を踏まえてログを調査する方針とした。
 
 ---
 
@@ -771,7 +807,7 @@ TOCTOU競合（running確認からthread開始までの競合）の解消、atom
 
 - **R3/段階0**: パストラバーサル対策のコードを移動するため、切り出しミスがセキュリティ回帰に直結。単体テストで固定してから移動する。
 - **R4/段階3**: `build_search_result_rows_context`のみR4の他12関数と異なりDB接続（`database.connect`/`database.search`）を伴う。「R4はDB非依存」という前提のまま`search_view.py`へ丸ごと移すと、`search_view.py`が`database`に依存し、目標依存図（§6、`searchv --> paths`のみ）と矛盾する。この関数は`web.py`側に残し、内部呼び出しは`search_view`を直接importせず`web.py`内の委譲ラッパー経由のまま維持する設計にすることで、循環importと将来のmonkeypatch非互換の両方のリスクを避ける（§8「段階3」に反映済み）。
-- **R4/段階3（依存クロージャ）**: `build_search_scrapbox_body`が`_now_jst`（R7/R8からも呼ばれる横断的ユーティリティ）と`_sanitize_scrapbox_title`（R4専用の内部補助）に依存しており、独立レビューの指摘まで対象関数リストから漏れていた。`_sanitize_scrapbox_title`は`search_view.py`へ完全移動、`_now_jst`は`web.py`に残し`search_view.py`側に複製する方針とした（§3・§8参照）。次の実装PRでは、この依存クロージャがこれ以外に漏れていないかを実装本文の精読で再確認すること。
+- **R4/段階3（依存クロージャ、完了時の記録）**: `build_search_scrapbox_body`が`_now_jst`（R7/R8からも呼ばれる横断的ユーティリティ）と`_sanitize_scrapbox_title`（R4専用の内部補助）に依存しており、独立レビューの指摘まで対象関数リストから漏れていた。`_sanitize_scrapbox_title`は`search_view.py`へ完全移動し、`_now_jst`は`web.py`に残して`search_view.py`側に複製した（§3・§8参照）。
 - **R6/段階6**: インデックス進捗はグローバル辞書＋ロック。プロセス内シングルトン前提を崩すと進捗表示が壊れる。
 - **D3/段階4**: スキーマ保証・移行は起動時に毎回走る冪等処理。移動時にSQLや実行順を変えないこと。実行順を変えると既存DBの移行が壊れる恐れ。
 - **D4-D6/後半**: 同一トランザクションで実行される pack 操作を別モジュールへ散らすと、部分コミットのリスク。トランザクション境界＝モジュール境界を守る。
@@ -787,7 +823,7 @@ TOCTOU競合（running確認からthread開始までの競合）の解消、atom
 
 ---
 
-## 付録: 確認済み事実と推測の区別
+## 付録: 確認済み事実と推測の区別（2026-07-29再調査時の記録）
 
 - **確認済み**（コード・grep・テスト実行・git で確認、2026-07-29の独立レビュー指摘を受けた再々調査分を含む）: 行番号と定義の所在、web.py の27 database import、生SQLの web.py 内実行（`get_db_stats`/`get_library_items`）、`_ensure_*`/`_migrate_*` の存在、test_web.py **3647行**（実測。段階0時点3531行から段階2で`ConfigResolutionTest`15件分増加）・test_database.py 1236行、Playwright 5spec・29テスト、CI が Python unittest と Playwright の両方を別jobで実行済み、段階0完了後は `paths.py` が新設され `export_stats` の path解決複製TODOは解消済み（段階0bマージコミット`6965899`時点でtest_web.py 3531行・Python全件**396件**成功をgit worktreeで再検証済み）、R2完了後は `config.py`（52行）が新設され `web.py` は1994行、Pythonテストは**396件→411件（新規15件）**成功（旧文書の「394件→411件」は誤りで訂正済み。394件は段階0a時点の件数）、`tsundokensaku.web.`へのmonkeypatch総数140箇所、R4〜R8対象関数への直接patchはいずれも0箇所、R4対象のうち直接単体テストがあるのは`highlight_query`/`group_pdf_results`/`format_indexed_at`/`build_scrapbox_page_url`/`normalize_search_match`/`normalize_search_group`/`build_search_scrapbox_body`の7関数（`tests/test_web.py`が`_now_jst`も含め直接importしている）で`build_search_result_rows`/`finalize_search_result_rows`/`sort_results`/`_scrapbox_page_label`/`_sanitize_scrapbox_title`は直接テストなし、`build_search_result_rows_context`のみR4内で唯一DB接続（`connect`/`search`）を伴うこと、`build_search_scrapbox_body`が`_now_jst`（R7/R8からも呼ばれる横断的ユーティリティ）と`_sanitize_scrapbox_title`（R4専用の内部補助）に依存し旧文書の対象11関数だけでは依存クロージャが閉じていなかったこと、`build_search_result_rows`/`finalize_search_result_rows`が`raw_pdf_url`経由で`paths.resolve_pdf_path`の`is_file()`によるファイル実存確認を行うこと（filesystem依存が「なし」ではなかったこと）、`build_scrapbox_page_url`が`metadata.get_scrapbox_project_url()`経由で`SCRAPBOX_BASE_URL`環境変数に依存すること、`finalize_search_result_rows`が入力dictの`page_urls`を破壊的に更新すること、`group_pdf_results`が非pdf結果の元dictオブジェクト参照を保持すること、`sort_results`が未知sort値で入力リストをidentity維持のまま返すこと、`_page_snippet`は旧記述のR4分類が誤りでR7所属が正しいこと、`test_web.py`に`/settings/index`・`/settings/progress`・`_run_index_job`への直接テストが存在しないこと、`database.py`は1922行のまま変化なし、Playwrightは5spec・29件（`grep test(`で件数確認）でCI実測と一致、R2のPR #12で`ai_export_flow.spec.js`が`.ws-book`関連のflaky failureを1件起こし、developの過去コミットでも`search_multiple_adds.spec.js`が同一エラーシグネチャで失敗後、次のpushで成功に戻った実績があること。
 - **推測**（設計判断・要レビュー）: 各モジュールの最終的な粒度、L4を完全分割すべきか、移行順の細部（段階5〜8の順序は入れ替え可能）、ラッパー撤去のタイミング、`build_search_result_rows_context`を`web.py`に残す設計が段階5（R5生SQL集計）以降の切り出しでも一貫して踏襲できるか、`_now_jst`をR4/R7/R8で複製したまま進めるか将来一本化するかの判断時期。

@@ -149,8 +149,17 @@ Python・Playwrightの自動テストで継続的に確認できる。
   - 設計文書: [docs/central-file-refactoring-inventory.md](docs/central-file-refactoring-inventory.md)
 
 - [ ] **`web.py`の責務分離**
-  - [x] 検索結果整形の切り出し（R4）— `search_view.py`へ分離
-  - [x] インデックスジョブ状態管理・実行の切り出し（R6）— `index_job.py`へ分離
+  - 詳細設計: [中心ファイルの責務棚卸しと段階的分割設計](docs/central-file-refactoring-inventory.md)
+  - R番号は実施順ではなく、設計書で定義した`web.py`の責務識別子
+  - 分離対象外: R1 アプリ初期化・静的資産、R9 ルートハンドラはHTTP層として`web.py`に維持
+  - [x] R2 設定・環境変数の解決 — `config.py`へ分離
+  - [x] R3 パス解決・URL生成 — `paths.py`へ分離
+  - [x] R4 表示整形中心の責務（検索結果整形）— `search_view.py`へ分離
+  - [ ] R5 ライブラリ/統計の集計 — `books_repo.py`側へ寄せる候補（`database.py`系列へ合流、未実装）
+  - [x] R6 インデックスジョブ — `index_job.py`へ分離
+  - [ ] R7 ファイル入出力・取り込み — `pdf_service.py`候補（設計済み・未実装）
+  - [ ] R8 エクスポート業務ロジック — `export_service.py`候補（設計済み・未実装）
+  - R6完了後の次の実装対象は未選定。R5・R7・R8の着手順は次回調査で再評価する
   - FastAPIのルーティング・入力検証・レスポンス生成を薄い層へ整理する
   - 検索、資料、PDFプレビュー、エクスポート、本の登録・設定の業務処理を分ける
   - 一つのPRでは一つの責務だけを移動する
@@ -158,6 +167,15 @@ Python・Playwrightの自動テストで継続的に確認できる。
   - 既存の公開URL・HTTP API・画面上の振る舞いは変更しない
 
 - [ ] **`database.py`の責務分離**
+  - 詳細設計: [中心ファイルの責務棚卸しと段階的分割設計](docs/central-file-refactoring-inventory.md)
+  - D番号は実施順ではなく、設計書で定義した`database.py`の責務識別子。`web.py`系列とは別系列で、着手順は相互に依存しない
+  - [ ] D1 レコード定義 — `records.py`候補（設計済み・未実装）
+  - [ ] D2 接続管理 — 分離先未定（候補のみ）
+  - [ ] D3 スキーマ初期化・保証・移行 — `schema.py`候補（設計済み・未実装）
+  - [ ] D4 書籍・ページ・メモ・ノートの永続化 — `books_repo.py`候補（候補のみ）
+  - [ ] D5 検索 — `search_repo.py`候補（候補のみ）
+  - [ ] D6 資料（pack）と資料項目 — `packs_repo.py`候補（候補のみ）
+  - [ ] D7 エクスポート履歴 — `export_events_repo.py`候補（設計済み・未実装）
   - スキーマ初期化・移行処理をCRUDから分ける
   - 書籍・インデックス、資料、エクスポート履歴をドメイン単位で分ける
   - トランザクション境界と接続管理の責務を明確にする
