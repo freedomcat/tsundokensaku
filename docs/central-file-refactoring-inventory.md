@@ -355,7 +355,7 @@ graph TD
 | `search_view.py` | 表示整形中心の責務（検索結果整形） | web R4 | `build_search_result_rows*`, `highlight_query`, `group_pdf_results`, `normalize_*` | tokenizer, metadata, paths | web | **完了**（PR #14・#16） |
 | `index_job.py` | インデックスジョブ | web R6 | `_run_index_job`, `_*_index_progress`, 進捗グローバル | threading, indexer, config | web | **完了**（PR #17・#18） |
 | `export_service.py` | エクスポートのプレビュー/アーカイブ組立 | web R8 | `build_export_preview_*`, `_export_pack_archive`, `_export_pack_json` | export_profiles, export_stats, zip_export, packs_repo | web | 中盤 |
-| `pdf_import_service.py` | PDFアップロード保存（R7-1）。将来のPDFディレクトリ取り込み（R7-2）も同居させる候補名（§3参照） | web R7-1 | `save_uploaded_pdf` | fs | web | 設計済み・未実装（§8「R7-1」参照） |
+| `pdf_import_service.py` | PDFアップロード保存（R7-1）。将来のPDFディレクトリ取り込み（R7-2）も同居させる候補名（§3参照） | web R7-1 | `save_uploaded_pdf` | paths, fs | web | 設計済み・未実装（§8「R7-1」参照） |
 | `schema.py` ★ | スキーマ初期化・保証・移行 | db D3 | `initialize`, `_ensure_*_schema`, `_migrate_*`, `_backfill_*` | sqlite3, records | 各repo, cli | **中核**（DB分割の起点） |
 | `records.py` | dataclass レコード定義 | db D1 | `BookRecord` ほか9個 | dataclasses | 全域 | 早期（低リスク、再エクスポート必須） |
 | `books_repo.py` | 書籍・ページ・メモ・ノート CRUD | db D4 | `upsert_book`, `list_books`, `replace_pages` ほか | schema, records | web, cli, indexer | 後半 |
@@ -803,6 +803,8 @@ R7については2026-08-01に子責務分解（R7-1〜R7-4、§3参照）を確
 - byte列の書き込み（`destination.write_bytes(content)`）。
 - 保存先Pathの返却。
 
+移動後は`pdf_import_service.py`から`paths.unique_destination_path`を直接呼ぶ。`web.py`の`_unique_destination_path`ラッパーや同等処理の再実装には依存しない。
+
 #### `web.py`に残すもの
 
 - `POST /settings/pdf-upload`のルート定義そのもの（`upload_pdf`）。
@@ -826,17 +828,17 @@ R7-1（PDFアップロード保存）とR7-2（PDFディレクトリ取り込み
 
 #### 依存方向: `books_dir`引数渡しを採用（`config.get_books_dir()`直接呼び出しとの比較）
 
-現行の`save_uploaded_pdf`は既に`books_dir: Path`を呼び出し側から受け取る設計であり、この形をそのまま維持する。`pdf_import_service.py`は`config`を直接importしない。
+現行の`save_uploaded_pdf`は既に`books_dir: Path`を呼び出し側から受け取る設計であり、この形をそのまま維持する。依存方向は`web` → `pdf_import_service` → `paths`およびファイルシステムとする。`pdf_import_service.py`は`config`・`database`・`web`・FastAPIをimportせず、`paths`から`pdf_import_service`への逆依存も作らない。この一方向の依存で循環importは発生しない。
 
 理由:
-- **依存方向**: `pdf_import_service.py`の依存を`fs`のみに保てる。「どのBOOKS_DIRを使うか」（R2の責務）と「どこに保存するか」（R7-1の責務）を混在させない。
+- **依存方向**: `pdf_import_service.py`の依存を`paths`とファイルシステムに限定する。「どのBOOKS_DIRを使うか」（R2の責務）と「どこに保存するか」（R7-1の責務）を混在させず、一意名生成はR3で分離済みの`paths.unique_destination_path`を再利用する。
 - **テスト容易性**: 呼び出し側が任意の`books_dir`（`tempfile.TemporaryDirectory()`等）を直接渡せるため、`os.environ`のmonkeypatchなしにテストできる。既存の`test_save_uploaded_pdf_writes_unique_file`も`books_dir`を直接渡す形で書かれており、この形を崩さない。
 - **R2の責務境界**: R2完了時点で「`config.py`は...`web.py`・...のいずれもimportしない」という一方向の依存が確立している（§3 R2「実装内容」）。今回は既存シグネチャを変えない方が影響範囲が小さく、`upload_pdf`ハンドラが`get_books_dir()`を呼んでから`save_uploaded_pdf`へ渡す既存の流れとも一致する。
 - **対比**: R6（`index_job.py`）は`config.get_books_dir()`を直接呼ぶ設計を採用したが、これは`index_job.start()`がバックグラウンドスレッド内で非同期に実行され、リクエストハンドラから都度`books_dir`を明示的に受け渡す経路がなかったためである（§8「段階6」）。R7-1は同期的にHTTPハンドラから直接呼ばれ、既存シグネチャが`books_dir`を引数に持つため、この理由はR7-1には当てはまらない。
 
-#### 公開API案
+#### service公開API案とimport互換性
 
-既存シグネチャをそのまま維持する（ロジック無変更の純粋移動）。
+HTTP公開契約は維持し、新しいservice関数の引数形も既存関数と同じ形を維持する（ロジック無変更の純粋移動）。一方、`tsundokensaku.web.save_uploaded_pdf`というPython import pathは削除する。このimport pathは内部APIとして扱い、直接monkeypatchが0件であることを根拠に互換ラッパーは残さない（詳細は下記「互換ラッパー方針」参照）。
 
 ```python
 def save_uploaded_pdf(
@@ -855,21 +857,21 @@ def save_uploaded_pdf(
 - `relative_path: str | None`（キーワード専用、任意、デフォルト`None`）: `web.py`側で空文字列を`None`に変換してから渡す契約とする（既存通り）。空文字列がそのままservice層に渡ることは呼び出し元の変換により発生しない。path separatorとして扱われるのは`/`のみ（現在の実行環境=Linux/Dockerでは`\`はファイル名の一部として扱われ、ディレクトリ区切りとして機能しない。現在挙動として記録し、Windows環境での挙動保証はしない）。
 - 戻り値: `Path`（保存先の絶対パス。`_unique_destination_path`による一意化後の実際の保存先）。
 - 例外: 下記「例外方針」参照。
-- ファイル副作用: BOOKS_DIR配下（存在しなければ作成）・保存先の親ディレクトリ（存在しなければ作成）・保存先ファイルへの書き込み。BOOKS_DIR外への副作用は境界検証により発生しない（現状契約、下記セキュリティ契約参照）。
+- ファイル副作用: BOOKS_DIR（存在しなければ作成）・保存先の親ディレクトリ（存在しなければ作成）・保存先ファイルへの書き込み。通常の境界外パスは拒否されるが、BOOKS_DIR自身を指す特殊条件には既知制約があるため、BOOKS_DIR外への副作用が絶対に発生しないとは扱わない（下記セキュリティ契約参照）。
 
 #### 例外方針
 
-service層（`pdf_import_service.save_uploaded_pdf`）は`HTTPException`を送出しない。現状も送出していない（`ValueError`のみ）。
+service層（`pdf_import_service.save_uploaded_pdf`）は`HTTPException`を送出しない。明示的な入力エラー・保存境界エラーは`ValueError`とし、一意名候補の上限到達時は`FileExistsError`、`resolve()`・`mkdir()`・`write_bytes()`等の失敗は`OSError`系が透過する現在挙動を維持する。
 
 現在の失敗条件と対応する例外（現状のまま維持、メッセージ文言も変更しない）:
 
 - `.pdf`以外（`relative_path`または`filename`の末尾）: `ValueError("PDF ファイルのみ受け付けます")`。
 - 解決後パスがBOOKS_DIR外（`../`・絶対パス・symlink経由を含む）: `ValueError("保存先が不正です")`。
-- 一意名選択の試行上限超過（`stem (2)`〜`stem (9999)`が全て衝突）: `FileExistsError`（`paths.unique_destination_path`が送出、透過。メッセージなし、`destination`のPathオブジェクトのみ）。
+- 一意名選択の試行上限超過（`stem (2)`〜`stem (9999)`が全て衝突）: `FileExistsError`（`paths.unique_destination_path`が`destination`のPathオブジェクトを引数として送出し、そのまま透過する。`str(exc)`は通常そのパス文字列となる）。
 - 書き込み失敗（権限・ディスク容量等）: `OSError`系（透過、未捕捉）。
 - 不正なfilename/relative_path（NUL文字等、ファイルシステムが拒否する文字）: `OSError`系（透過、未捕捉）。
 
-`web.py`側は現在`except Exception as exc: return PlainTextResponse(str(exc), status_code=400)`という包括的な捕捉で、上記いずれの例外も一律400に変換している。これは意味的には`OSError`系を500として扱う方が適切に見えるが、**今回はstatus code・レスポンス本文を変更しないため、この`except Exception`による一律400変換をそのまま維持する**。専用例外クラスへの置き換えは、`except Exception`が全ての例外を捕捉する現状では外部観測される挙動を変えないが、今回は最小差分を優先し導入しない。必要になれば別PRで検討する。
+`web.py`側は現在`except Exception as exc: return PlainTextResponse(str(exc), status_code=400)`という包括的な捕捉で、上記いずれの例外も一律400に変換している。これは意味的には`OSError`系を500として扱う方が適切に見えるが、**今回はstatus code・レスポンス本文を変更しないため、この`except Exception`による一律400変換をそのまま維持する**。専用例外クラスへの置き換えは、`except Exception`が全ての例外を捕捉する現状では外部観測される挙動を変えないが、今回は最小差分を優先し導入しない。characterization testでは安定した`ValueError`の文言を対象とし、OS依存の`OSError`文言や`FileExistsError`のパス文字列をHTTP契約として完全固定しない。必要になれば別PRで検討する。
 
 #### 互換ラッパー方針
 
@@ -891,10 +893,13 @@ R2・R4がA案（委譲ラッパーを残す）を採用した理由は「既存
 - query parameter: `filename: str = ""`（デフォルト空文字）、`relative_path: str = ""`（デフォルト空文字）。
 - body形式: raw bytes（`Content-Type`検証なし、`await request.body()`で読み取り）。
 - demo mode時: `status_code=403`、body=`"Upload is disabled in demo mode."`（`DEMO_MODE_UPLOAD_MESSAGE`、web.py 140行目）。**bodyを読む前に早期returnする**（`is_demo_mode()`判定が`await request.body()`より前にある）。
-- `filename`なし・空白のみ: `status_code=400`、body=`"filename が必要です"`。
+- `filename`なし・空白のみ: `status_code=400`、body=`"filename が必要です"`。有効な`relative_path`が指定されていても`filename`の空判定が先に行われ、この場合serviceは呼ばれず、request bodyも読まれない。
+- `filename.strip()`は空判定にのみ使用し、空でなければstrip前の生の`filename`を保存処理へ渡す。
+- `relative_path`は空文字だけを`None`へ変換する。空白だけの値は真値のため生のままserviceへ渡され、通常は`.pdf`拡張子を満たさず`"PDF ファイルのみ受け付けます"`となる。
 - body空: `status_code=400`、body=`"empty body"`。
 - `%PDF`で始まらないbody: `status_code=400`、body=`"PDF 以外は受け付けません"`。
-- `.pdf`以外の拡張子: `status_code=400`、body=`"PDF ファイルのみ受け付けます"`。
+- `.pdf`以外の拡張子: `status_code=400`、body=`"PDF ファイルのみ受け付けます"`。末尾を小文字化して判定するため`.PDF`は許可される一方、`.pdf`の後ろに空白がある名前は拒否される。
+- Linux上ではUnicode filenameをそのまま保存する。`filename`または`relative_path`の先頭・途中の空白も保持され、末尾が`.pdf`または大文字小文字違いの同拡張子であれば許可される。
 - traversal等の境界外: `status_code=400`、body=`"保存先が不正です"`。
 - 正常時: `status_code=201`、body=保存先パスの文字列表現（`str(saved)`）。
 - 衝突時: `status_code=201`のまま、一意化された別名（例: `sample (2).pdf`）で保存され、bodyはその新しいパス文字列。
@@ -910,7 +915,7 @@ R2・R4がA案（委譲ラッパーを残す）を採用した理由は「既存
 - URL decode後の`../`: `filename`・`relative_path`はFastAPIのクエリパラメータとして受け取る時点で既にURLデコード済みの文字列がPythonの`str`として渡ってくる。service層はデコード処理を行わない・関与しない。デコード後の文字列に対して上記traversal検証が働く。
 - 絶対パス（例: `/etc/passwd.pdf`）: `Path("/etc/passwd.pdf").is_absolute()`は`True`となり、`books_root / base_name`は`pathlib`の仕様上`base_name`（絶対パス）がそのまま返る（`books_root`部分は無視される）。この結果も`resolve()`後に`relative_to(books_root)`で拒否される。
 - Windows形式区切り文字（`\`）: 現在のデプロイ環境（Linux/Docker）では`\`はパス区切り文字として機能せず、単一のファイル名コンポーネントの一部として扱われる。したがって`sub\evil.pdf`のような入力は`books_root`直下の1階層のファイル名として扱われ、traversalベクタにならない（現在の実行環境における現在挙動として記録。Windows環境での挙動保証はしない）。
-- BOOKS_DIR自身やその外部を指すパス: 上記`relative_to`検証で一律拒否される。
+- BOOKS_DIR外へ解決される通常のパス: 上記`relative_to`検証で拒否される。一方、`destination`が`books_root`自身と等しい場合、`destination.relative_to(books_root)`は拒否せず`.`を返す。通常はBOOKS_DIR名が`.pdf`でないため先行する拡張子検証で拒否されるが、BOOKS_DIR自身の名前が`.pdf`で終わり、absolute `relative_path`でBOOKS_DIR自身を指定した場合は境界検証を通過しうる。その後、既存ディレクトリとの衝突回避によってBOOKS_DIR外の兄弟パスが候補となる可能性がある。これは現行実装の既知制約として記録し、今回の責務分離では挙動を変更しない。境界強化は別のセキュリティ課題とし、今回のcharacterization testで新しい安全性を保証したことにしない。
 
 **symlink**（`resolve()`のsymlink解決特性により、以下は現在すべて拒否されることを`pathlib`単体動作で確認済み）:
 
@@ -933,38 +938,38 @@ R2・R4がA案（委譲ラッパーを残す）を採用した理由は「既存
 - `test_save_uploaded_pdf_writes_unique_file`（tests/test_web.py 172-182行目）: `save_uploaded_pdf`の直接テスト。一意名生成・内容の正しい書き分けのみを検証。拡張子検証・境界検証・symlink検証は含まれない。
 - `test_pdf_upload_returns_403_in_demo_mode`（3993-3999行目）: demo mode時の403とメッセージを検証。
 - `test_pdf_upload_succeeds_when_demo_mode_disabled`（4007-4016行目）: 正常系201とファイル存在のみ検証。レスポンス本文の内容（`str(saved)`形式）は未検証。`patch("tsundokensaku.web.get_books_dir", ...)`を使用（`get_books_dir`へのmonkeypatchであり、`save_uploaded_pdf`自体へのpatchではない）。
-- 上記いずれも、demo modeが「bodyを読む前に早期returnする」ことを直接assertしていない（`request=None`を渡して「読まれたら例外になるはず」という間接的な保証にとどまる）。**「一部保証」と評価する。**
+- `tests/playwright/workspace_add_pdf.spec.js`はアップロードAPIの返却本文を`pdf_path`として後続の`/pdf-outline`へ渡している。正常時の返却本文が後続処理で利用可能な保存パスであることを間接的に保証している。
+- demo modeテストは`request=None`を渡しており、bodyへ触れれば失敗するため、「bodyを読む前に早期returnする」契約を既に強く保証している。追加の呼び出しカウンタテストは必須としない。
 
 **PR1で新規追加する必須候補**（既存テストで保証されていない項目）:
 
-- 通常PDFの保存内容と保存位置（`upload_pdf`ハンドラ経由、正常時201とレスポンス本文の形式）。
-- nested `relative_path`（例: `sub/dir/book.pdf`）での保存位置。
-- 同名ファイル非上書き（`upload_pdf`ハンドラ経由での確認。`save_uploaded_pdf`レベルでは既存テストあり）。
-- `.pdf`以外の拒否（`save_uploaded_pdf`レベルでの`ValueError`とメッセージ、および`upload_pdf`ハンドラ経由での400）。
-- `../`traversalの拒否（`save_uploaded_pdf`レベル。一時ディレクトリを使い、BOOKS_DIR外への書き込みが発生しないことを確認）。
-- 絶対パスでの外部書き込み拒否。
-- symlink経由での外部書き込み拒否（中間ディレクトリsymlink・保存先ファイル自体のsymlinkの両方。`os.symlink`で一時ディレクトリ内に作成して検証する。実行環境がsymlink作成をサポートしない場合はスキップ条件を設ける）。
-- `filename`空（`upload_pdf`ハンドラ経由、400とメッセージ）。
-- body空（同上）。
-- `%PDF`以外（同上）。
-- demo mode 403（既存テストで固定済み、変更不要）。
-- **demo modeではbodyを読まないことの直接検証**（`_FakeUploadRequest`に呼び出しカウンタを追加する等で`request.body()`が呼ばれないことを直接assertする。現状は間接保証のみのため新規追加）。
-- 正常時201とレスポンス本文の形式（`str(saved)`と一致すること）。
-- 失敗時400とレスポンス本文（各失敗条件のメッセージ文言を個別に固定）。
+- **service側**:
+  - 通常PDFの保存位置と内容。
+  - nested `relative_path`（例: `sub/dir/book.pdf`）での保存位置。
+  - 同名衝突時に既存ファイルを上書きせず、正確に`sample (2).pdf`へ保存すること。
+  - `../`traversalとBOOKS_DIR外の絶対パスを拒否すること。
+  - symlink経由の外部書き込み拒否（中間ディレクトリsymlink・保存先ファイル自体のsymlinkの両方。`os.symlink`で一時ディレクトリ内に作成し、実行環境がsymlink作成をサポートしない場合はスキップする）。
+  - 大文字`.PDF`を許可し、`.pdf`の後ろに空白がある名前を拒否すること。
+  - 必要に応じ、Linux上でUnicodeと先頭・途中の空白を保持すること。
+- **HTTP側**:
+  - 有効な`relative_path`があっても、`filename`が空または空白だけなら400となり、serviceもrequest bodyも使用しないこと。
+  - body空と非`%PDF`をそれぞれ400にすること。
+  - 代表的なserviceの`ValueError`を、安定した既存文言を含む400へ変換すること。
+  - 正常時201となり、返却本文が実際の保存先パスと一致すること。
+  - demo mode時にbodyへ触れない契約は既存テストを維持すること（追加カウンタは必須としない）。
 
 **実装と同時でよい**:
 
-- 大文字`.PDF`拡張子（現在`.lower()`で吸収されるため許可される想定。境界値確認）。
 - BOOKS_DIR自動作成（既存動作の確認のみ）。
 - 複数階層の親ディレクトリ作成。
-- Unicode filename。
-- 空白を含むfilename。
 
 **不要・過剰固定として除外**:
 
 - `Path.resolve()`・`mkdir()`・`write_bytes()`の呼び出し回数。
 - private helper名（`_unique_destination_path`等の内部実装詳細）。
 - 一時変数。
+- OS依存の`OSError`文言や、`FileExistsError`のパス文字列をHTTPレスポンス契約として完全固定すること。
+- BOOKS_DIR自身を指す既知制約について、現状にない安全な拒否を期待するテスト。
 - PDF内部構造の完全妥当性（`%PDF`マジックバイトの確認のみが現在契約であり、それ以上のPDF構造検証は行っていないため、それを新たに要求するテストは書かない）。
 - 巨大PDF fixture。
 - file descriptorやOS内部挙動。
@@ -1019,7 +1024,7 @@ PDF内容の完全検証、ファイルサイズ上限、streaming upload、atom
 - Python全件成功。
 - Playwright全件成功。
 - 本設計書の記述と実装が一致している。
-- ROADMAPでは「`web.py`の責務分離」の子項目としてR7-1相当の完了だけを記録し、R7親項目・`web.py`の責務分離親項目は未完了のまま維持する（R7-2〜R7-4・R5・R8が残るため。今回のPRではROADMAPを変更しない）。
+- ROADMAPでは今回、R7-1が詳細設計済み・未実装で、R7-2〜R7-4が未設計・未実装である現在状態だけを要約する。将来R7-1を実装してもR7親項目・`web.py`の責務分離親項目は未完了のまま維持する（R7-2〜R7-4・R5・R8が残るため）。
 
 #### 残るR7子責務
 
