@@ -175,9 +175,8 @@ class HighlightQueryTest(unittest.TestCase):
             first = save_uploaded_pdf("sample.pdf", b"%PDF-1.4 first", books_dir)
             second = save_uploaded_pdf("sample.pdf", b"%PDF-1.4 second", books_dir)
 
-            self.assertTrue(first.exists())
-            self.assertTrue(second.exists())
-            self.assertNotEqual(first, second)
+            self.assertEqual(first, books_dir / "sample.pdf")
+            self.assertEqual(second, books_dir / "sample (2).pdf")
             self.assertEqual(first.read_bytes(), b"%PDF-1.4 first")
             self.assertEqual(second.read_bytes(), b"%PDF-1.4 second")
 
@@ -3867,6 +3866,244 @@ class _FakeUploadRequest:
 
     async def body(self) -> bytes:
         return self._body
+
+
+class PdfUploadStorageCharacterizationTest(unittest.TestCase):
+    def test_save_uploaded_pdf_writes_nested_relative_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            books_dir = Path(temp_dir) / "books"
+
+            saved = save_uploaded_pdf(
+                "ignored.pdf",
+                b"%PDF-1.4 nested",
+                books_dir,
+                relative_path="sub/dir/book.pdf",
+            )
+
+            self.assertEqual(saved, books_dir / "sub" / "dir" / "book.pdf")
+            self.assertEqual(saved.read_bytes(), b"%PDF-1.4 nested")
+
+    def test_save_uploaded_pdf_rejects_traversal(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            books_dir = root / "books"
+
+            with self.assertRaisesRegex(ValueError, "保存先が不正です"):
+                save_uploaded_pdf(
+                    "ignored.pdf",
+                    b"%PDF-1.4 traversal",
+                    books_dir,
+                    relative_path="../escape.pdf",
+                )
+
+            self.assertFalse((root / "escape.pdf").exists())
+
+    def test_save_uploaded_pdf_rejects_absolute_path_outside_books_dir(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            books_dir = root / "books"
+            outside = root / "outside.pdf"
+
+            with self.assertRaisesRegex(ValueError, "保存先が不正です"):
+                save_uploaded_pdf(
+                    "ignored.pdf",
+                    b"%PDF-1.4 absolute",
+                    books_dir,
+                    relative_path=str(outside),
+                )
+
+            self.assertFalse(outside.exists())
+
+    def test_save_uploaded_pdf_rejects_intermediate_symlink_to_outside(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            books_dir = root / "books"
+            outside_dir = root / "outside"
+            books_dir.mkdir()
+            outside_dir.mkdir()
+            link = books_dir / "outside-link"
+            try:
+                link.symlink_to(outside_dir, target_is_directory=True)
+            except (NotImplementedError, OSError) as exc:
+                self.skipTest(f"symlink creation is unavailable: {exc}")
+
+            with self.assertRaisesRegex(ValueError, "保存先が不正です"):
+                save_uploaded_pdf(
+                    "ignored.pdf",
+                    b"%PDF-1.4 symlink",
+                    books_dir,
+                    relative_path="outside-link/escape.pdf",
+                )
+
+            self.assertFalse((outside_dir / "escape.pdf").exists())
+
+    def test_save_uploaded_pdf_rejects_destination_symlink_to_outside(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            books_dir = root / "books"
+            books_dir.mkdir()
+            outside = root / "outside.pdf"
+            outside.write_bytes(b"outside content")
+            link = books_dir / "linked.pdf"
+            try:
+                link.symlink_to(outside)
+            except (NotImplementedError, OSError) as exc:
+                self.skipTest(f"symlink creation is unavailable: {exc}")
+
+            with self.assertRaisesRegex(ValueError, "保存先が不正です"):
+                save_uploaded_pdf("linked.pdf", b"%PDF-1.4 replacement", books_dir)
+
+            self.assertEqual(outside.read_bytes(), b"outside content")
+
+    def test_save_uploaded_pdf_accepts_uppercase_pdf_extension(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            books_dir = Path(temp_dir) / "books"
+
+            saved = save_uploaded_pdf("sample.PDF", b"%PDF-1.4 uppercase", books_dir)
+
+            self.assertEqual(saved, books_dir / "sample.PDF")
+            self.assertEqual(saved.read_bytes(), b"%PDF-1.4 uppercase")
+
+    def test_save_uploaded_pdf_rejects_space_after_pdf_extension(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            books_dir = Path(temp_dir) / "books"
+
+            with self.assertRaisesRegex(ValueError, "PDF ファイルのみ受け付けます"):
+                save_uploaded_pdf("sample.pdf ", b"%PDF-1.4 trailing-space", books_dir)
+
+    def test_upload_pdf_rejects_empty_filename_before_body_and_service(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            books_dir = Path(temp_dir) / "books"
+            for filename in ("", "   "):
+                with self.subTest(filename=filename), \
+                        patch("tsundokensaku.web.get_books_dir", return_value=books_dir), \
+                        patch(
+                            "tsundokensaku.web.save_uploaded_pdf",
+                            side_effect=AssertionError("service must not be used"),
+                        ), \
+                        patch.dict(os.environ, {"DEMO_MODE": "false"}):
+                    response = asyncio.run(
+                        upload_pdf(
+                            request=None,
+                            filename=filename,
+                            relative_path="nested/valid.pdf",
+                        )
+                    )
+
+                self.assertEqual(response.status_code, 400)
+                self.assertEqual(response.body, "filename が必要です".encode())
+
+    def test_upload_pdf_rejects_empty_body(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            books_dir = Path(temp_dir) / "books"
+            with patch("tsundokensaku.web.get_books_dir", return_value=books_dir), \
+                    patch.dict(os.environ, {"DEMO_MODE": "false"}):
+                response = asyncio.run(upload_pdf(request=_FakeUploadRequest(b""), filename="sample.pdf"))
+
+            self.assertEqual(response.status_code, 400)
+            self.assertEqual(response.body, b"empty body")
+            self.assertFalse((books_dir / "sample.pdf").exists())
+
+    def test_upload_pdf_rejects_body_without_pdf_magic(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            books_dir = Path(temp_dir) / "books"
+            with patch("tsundokensaku.web.get_books_dir", return_value=books_dir), \
+                    patch.dict(os.environ, {"DEMO_MODE": "false"}):
+                response = asyncio.run(
+                    upload_pdf(request=_FakeUploadRequest(b"not a PDF"), filename="sample.pdf")
+                )
+
+            self.assertEqual(response.status_code, 400)
+            self.assertEqual(response.body, "PDF 以外は受け付けません".encode())
+            self.assertFalse((books_dir / "sample.pdf").exists())
+
+    def test_upload_pdf_uses_filename_when_relative_path_is_empty(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            books_dir = Path(temp_dir) / "books"
+            with patch("tsundokensaku.web.get_books_dir", return_value=books_dir), \
+                    patch.dict(os.environ, {"DEMO_MODE": "false"}):
+                response = asyncio.run(
+                    upload_pdf(
+                        request=_FakeUploadRequest(b"%PDF-1.4 lowercase"),
+                        filename="sample.pdf",
+                        relative_path="",
+                    )
+                )
+
+            saved = books_dir / "sample.pdf"
+            self.assertEqual(response.status_code, 201)
+            self.assertEqual(response.body.decode(), str(saved))
+            self.assertEqual(saved.read_bytes(), b"%PDF-1.4 lowercase")
+
+    def test_upload_pdf_passes_blank_relative_path_to_storage_validation(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            books_dir = Path(temp_dir) / "books"
+            with patch("tsundokensaku.web.get_books_dir", return_value=books_dir), \
+                    patch.dict(os.environ, {"DEMO_MODE": "false"}):
+                response = asyncio.run(
+                    upload_pdf(
+                        request=_FakeUploadRequest(b"%PDF-1.4 blank-relative-path"),
+                        filename="sample.pdf",
+                        relative_path=" ",
+                    )
+                )
+
+            self.assertEqual(response.status_code, 400)
+            self.assertEqual(response.body, "PDF ファイルのみ受け付けます".encode())
+            self.assertFalse((books_dir / "sample.pdf").exists())
+
+    def test_upload_pdf_saves_nested_relative_path_and_returns_it(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            books_dir = Path(temp_dir) / "books"
+            with patch("tsundokensaku.web.get_books_dir", return_value=books_dir), \
+                    patch.dict(os.environ, {"DEMO_MODE": "false"}):
+                response = asyncio.run(
+                    upload_pdf(
+                        request=_FakeUploadRequest(b"%PDF-1.4 nested"),
+                        filename="original.pdf",
+                        relative_path="nested/path/saved.pdf",
+                    )
+                )
+
+            saved = books_dir / "nested" / "path" / "saved.pdf"
+            self.assertEqual(response.status_code, 201)
+            self.assertEqual(response.body.decode(), str(saved))
+            self.assertEqual(saved.read_bytes(), b"%PDF-1.4 nested")
+            self.assertFalse((books_dir / "original.pdf").exists())
+
+    def test_upload_pdf_preserves_supported_filename_characters(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            books_dir = Path(temp_dir) / "books"
+            cases = (
+                ("sample.PDF", b"%PDF-1.4 uppercase"),
+                ("読書メモ.pdf", b"%PDF-1.4 unicode"),
+                (" 読書 メモ.pdf", b"%PDF-1.4 spaces"),
+            )
+            with patch("tsundokensaku.web.get_books_dir", return_value=books_dir), \
+                    patch.dict(os.environ, {"DEMO_MODE": "false"}):
+                for filename, content in cases:
+                    with self.subTest(filename=filename):
+                        response = asyncio.run(upload_pdf(request=_FakeUploadRequest(content), filename=filename))
+                        saved = books_dir / filename
+                        self.assertEqual(response.status_code, 201)
+                        self.assertEqual(response.body.decode(), str(saved))
+                        self.assertEqual(saved.read_bytes(), content)
+
+    def test_upload_pdf_rejects_space_after_pdf_extension(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            books_dir = Path(temp_dir) / "books"
+            with patch("tsundokensaku.web.get_books_dir", return_value=books_dir), \
+                    patch.dict(os.environ, {"DEMO_MODE": "false"}):
+                response = asyncio.run(
+                    upload_pdf(
+                        request=_FakeUploadRequest(b"%PDF-1.4 trailing-space"),
+                        filename="sample.pdf ",
+                    )
+                )
+
+            self.assertEqual(response.status_code, 400)
+            self.assertEqual(response.body, "PDF ファイルのみ受け付けます".encode())
+            self.assertFalse((books_dir / "sample.pdf ").exists())
 
 
 class ConfigResolutionTest(unittest.TestCase):
