@@ -165,10 +165,12 @@ PR #17（マージコミット `2c45ed1a245c2cb6ef29a924e2e31b2c3e5db06e`）で�
   2. **R7-2: PDFディレクトリ取り込み — 詳細設計の独立レビュー指摘反映済み・未実装** — `GET /settings/pdf-import`（`import_pdf_directory`）・`import_pdfs_from_directory`。指定ディレクトリ配下のPDFをBOOKS_DIRへ一括コピーする。分離先をR7-1と同じ`pdf_import_service.py`とする詳細設計を[R7-2専用文書](refactoring/r7-2-pdf-directory-import.md)に記録し、独立レビューの指摘を反映した。実装は未完了。
   3. **R7-3: Scrapbox JSON保存・同期 — 詳細設計済み・未実装** — `GET /settings/scrapbox-import`、`POST /settings/scrapbox-upload`、`import_scrapbox_export_bytes`。固定cacheへの保存と既存DB APIによるメモ・Kindle同期を`scrapbox_import_service.py`へ分離する（[詳細設計](refactoring/r7-3-scrapbox-sync.md)）。
   4. **R7-4: PDF閲覧・変換・本文検索のHTTPオーケストレーション — 詳細設計済み・未実装** — 既存PDFの閲覧、outline、thumbnail、PDF/Markdown生成、本文検索、Scrapbox URL解決を、既存`pdf_export.py`と新規`pdf_text_service.py`・`pdf_metadata_service.py`へ分ける（[詳細設計](refactoring/r7-4-http-orchestration.md)）。
-  - 上記「主な定義」・「依存」・「テスト状況」・「判断」（157〜162行目）はR7全体を一括りにしていた2026-07-29時点の分離前調査であり、歴史的記録として維持する。R7-1は現行コードに基づく再調査・詳細設計を経て完了した（[R7-1専用文書](refactoring/r7-1-pdf-upload-storage.md)参照）。R7-2は再調査と詳細設計の独立レビュー指摘反映を終え、R7-3・R7-4は着手時に個別に再調査する。
+  - 上記「主な定義」・「依存」・「テスト状況」・「判断」（157〜162行目）はR7全体を一括りにしていた2026-07-29時点の分離前調査であり、歴史的記録として維持する。R7-1は現行コードに基づく再調査・詳細設計を経て完了した（[R7-1専用文書](refactoring/r7-1-pdf-upload-storage.md)参照）。R7-2〜R7-4は個別の再調査と詳細設計を終え、未実装である（[R7-2](refactoring/r7-2-pdf-directory-import.md)・[R7-3](refactoring/r7-3-scrapbox-sync.md)・[R7-4](refactoring/r7-4-http-orchestration.md)の各専用文書参照）。
   - R7（親項目）は完了扱いにしない。R7-2〜R7-4が残る限りR7は未完了のまま。
 
 #### R7-2〜R7-4横断調査（2026-08-01、詳細設計前）
+
+**注記:** 以下はR7-2〜R7-4の個別設計着手前に行った横断調査の記録である。記載された「未設計」は調査時点の状態を表し、現在の正式な状態はR7-2〜R7-4すべて詳細設計済み・未実装である。現在の責務境界と公開service APIは各専用文書を正とする。
 
 ##### 位置づけ
 
