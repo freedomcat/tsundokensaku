@@ -160,7 +160,7 @@ Python・Playwrightの自動テストで継続的に確認できる。
   - [ ] R7 ファイル入出力・取り込み — 子責務別に分離（詳細は設計書参照）
     - [x] R7-1 PDFアップロード保存 — `pdf_import_service.py`へ分離
     - [ ] R7-2 PDFディレクトリ取り込み — 詳細設計済み・未実装。設計はPR #23で`develop`へ反映済み（[docs/refactoring/r7-2-pdf-directory-import.md](docs/refactoring/r7-2-pdf-directory-import.md)参照）
-    - [ ] R7-3 Scrapbox JSON保存・同期 — 未設計・未実装（候補範囲は設計書参照）
+    - [ ] R7-3 Scrapbox JSON保存・同期 — 詳細設計済み・未実装（[docs/refactoring/r7-3-scrapbox-sync.md](docs/refactoring/r7-3-scrapbox-sync.md)参照）
     - [ ] R7-4 PDF閲覧・変換・本文検索のHTTPオーケストレーション — 未設計・未実装（候補範囲は設計書参照）
   - [ ] R8 エクスポート業務ロジック — `export_service.py`候補（設計済み・未実装）
   - R7-1完了後の次の実装対象は未選定。R5・R7-2〜R7-4・R8の着手順は未確定
