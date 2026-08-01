@@ -116,6 +116,19 @@ def save_pdf_export_to_configured_dir(
 
 両関数はFastAPIをimportせず、入力不正を`ValueError`、保存先不存在を通常の`FileNotFoundError`、非directoryを`NotADirectoryError`として返す。保存先の検証後に`paths.resolve_pdf_path`を呼び、PDF解決不可だけを`PdfSourceNotFoundError`に分類する。これにより、保存先とPDFが両方不正な場合も、現在と同じく保存先の400を先に返せる。
 
+`PdfSourceNotFoundError`は`FileNotFoundError`のサブクラスなので、HTTP層は必ず専用例外を先に捕捉する。PDF入力元が見つからない`PdfSourceNotFoundError`は404へ変換し、保存先等の一般の`FileNotFoundError`は既存契約どおり400へ変換する。
+
+```python
+except PdfSourceNotFoundError:
+    # PDF入力元が見つからないため404へ変換する。
+    ...
+except FileNotFoundError:
+    # 保存先等のファイルシステム条件として400へ変換する。
+    ...
+```
+
+一般の`FileNotFoundError`を先に捕捉すると、サブクラスである`PdfSourceNotFoundError`もそこで捕捉され、本来404のエラーが400へ誤変換される。この捕捉順序をHTTP adapterの設計契約とする。
+
 ### 新規`pdf_metadata_service.py`
 
 PDF pathとDB/export metadataの対応付けを所有する。
@@ -123,13 +136,13 @@ PDF pathとDB/export metadataの対応付けを所有する。
 ```python
 def find_indexed_book(
     connection: sqlite3.Connection,
-    pdf_path: str | Path,
+    resolved_relative_pdf_path: Path,
     *,
     books_dir: Path,
 ) -> BookRecord | None: ...
 
 def get_indexed_book(
-    pdf_path: str | Path,
+    resolved_relative_pdf_path: Path,
     *,
     books_dir: Path,
     db_path: Path,
@@ -144,7 +157,9 @@ def resolve_pdf_scrapbox_url(
 ) -> str | None: ...
 ```
 
-`find_indexed_book`を`export_stats.py`と`pdf_text_service.py`から共有し、相対・絶対2候補ロジックを一箇所にする。books/pages table未作成時の`sqlite3.OperationalError`は現在どおり`None`へ変換する。`get_indexed_book`と`resolve_pdf_scrapbox_url`は接続を必ずcloseする。`project_root`は、DBにURLがない場合にだけ現行`find_export_json(project_root)`と`load_metadata_by_pdf_stem`を遅延実行するために受け取る。moduleはdatabase・metadata・pathsへ依存するがFastAPIとwebへ依存しない。
+`find_indexed_book`を`export_stats.py`と`pdf_text_service.py`から共有し、相対・絶対2候補のDB表記ゆれ対応を一箇所にする。`resolved_relative_pdf_path`には、`paths.resolve_pdf_path()`で一度だけ解決済みの蔵書ディレクトリ相対パスを渡す。`find_indexed_book`自身は`paths.resolve_pdf_path()`、`Path.resolve()`、`is_file()`等によるパス再解決やファイルシステム確認を行わず、解決済み相対パスとDB上の書籍metadataの対応付けだけを担当する。`get_indexed_book`も同じ解決済み相対パスを受け取り、そのまま`find_indexed_book`へ渡す。
+
+`web.py`側は呼び出し前に`paths.resolve_pdf_path()`で一度だけ解決し、解決済み相対パスを渡す。`export_stats.py`側は現在`paths.resolve_pdf_path()`で得ている相対パスをそのまま渡す。これにより二重解決と暗黙のファイルシステムアクセスを避ける。books/pages table未作成時の`sqlite3.OperationalError`は現在どおり`None`へ変換する。`get_indexed_book`と`resolve_pdf_scrapbox_url`は接続を必ずcloseする。`project_root`は、DBにURLがない場合にだけ現行`find_export_json(project_root)`と`load_metadata_by_pdf_stem`を遅延実行するために受け取る。moduleはdatabase・metadata・pathsへ依存するがFastAPIとwebへ依存しない。
 
 ### 新規`pdf_text_service.py`
 
@@ -246,8 +261,8 @@ def render_markdown_export(
 ### `POST /export-pdf/save`
 
 1. webが`pdf_export.save_pdf_export_to_configured_dir(pdf_path, pages, books_dir=..., save_dir=...)`を呼ぶ。service内は現在どおりsave dirを先に検証し、その後にPDFを解決する。
-2. `PdfSourceNotFoundError`を404 `PDF not found`へ変換する。
-3. 通常の`FileNotFoundError`、`NotADirectoryError`、`ValueError`を既存400 detailへ変換する。
+2. `FileNotFoundError`のサブクラスである`PdfSourceNotFoundError`を先に捕捉し、404 `PDF not found`へ変換する。
+3. その後で通常の`FileNotFoundError`、`NotADirectoryError`、`ValueError`を既存400 detailへ変換する。
 4. webが200 `{"saved_path": str(path)}`を返す。
 
 ### `GET /view/{pdf_path:path}`
@@ -294,7 +309,7 @@ PDF parser、fitz、filesystem、SQLiteの上表以外の例外は新たに包�
 | indexed book/page queryの`sqlite3.OperationalError` | service内で未索引・DB本文なしとして扱う |
 | その他の例外 | 変換せず伝播 |
 
-serviceはFastAPIをimportしない。R8 callbackでは、webに残す`render_pdf_export`・`render_markdown_export`の薄いHTTP adapterを注入し、資料エクスポートの既存400/404を維持する。
+serviceはFastAPIをimportしない。save routeのHTTP adapterでは、表の順序どおり`PdfSourceNotFoundError`を一般の`FileNotFoundError`より先に捕捉する。R8 callbackでは、webに残す`render_pdf_export`・`render_markdown_export`の薄いHTTP adapterを注入し、資料エクスポートの既存400/404を維持する。
 
 ## ファイルレスポンスとファイル書込み
 
@@ -344,7 +359,7 @@ export_profiles.py -> webが注入するadapter callable
 - `render_pdf_export`本体 -> `pdf_export.py`。`web.py`にはValueErrorを400へ変換する薄い同名adapterを残す。
 - `save_pdf_export_to_configured_dir`本体 -> `pdf_export.py`。serviceが現行順序でsave dir検証とPDF解決を行い、webのrouteは専用例外を404、保存先例外を400へ変換する。
 - `_get_indexed_book` -> `pdf_metadata_service.get_indexed_book`。
-- `export_stats._find_indexed_book`の重複本体 -> `pdf_metadata_service.find_indexed_book`呼び出しへ置換。
+- `export_stats._find_indexed_book`の重複本体 -> 解決済み相対パスを渡す`pdf_metadata_service.find_indexed_book`呼び出しへ置換。
 - `load_pages_text`、`_page_snippet`、`search_book_pages` -> `pdf_text_service.py`。
 - `render_markdown_export`本体 -> `pdf_text_service.py`。`web.py`には時刻注入とValueError変換を行う薄い同名adapterを残す。
 - `resolve_pdf_scrapbox_url` -> `pdf_metadata_service.py`。web固有の探索基準は`project_root`引数で渡す。
@@ -370,7 +385,7 @@ R7-4を「残ったもの全部」の置き場所にはしない。設定、資�
 ### 下位moduleテスト
 
 - `tests/test_pdf_export.py`を新設し、page spec、PDF bytes/filename、save dir検証、境界、重複名、write失敗を直接検証する。
-- `tests/test_pdf_metadata_service.py`を新設し、相対/絶対DB path候補、OperationalError、DB優先Scrapbox URL、export metadata fallback、接続closeを検証する。
+- `tests/test_pdf_metadata_service.py`を新設し、解決済み相対パス入力、関数内での再解決なし、相対/絶対DB path候補、OperationalError、DB優先Scrapbox URL、export metadata fallback、接続closeを検証する。
 - `tests/test_pdf_text_service.py`を新設し、DB本文優先、page単位fallback、未索引、LIKE escape、limit/order/snippet、Markdown title/本文/filename/時刻を検証する。
 - `export_stats`の既存テストで共有`find_indexed_book`への載せ替え後も寛容な未索引判定を確認する。
 
@@ -395,7 +410,7 @@ R7-4を「残ったもの全部」の置き場所にはしない。設定、資�
 
 1. 対象routeの不足するHTTP characterization testを追加する。
 2. `pdf_export.py`へHTTP非依存のPDF生成・保存APIを追加し、下位テストを移す。
-3. `pdf_metadata_service.py`を追加し、webと`export_stats.py`の2候補検索を共通化する。
+3. `pdf_metadata_service.py`を追加し、webと`export_stats.py`から解決済み相対パスを受け取って2候補検索を共通化する。
 4. `pdf_text_service.py`を追加し、DB本文・fallback・検索・Markdown生成を移す。
 5. `web.py`を薄いadapterとresponse生成へ置き換え、R8 `RenderContext`注入契約を維持する。
 6. route/API一覧、循環import、Python全件、Playwright全件、`git diff --check`を確認する。
