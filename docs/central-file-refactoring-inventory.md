@@ -1,8 +1,8 @@
 # 中心ファイルの責務棚卸しと段階的分割設計
 
-対象: `src/tsundokensaku/web.py`（1743行、R2・R3・R4・R6分離後）・`src/tsundokensaku/database.py`（1922行、責務分離は未着手）
+対象: `src/tsundokensaku/web.py`（1729行、R2・R3・R4・R6・R7-1分離後）・`src/tsundokensaku/database.py`（1922行、責務分離は未着手）
 位置づけ: ROADMAP「Phase 5着手前: 構造改善と回帰保証」の「構造と依存関係の棚卸し」の成果物
-状態: `web.py`系列はR2（`config.py`）・R3（`paths.py`）・R4（`search_view.py`）・R6（`index_job.py`）が完了。R1・R9はHTTP層として分離不要、R5・R7・R8は未実装。`database.py`系列（D1〜D7）は未実装。現在状態は2026-08-01、`develop`のコミット `87c890ca5ba4162053e8af9a8030de251bc026a1`で確認した。
+状態: `web.py`系列はR2（`config.py`）・R3（`paths.py`）・R4（`search_view.py`）・R6（`index_job.py`）・R7-1（`pdf_import_service.py`）が完了。R1・R9はHTTP層として分離不要、R5・R7-2〜R7-4・R8は未実装。R7親項目は未完了。`database.py`系列（D1〜D7）は未実装。現在状態は2026-08-01、`develop`のコミット `6cee6830e4afd9fe22374b21a57c7c49d1de560d`で確認した。
 
 ### 番号体系とROADMAPとの対応
 
@@ -18,7 +18,7 @@
 | R4 | 表示整形中心の責務（検索結果整形） | `search_view.py` | 完了 | `web.py`の責務分離 |
 | R5 | ライブラリ/統計の集計 | `books_repo.py`側へ寄せる候補（`database.py`系列へ合流） | 候補のみ | `web.py`の責務分離 |
 | R6 | インデックスジョブ | `index_job.py` | 完了 | `web.py`の責務分離 |
-| R7 | ファイル入出力・取り込み（4子責務、§3参照） | 単一モジュールへ集約せず子責務ごとに分割。R7-1（PDFアップロード保存）は`pdf_import_service.py`候補として設計済み、R7-2〜R7-4は未設計 | 一部設計済み・未実装 | `web.py`の責務分離 |
+| R7 | ファイル入出力・取り込み（4子責務、§3参照） | 単一モジュールへ集約せず子責務ごとに分割。R7-1（PDFアップロード保存）は`pdf_import_service.py`へ分離済み、R7-2〜R7-4は未設計・未実装 | 一部完了 | `web.py`の責務分離 |
 | R8 | エクスポート業務ロジック | `export_service.py`候補 | 設計済み・未実装 | `web.py`の責務分離 |
 | R9 | ルートハンドラ | `web.py`に維持 | 分離不要 | `web.py`の責務分離 |
 | D1 | レコード定義 | `records.py`候補 | 設計済み・未実装 | `database.py`の責務分離 |
@@ -160,13 +160,13 @@ PR #17（マージコミット `2c45ed1a245c2cb6ef29a924e2e31b2c3e5db06e`）で�
 - 依存: ファイルシステム、`pdf_export` / `markdown_export` / `pdf_extract`、`database`（`connect`・`get_book`・`sync_memos`・`sync_kindle_books`・`initialize`）、`config`（`web.py`のラッパー経由）。
 - テスト状況: `save_uploaded_pdf`・`import_pdfs_from_directory`・`save_pdf_export_to_configured_dir`・`render_markdown_export`・`resolve_pdf_scrapbox_url`・`import_scrapbox_export_bytes`はHTTP経由の統合テストで間接的に参照されるが、`render_pdf_export`・`load_pages_text`・`search_book_pages`・`_get_indexed_book`は直接参照なし。monkeypatch対象は0件。
 - 判断: 「PDFファイルに対する業務操作」。R3のパス層に依存する。`pdf_service.py`（仮）へ集約候補だが、粒度が大きいので後半の段階に回す。**リスク: 中〜高**（アップロード・保存の副作用。デモモード制御と絡む）。
-- **R7の子責務分解（2026-08-01、今回のPRで確定）**: 上記「主な定義」12関数を単一の`pdf_service.py`へ集約する設計は採らない。副作用の性質（外部からの取り込み・既存ファイルの変換や検索オーケストレーション）が異なる処理を1モジュールに集約すると、`pdf_service.py`自体が「小さな`web.py`」になり、責務混在という今回の分割動機と矛盾するため。変更理由の単位で次の4子責務に分ける。
-  1. **R7-1: PDFアップロード保存** — `POST /settings/pdf-upload`（`upload_pdf`）・`save_uploaded_pdf`。アップロード済みbyte列をBOOKS_DIR配下へ安全に配置する。**今回このPRで詳細設計する対象**（詳細は§8「R7-1」参照）。
+- **R7の子責務分解（2026-08-01、PR #19で確定）**: 上記「主な定義」12関数を単一の`pdf_service.py`へ集約する設計は採らない。副作用の性質（外部からの取り込み・既存ファイルの変換や検索オーケストレーション）が異なる処理を1モジュールに集約すると、`pdf_service.py`自体が「小さな`web.py`」になり、責務混在という今回の分割動機と矛盾するため。変更理由の単位で次の4子責務に分ける。
+  1. **R7-1: PDFアップロード保存 — 完了** — `POST /settings/pdf-upload`（`upload_pdf`）・`pdf_import_service.save_uploaded_pdf`。アップロード済みbyte列をBOOKS_DIR配下へ配置する。PR #20で現在契約を固定し、PR #21で`pdf_import_service.py`へ分離した（詳細は§8「R7-1」参照）。
   2. **R7-2: PDFディレクトリ取り込み** — `GET /settings/pdf-import`（`import_pdf_directory`）・`import_pdfs_from_directory`。指定ディレクトリ配下のPDFをBOOKS_DIRへ一括コピーする。未設計・未実装。
   3. **R7-3: Scrapbox JSON保存・同期** — `POST /settings/scrapbox-upload`（`upload_scrapbox_json`）・`import_scrapbox_export_bytes`。Scrapboxエクスポートの取り込みとDB同期。未設計・未実装。
   4. **R7-4: PDF閲覧・変換・本文検索のHTTPオーケストレーション** — `render_pdf_export`・`save_pdf_export_to_configured_dir`・`_get_indexed_book`・`_resolve_pdf_file_or_404`・`load_pages_text`・`_page_snippet`・`search_book_pages`・`render_markdown_export`・`resolve_pdf_scrapbox_url`。既存PDFに対する読み取り・変換系の業務操作。未設計・未実装。
-  - 上記「主な定義」・「依存」・「テスト状況」・「判断」（157〜162行目）はR7全体を一括りにしていた2026-07-29時点の分離前調査であり、歴史的記録として維持する。今回はR7-1のみを対象に、依存・テスト状況・判断を現行コードに基づき再調査した（§8「R7-1」参照）。R7-2〜R7-4は着手時に個別に再調査する。
-  - R7（親項目）は今回のPRで完了扱いにしない。R7-1の分離を実装しても、R7-2〜R7-4が残る限りR7は未完了のまま。
+  - 上記「主な定義」・「依存」・「テスト状況」・「判断」（157〜162行目）はR7全体を一括りにしていた2026-07-29時点の分離前調査であり、歴史的記録として維持する。R7-1は現行コードに基づく再調査・詳細設計を経て完了した（§8「R7-1」参照）。R7-2〜R7-4は着手時に個別に再調査する。
+  - R7（親項目）は完了扱いにしない。R7-2〜R7-4が残る限りR7は未完了のまま。
 
 ### R8. エクスポート業務ロジック（分離候補）
 
@@ -355,7 +355,7 @@ graph TD
 | `search_view.py` | 表示整形中心の責務（検索結果整形） | web R4 | `build_search_result_rows*`, `highlight_query`, `group_pdf_results`, `normalize_*` | tokenizer, metadata, paths | web | **完了**（PR #14・#16） |
 | `index_job.py` | インデックスジョブ | web R6 | `_run_index_job`, `_*_index_progress`, 進捗グローバル | threading, indexer, config | web | **完了**（PR #17・#18） |
 | `export_service.py` | エクスポートのプレビュー/アーカイブ組立 | web R8 | `build_export_preview_*`, `_export_pack_archive`, `_export_pack_json` | export_profiles, export_stats, zip_export, packs_repo | web | 中盤 |
-| `pdf_import_service.py` | PDFアップロード保存（R7-1）。将来のPDFディレクトリ取り込み（R7-2）も同居させる候補名（§3参照） | web R7-1 | `save_uploaded_pdf` | paths, fs | web | 設計済み・未実装（§8「R7-1」参照） |
+| `pdf_import_service.py` | PDFアップロード保存（R7-1）。将来のPDFディレクトリ取り込み（R7-2）も同居させる候補名（§3参照） | web R7-1 | `save_uploaded_pdf` | paths, fs | web | R7-1完了（§8「R7-1」参照） |
 | `schema.py` ★ | スキーマ初期化・保証・移行 | db D3 | `initialize`, `_ensure_*_schema`, `_migrate_*`, `_backfill_*` | sqlite3, records | 各repo, cli | **中核**（DB分割の起点） |
 | `records.py` | dataclass レコード定義 | db D1 | `BookRecord` ほか9個 | dataclasses | 全域 | 早期（低リスク、再エクスポート必須） |
 | `books_repo.py` | 書籍・ページ・メモ・ノート CRUD | db D4 | `upsert_book`, `list_books`, `replace_pages` ほか | schema, records | web, cli, indexer | 後半 |
@@ -771,13 +771,15 @@ TOCTOU競合（running確認からthread開始までの競合）の解消、atom
 
 - ロールバック: PR revert（互換ラッパーを残さないためA案より復元範囲は広いが、2PR構成のうちPR2のみのrevertで完結する。PR1のテスト追加は移動と独立して残しても害はない）。
 
-### R6完了後の未実装責務（現在）
+### R7-1完了後の未実装責務（現在）
 
-`web.py`系列ではR5（ライブラリ/統計の集計）・R7（ファイル入出力・取り込み）・R8（エクスポート業務ロジック）が未実装である。`database.py`系列のD1〜D7も未実装で、両系列は実施順に依存しない。策定当時は下記の段階7・8以降を候補としていたが、R6完了後の次の実装対象は再評価しておらず、着手順は未確定とする。
+`web.py`系列ではR7-1（PDFアップロード保存）が完了し、R5（ライブラリ/統計の集計）・R7-2〜R7-4・R8（エクスポート業務ロジック）が未実装である。`database.py`系列のD1〜D7も未実装で、両系列は実施順に依存しない。次の実装対象は未選定で、着手順は未確定とする。
 
-R7については2026-08-01に子責務分解（R7-1〜R7-4、§3参照）を確定し、最初の子責務であるR7-1（PDFアップロード保存）のみ以下で詳細設計した。R7-1はまだ設計段階であり、本体コードは未変更。R7-2〜R7-4は未設計のまま。
+R7については2026-08-01に子責務分解（R7-1〜R7-4、§3参照）を確定した。最初の子責務であるR7-1（PDFアップロード保存）は以下の詳細設計に基づいて完了し、R7-2〜R7-4は未設計・未実装のまま。
 
-### R7-1: PDFアップロード保存の切り出し（設計のみ・未実装）
+### R7-1: PDFアップロード保存の切り出し — 完了（PR #20・#21、マージコミット `6cee6830e4afd9fe22374b21a57c7c49d1de560d`）
+
+PR #20（マージコミット `ecd0faaa48e2fab65bd3882d83f70e9a910ca8e7`）で現在のHTTP・保存・境界契約をcharacterization testとして固定し、PR #21（マージコミット `6cee6830e4afd9fe22374b21a57c7c49d1de560d`）で`save_uploaded_pdf`のファイル配置責務を`pdf_import_service.py`へ分離した。公開APIは`save_uploaded_pdf(filename, content, books_dir, *, relative_path=None) -> Path`。`web.py`にはHTTP入力・demo mode判定・bodyと`%PDF`の検証・例外のHTTP 400変換・HTTP 201レスポンスを残し、互換ラッパーは設けていない。BOOKS_DIR自身を指す特殊ケース、TOCTOU、非atomic書き込みなどの既知制約は改善せず維持した。PR #20ではPython 496件・Playwright 29件、PR #21ではPython 497件・Playwright 29件が成功し、PR #21の独立レビューはAPPROVEだった。以下は実装時の詳細設計・記録として維持する。
 
 #### 目的
 
@@ -786,12 +788,12 @@ R7については2026-08-01に子責務分解（R7-1〜R7-4、§3参照）を確
 - 公開URL・HTTPメソッド・status code・レスポンス本文・保存位置・既存ファイル非上書きを変更しない。
 - セキュリティ改善と責務分離を混在させない。今回は現状挙動の固定と移動のみを行い、新しい防御は追加しない。
 
-#### 対象（現在の行番号、`develop` HEAD `c720f1f`時点で確認済み）
+#### 対象（分離前の行番号、`develop` HEAD `c720f1f`時点で確認済み）
 
 - `POST /settings/pdf-upload`（`upload_pdf`、web.py 1520-1539行）。
 - `save_uploaded_pdf`（web.py 411-428行）。
 
-#### `pdf_import_service.py`へ移す候補（`save_uploaded_pdf`本体、ロジック無変更で移動）
+#### `pdf_import_service.py`へ移した責務（`save_uploaded_pdf`本体、ロジック無変更で移動）
 
 - BOOKS_DIRを基準とした保存先解決（`books_dir.expanduser().resolve()`）。
 - BOOKS_DIRの自動作成（`books_root.mkdir(parents=True, exist_ok=True)`）。
@@ -836,7 +838,7 @@ R7-1（PDFアップロード保存）とR7-2（PDFディレクトリ取り込み
 - **R2の責務境界**: R2完了時点で「`config.py`は...`web.py`・...のいずれもimportしない」という一方向の依存が確立している（§3 R2「実装内容」）。今回は既存シグネチャを変えない方が影響範囲が小さく、`upload_pdf`ハンドラが`get_books_dir()`を呼んでから`save_uploaded_pdf`へ渡す既存の流れとも一致する。
 - **対比**: R6（`index_job.py`）は`config.get_books_dir()`を直接呼ぶ設計を採用したが、これは`index_job.start()`がバックグラウンドスレッド内で非同期に実行され、リクエストハンドラから都度`books_dir`を明示的に受け渡す経路がなかったためである（§8「段階6」）。R7-1は同期的にHTTPハンドラから直接呼ばれ、既存シグネチャが`books_dir`を引数に持つため、この理由はR7-1には当てはまらない。
 
-#### service公開API案とimport互換性
+#### service公開APIとimport互換性
 
 HTTP公開契約は維持し、新しいservice関数の引数形も既存関数と同じ形を維持する（ロジック無変更の純粋移動）。一方、`tsundokensaku.web.save_uploaded_pdf`というPython import pathは削除する。このimport pathは内部APIとして扱い、直接monkeypatchが0件であることを根拠に互換ラッパーは残さない（詳細は下記「互換ラッパー方針」参照）。
 
@@ -976,7 +978,7 @@ R2・R4がA案（委譲ラッパーを残す）を採用した理由は「既存
 
 #### PR構成
 
-**PR1: characterization test**
+**PR1: characterization test — 完了（PR #20、マージコミット `ecd0faaa48e2fab65bd3882d83f70e9a910ca8e7`）**
 
 - 想定ブランチ: `test/r7-pdf-upload-storage-characterization`。
 - 目的: `pdf_import_service.py`分離前に、現在のHTTP契約・保存位置・path境界・symlink境界・非上書き契約をテストで固定する。
@@ -988,7 +990,7 @@ R2・R4がA案（委譲ラッパーを残す）を採用した理由は「既存
 - Pythonテスト: 新規テストを含め全件成功。
 - Playwrightテスト: 変更なし（対象外、UI変更を伴わない）。
 
-**PR2: 責務分離**
+**PR2: 責務分離 — 完了（PR #21、マージコミット `6cee6830e4afd9fe22374b21a57c7c49d1de560d`）**
 
 - 想定ブランチ: `refactor/extract-pdf-upload-storage`。
 - 目的: `save_uploaded_pdf`を`pdf_import_service.py`へ移動し、`upload_pdf`ハンドラを薄くする。
@@ -1024,7 +1026,7 @@ PDF内容の完全検証、ファイルサイズ上限、streaming upload、atom
 - Python全件成功。
 - Playwright全件成功。
 - 本設計書の記述と実装が一致している。
-- ROADMAPでは今回、R7-1が詳細設計済み・未実装で、R7-2〜R7-4が未設計・未実装である現在状態だけを要約する。将来R7-1を実装してもR7親項目・`web.py`の責務分離親項目は未完了のまま維持する（R7-2〜R7-4・R5・R8が残るため）。
+- ROADMAPではR7-1を完了、R7-2〜R7-4を未設計・未実装として要約し、R7親項目・`web.py`の責務分離親項目は未完了のまま維持する（R7-2〜R7-4・R5・R8が残るため）。
 
 #### 残るR7子責務
 
@@ -1039,7 +1041,7 @@ R7-2（PDFディレクトリ取り込み）・R7-3（Scrapbox JSON保存・同�
 ### 段階8以降（計画時の候補・未実装）
 
 - R5（生SQL集計）→ 集計SQLを `books_repo` へ寄せ、web.py は値を受け取る。
-- R7（`pdf_service`）→ 副作用が大きいので最後。**この記述は策定当時の一括り判断の歴史的記録。R7はその後子責務分解され、最初の子責務R7-1（PDFアップロード保存）のみ個別に設計済み（未実装）。詳細は§3「R7の子責務分解」・本節冒頭「R7-1」参照。R7-2〜R7-4は未設計のまま。**
+- R7（`pdf_service`）→ 副作用が大きいので最後。**この記述は策定当時の一括り判断の歴史的記録。R7はその後子責務分解され、最初の子責務R7-1（PDFアップロード保存）は完了した。詳細は§3「R7の子責務分解」・本節冒頭「R7-1」参照。R7-2〜R7-4は未設計・未実装のまま。**
 - D4/D5/D6（books/search/packs repo）→ 完全分割はコスト高。`schema`＋`records` 分離で主目的達成済みなら、必要になるまで保留。
 
 各段階の完了条件は共通: **Python 全件緑＋（CI化後は）Playwright 全件緑＋主要フロー手動確認**。1段階ずつマージし、次に進む。
