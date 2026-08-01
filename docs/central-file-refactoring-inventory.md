@@ -168,6 +168,86 @@ PR #17（マージコミット `2c45ed1a245c2cb6ef29a924e2e31b2c3e5db06e`）で�
   - 上記「主な定義」・「依存」・「テスト状況」・「判断」（157〜162行目）はR7全体を一括りにしていた2026-07-29時点の分離前調査であり、歴史的記録として維持する。R7-1は現行コードに基づく再調査・詳細設計を経て完了した（§8「R7-1」参照）。R7-2〜R7-4は着手時に個別に再調査する。
   - R7（親項目）は完了扱いにしない。R7-2〜R7-4が残る限りR7は未完了のまま。
 
+#### R7-2〜R7-4横断調査（2026-08-01、詳細設計前）
+
+##### 位置づけ
+
+R7-1はPR #19〜#21で確定・実装済みの境界として扱い、本調査では再評価しない。以下はR7-2〜R7-4について、`develop`のコミット`df25eb344412f27879baf9a998fbfe0f8e022cad`時点のコード・テスト・文書・Git履歴から確認した現行状態の観測結果であり、各子責務の詳細設計ではない。R7-2〜R7-4は引き続き**未設計・未実装**で、分離先モジュールと公開service APIも未確定とする。責務境界と移行方法はR7-2、R7-3、R7-4ごとの後続設計PRで個別に決定する。
+
+##### 現行状態の比較
+
+| 観測軸 | R7-2 | R7-3 | R7-4 |
+|---|---|---|---|
+| 正式名称 | PDFディレクトリ取り込み | Scrapbox JSON保存・同期 | PDF閲覧・変換・本文検索のHTTPオーケストレーション |
+| 主なHTTP入口 | `GET /settings/pdf-import` | `GET /settings/scrapbox-import`、`POST /settings/scrapbox-upload` | `GET /pdf/{pdf_path:path}`、`GET /pdf-outline`、`GET /pdf-thumbnails`、`GET /export-pdf`、`GET /export-md`、`POST /export-pdf/save`、`GET /search-pages`、`GET /view/{pdf_path:path}` |
+| 主な処理 | 指定ディレクトリを再帰探索し、小文字の`*.pdf`を相対ディレクトリ構造を維持してBOOKS_DIRへコピーする。既存destinationはスキップする | Scrapbox JSONを固定キャッシュへ保存し、メモ・Kindle本・関連FTSをDBへ同期する。GETとPOSTに同等処理の重複がある | 既存PDFの解決・閲覧、アウトライン・サムネイル、PDF/Markdown変換、本文検索、Scrapbox URL解決をオーケストレーションする。資料エクスポートからも内部利用される |
+| ファイル副作用 | source PDF読取、BOOKS_DIRと子ディレクトリの作成、`shutil.copy2`によるコピー | source JSON読取、`PROJECT_ROOT/shino-books_imported.json`への直接上書き | PDF読取・変換。通常の変換結果はメモリ上で返し、`POST /export-pdf/save`のみ設定済みディレクトリへPDFを書き込む。productionコードでの一時ファイル作成はない |
+| DB副作用 | なし | schema初期化、メモ全置換、Kindle本upsert、FTS更新。処理内に複数のcommitがある | 業務データは原則読取のみ。ただし`database.connect()`は未作成DBや親ディレクトリを作成し得る |
+| 現在の主な依存 | ファイルシステム、`shutil`、`config.get_books_dir`（`web.py`のラッパー経由） | ファイルシステム、`database`（`connect`・`initialize`・`sync_memos`・`sync_kindle_books`）、`metadata.find_export_json`、DB設定・Scrapbox関連環境変数 | `paths`、`database`、`pdf_export`、`pdf_outline`、`pdf_thumbnail`、`pdf_extract`、`markdown_export`、`metadata`、`config`、`export_profiles`へのcallable注入 |
+| HTTPとの結合 | `web.py`がdemo mode、query、包括的な例外catch、成功・失敗の303 redirectとmessage生成を所有する | GETは303 redirect、POSTはraw bodyとfilenameを受けて201/400/403のPlainTextを返す。GETとPOSTで例外処理も非対称 | パス404、ページ指定400等の`HTTPException`、Base64/JSON、FileResponse、HTML template、Content-Disposition生成が`web.py`内の処理と混在する |
+| 分離先候補 | R7-1と同じ`pdf_import_service.py`が第一候補。ただし契約差を踏まえて未確定 | `scrapbox_import_service.py`、またはキャッシュ永続化とDB同期を分ける構成が候補。未確定 | 単一`pdf_service.py`ではなく、PDF export・本文検索・metadata解決等の用途別serviceが候補。未確定 |
+| 規模 | 小〜中。関数・入口は少ないが、再帰コピーとパス境界を扱う | 中。入口は2本で、ファイル永続化と複数種のDB更新が連続する | 大。公開URL、依存module、応答形式、内部呼び出し元が最も多い |
+| 設計難度 | 中。DB依存はないが、既存ファイル・大小文字・symlink・部分成功の扱いを決める必要がある | 中〜高。キャッシュと複数commitの整合性、再投入、入力構造の契約が中心となる | 高。HTTP、PDF処理、DB読取、資料エクスポートの互換性を同時に保つ必要がある |
+
+##### 詳細設計の順序
+
+R7内の詳細設計順序は、次で確定する。
+
+1. **R7-2 PDFディレクトリ取り込み**
+2. **R7-3 Scrapbox JSON保存・同期**
+3. **R7-4 PDF閲覧・変換・本文検索のHTTPオーケストレーション**
+
+R7-2はDB依存がなく最小範囲で、R7-1で確立した`web` → `pdf_import_service` → `paths`/ファイルシステムという依存方向を参考にできる。R7-3はファイル保存とDB更新の整合性設計を要し、R7-4は公開URL、複数のPDF処理module、DB読取、資料エクスポートへの影響が最も大きい。横断調査では、この順序の変更を要求するコード上の依存関係は見つからなかった。これはR7の3子責務間の設計順序だけを確定するもので、R5・R8・database.py系列を含む全体着手順の変更ではない。
+
+##### 後続設計PRで判断する主要論点
+
+**R7-2**
+
+- `import_pdfs_from_directory`の配置と、R7-1と同じ`pdf_import_service.py`へ置くか。
+- 既存destinationをスキップする契約、相対ディレクトリ構造の維持、小文字`.pdf`のみを対象とする現状に対する`.PDF`の扱い。
+- sourceとBOOKS_DIRの同一・親子関係、source/destinationのsymlink境界。
+- コピー途中の失敗を部分成功として扱うか、service例外とHTTPのredirect messageをどこで変換するか。
+
+**R7-3**
+
+- GETとPOSTに重複するキャッシュ保存・DB同期処理の統合方法。
+- キャッシュ永続化とDB同期の責務を一つのserviceに置くか分けるか、atomic writeを採用するか。
+- メモ・memo source・Kindle本更新のDBトランザクション境界と、保存または同期失敗時のキャッシュ/DB整合性。
+- 同一JSON再投入、不正JSON・文字コード・`pages`不足をどう扱うか。
+- メモは全置換で削除も同期する一方、Kindle本はupsertのみで削除しない現在差を維持・変更するか。
+
+**R7-4**
+
+- 単一serviceへ集約するか、PDF export・本文取得/検索・metadata解決等の用途別serviceへ分けるか。
+- `render_pdf_export`・`render_markdown_export`・`search_book_pages`・`resolve_pdf_scrapbox_url`等の所有権。
+- service例外とHTTP 400/404等への変換位置、Response・FileResponse・JSON・template生成を`web.py`に残す範囲。
+- 資料エクスポートの`RenderContext`へ注入するresolver/renderer callableをHTTP非依存にする方法。
+- 既存の公開URL・method・status code・content-type・Content-Dispositionとfilename規則を維持するための契約範囲。
+
+##### 公開契約・要観測挙動・既知リスクの区別
+
+後続設計では、次の3分類を混同しない。
+
+1. **維持すべき公開契約**: 既存のURL・HTTP method、利用者が観測する成功/失敗のstatus・response形式・redirect先、R7-4のcontent-type・Content-Disposition・出力filename規則を指す。各PRで現行値を再確認し、必要なcharacterization testを決める。
+2. **移動前に観測が必要な現在の挙動**: R7-2の既存ファイルskip・ディレクトリ構造・`.PDF`・symlink・部分成功、R7-3の同一JSON再投入・不正構造・削除差分・失敗位置ごとの残存状態、R7-4のDB/PDF fallback・例外変換等を指す。観測したという理由だけで恒久仕様とは扱わない。
+3. **修正方針を決めるべき既知リスク**: 下記のセキュリティ・整合性上の挙動を指す。これらをcharacterization testで永続的な互換契約として固定するか、単純移動前または別PRで修正するかは、各詳細設計で明示的に判断する。
+
+既知リスクは次のとおり。
+
+- R7-2: source PDF symlinkが指すファイルをコピーし得る。BOOKS_DIR内の既存中間symlinkを経由して境界外へ書き込む可能性がある。包括catch後のredirect messageに内部パスやOSエラー文言が露出する。
+- R7-3: GET入口が通常モードでは任意のサーバーファイルを読み取れる。固定キャッシュをatomicでない`write_bytes`で直接上書きする。DB更新が複数commitに分かれ、途中失敗時に部分更新となる。
+- R7-4: thumbnail以外のページ数・ファイルサイズ等の処理量上限が統一されていない。内部helperが`HTTPException`を送出し、そのhelperが資料エクスポートへも注入される。読取目的の処理でも`database.connect()`がDBファイルや親ディレクトリを作成し得る。
+
+##### 後続PR
+
+次の設計PRを順に予定する。
+
+- `design/r7-2-pdf-directory-import`
+- `design/r7-3-scrapbox-import`
+- `design/r7-4-pdf-http-orchestration`
+
+各PRでは対象子責務だけについて、責務境界、公開service API、例外方針、characterization test計画、セキュリティ境界、実装PR構成、非目標、完了条件を決定する。横断調査PRではこれらを確定せず、コード・テスト・ROADMAPの変更も行わない。
+
 ### R8. エクスポート業務ロジック（分離候補）
 
 - 主な定義（2026-07-29調査時）: `_export_preview_warning`（1229）、`build_export_preview_warnings`（1233）、`_preview_base_stats`（1272）、`build_export_preview_payload`（1291）、`build_export_preview_payload_for_profile`（1300）、`_export_pack_json`（1396）、`_placeholder_item_stats_for_export`（1422）、`_export_pack_archive`（1442）、`_resolve_export_profile_or_400`（1539）。
@@ -773,7 +853,7 @@ TOCTOU競合（running確認からthread開始までの競合）の解消、atom
 
 ### R7-1完了後の未実装責務（現在）
 
-`web.py`系列ではR7-1（PDFアップロード保存）が完了し、R5（ライブラリ/統計の集計）・R7-2〜R7-4・R8（エクスポート業務ロジック）が未実装である。`database.py`系列のD1〜D7も未実装で、両系列は実施順に依存しない。次の実装対象は未選定で、着手順は未確定とする。
+`web.py`系列ではR7-1（PDFアップロード保存）が完了し、R5（ライブラリ/統計の集計）・R7-2〜R7-4・R8（エクスポート業務ロジック）が未実装である。`database.py`系列のD1〜D7も未実装で、両系列は実施順に依存しない。R7内の詳細設計はR7-2 → R7-3 → R7-4の順とする（§3「R7-2〜R7-4横断調査」参照）。R5・R8・database.py系列を含む全体の次の実装対象は未選定である。
 
 R7については2026-08-01に子責務分解（R7-1〜R7-4、§3参照）を確定した。最初の子責務であるR7-1（PDFアップロード保存）は以下の詳細設計に基づいて完了し、R7-2〜R7-4は未設計・未実装のまま。
 
@@ -1030,7 +1110,7 @@ PDF内容の完全検証、ファイルサイズ上限、streaming upload、atom
 
 #### 残るR7子責務
 
-R7-2（PDFディレクトリ取り込み）・R7-3（Scrapbox JSON保存・同期）・R7-4（PDF閲覧・変換・本文検索のHTTPオーケストレーション）は未設計・未実装のまま。着手順は未確定（§3「R7の子責務分解」参照）。
+R7-2（PDFディレクトリ取り込み）・R7-3（Scrapbox JSON保存・同期）・R7-4（PDF閲覧・変換・本文検索のHTTPオーケストレーション）は未設計・未実装のまま。R7内の詳細設計はR7-2 → R7-3 → R7-4の順とし、各子責務の設計PRで責務境界と公開service APIを個別に決定する（§3「R7-2〜R7-4横断調査」参照）。
 
 ### 段階7: エクスポート業務ロジックの切り出し（計画時の候補・未実装）
 
