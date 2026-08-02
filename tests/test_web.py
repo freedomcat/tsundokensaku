@@ -168,6 +168,132 @@ class HighlightQueryTest(unittest.TestCase):
             self.assertTrue((books_dir / "a.pdf").exists())
             self.assertTrue((books_dir / "nested" / "b.pdf").exists())
 
+    def test_import_pdfs_from_directory_keeps_current_file_selection_and_skip_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source_dir = root / "source"
+            books_dir = root / "books"
+            nested_dir = source_dir / "空 白"
+            nested_dir.mkdir(parents=True)
+            books_dir.mkdir()
+            (source_dir / "a.pdf").write_bytes(b"%PDF-1.4 a")
+            (source_dir / "upper.PDF").write_bytes(b"%PDF-1.4 upper")
+            (nested_dir / "読書 メモ.pdf").write_bytes(b"%PDF-1.4 unicode")
+            existing = books_dir / "a.pdf"
+            existing.write_bytes(b"existing")
+
+            copied, skipped, total = import_pdfs_from_directory(source_dir, books_dir)
+
+            self.assertEqual((copied, skipped, total), (1, 1, 2))
+            self.assertEqual(existing.read_bytes(), b"existing")
+            self.assertEqual((books_dir / "空 白" / "読書 メモ.pdf").read_bytes(), b"%PDF-1.4 unicode")
+            self.assertFalse((books_dir / "upper.PDF").exists())
+
+    def test_import_pdfs_from_directory_empty_source_counts_zero(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source_dir = root / "source"
+            books_dir = root / "books"
+            source_dir.mkdir()
+
+            copied, skipped, total = import_pdfs_from_directory(source_dir, books_dir)
+
+            self.assertEqual((copied, skipped, total), (0, 0, 0))
+
+    def test_import_pdfs_from_directory_rejects_overlapping_roots(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source_dir = root / "source"
+            books_dir = root / "books"
+            source_dir.mkdir()
+            books_dir.mkdir()
+            cases = (
+                (source_dir, source_dir),
+                (books_dir / "inside", books_dir),
+                (source_dir, source_dir / "books"),
+            )
+            (books_dir / "inside").mkdir()
+
+            for source, books in cases:
+                with self.subTest(source=source, books=books):
+                    with self.assertRaisesRegex(ValueError, "source_dir と books_dir は重ならない場所を指定してください"):
+                        import_pdfs_from_directory(source, books)
+
+    def test_import_pdfs_from_directory_fails_fast_without_rollback(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source_dir = root / "source"
+            books_dir = root / "books"
+            first_dir = source_dir / "01-ok"
+            failing_dir = source_dir / "02-fail"
+            first_dir.mkdir(parents=True)
+            failing_dir.mkdir()
+            (first_dir / "a.pdf").write_bytes(b"%PDF-1.4 a")
+            (failing_dir / "b.pdf").write_bytes(b"%PDF-1.4 b")
+            books_dir.mkdir()
+            (books_dir / "02-fail").write_bytes(b"file blocks mkdir")
+
+            with self.assertRaises(FileExistsError):
+                import_pdfs_from_directory(source_dir, books_dir)
+
+            self.assertEqual((books_dir / "01-ok" / "a.pdf").read_bytes(), b"%PDF-1.4 a")
+            self.assertFalse((books_dir / "02-fail" / "b.pdf").exists())
+
+    def test_pdf_import_route_preserves_query_redirect_and_success_message(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            books_dir = root / "books"
+            source_dir = root / "source input"
+            books_dir.mkdir()
+            source_dir.mkdir()
+            with patch("tsundokensaku.web.get_books_dir", return_value=books_dir), \
+                    patch("tsundokensaku.web.import_pdfs_from_directory", return_value=(3, 2, 5)) as import_mock, \
+                    patch.dict(os.environ, {"DEMO_MODE": "false"}):
+                client = TestClient(tsundokensaku_app)
+                response = client.get("/settings/pdf-import", params={"source_dir": str(source_dir)}, follow_redirects=False)
+
+            self.assertEqual(response.status_code, 303)
+            location = unquote(response.headers["location"])
+            self.assertTrue(location.startswith("/settings?message="))
+            message = location.split("message=", 1)[1]
+            expected_parts = ("PDF を 3 件", str(books_dir), "スキップ 2 件", "5 件中", str(source_dir))
+            positions = [message.index(part) for part in expected_parts]
+            self.assertEqual(positions, sorted(positions))
+            import_mock.assert_called_once_with(source_dir, books_dir)
+
+    def test_pdf_import_route_requires_source_without_calling_import(self) -> None:
+        with patch("tsundokensaku.web.import_pdfs_from_directory") as import_mock, \
+                patch.dict(os.environ, {"DEMO_MODE": "false"}):
+            client = TestClient(tsundokensaku_app)
+            missing_response = client.get("/settings/pdf-import", follow_redirects=False)
+            blank_response = client.get("/settings/pdf-import", params={"source_dir": "   "}, follow_redirects=False)
+
+        for response in (missing_response, blank_response):
+            self.assertEqual(response.status_code, 303)
+            self.assertIn("PDF の取り込み元フォルダを指定してください", unquote(response.headers["location"]))
+        import_mock.assert_not_called()
+
+    def test_pdf_import_route_demo_mode_does_not_import_or_index(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source_dir = root / "source"
+            books_dir = root / "books"
+            source_dir.mkdir()
+            books_dir.mkdir()
+            (source_dir / "a.pdf").write_bytes(b"%PDF-1.4 a")
+
+            with patch("tsundokensaku.web.import_pdfs_from_directory") as import_mock, \
+                    patch("tsundokensaku.web.index_job.start") as index_mock, \
+                    patch.dict(os.environ, {"DEMO_MODE": "true"}):
+                client = TestClient(tsundokensaku_app)
+                response = client.get("/settings/pdf-import", params={"source_dir": str(source_dir)}, follow_redirects=False)
+
+            self.assertEqual(response.status_code, 303)
+            self.assertIn("デモモードのため無効です", unquote(response.headers["location"]))
+            import_mock.assert_not_called()
+            index_mock.assert_not_called()
+            self.assertFalse((books_dir / "a.pdf").exists())
+
     def test_format_indexed_at_renders_jst(self) -> None:
         self.assertEqual(format_indexed_at("2026-06-29T03:55:59.999358+00:00"), "2026/06/29 12:55")
 
