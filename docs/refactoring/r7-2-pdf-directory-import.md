@@ -1,10 +1,18 @@
-# R7-2: PDFディレクトリ取り込みの切り出し — 詳細設計の独立レビュー指摘反映済み・未実装
+# R7-2: PDFディレクトリ取り込みの切り出し — 実装済み
 
 [R7全体設計](../central-file-refactoring-inventory.md) / [ROADMAP](../../ROADMAP.md)
 
-状態: 詳細設計済み・未実装。以下はPR #23で確定した既存設計を移したものであり、内容は変更していない。
+状態: 実装済み。PR #23で確定した詳細設計に従い、characterization test、責務分離、symlink境界強化、安全なHTTPエラー変換を実装した。
 
-本項は、PR #22で記録した横断調査と、`develop`のコミット`b3d6d73072d9bc725df92a5b7cf398e1f8a64450`を基準にしたR7-2単独の再調査に基づく詳細設計である。横断調査で「候補・未確定」とした分離先、公開service API、例外方針、symlink境界を本項で確定し、独立レビューの指摘を反映した。characterization test追加と責務分離の実装はまだ行っていない。R7-1の確定済み契約は変更せず、R7-3・R7-4の設計にも踏み込まない。
+本項は、PR #22で記録した横断調査と、`develop`のコミット`b3d6d73072d9bc725df92a5b7cf398e1f8a64450`を基準にしたR7-2単独の再調査に基づく詳細設計である。横断調査で「候補・未確定」とした分離先、公開service API、例外方針、symlink境界を本項で確定し、独立レビューの指摘を反映した。実装では、R7-1の確定済み契約は変更せず、R7-3・R7-4の設計にも踏み込んでいない。
+
+### 実装結果
+
+- 公開APIは`pdf_import_service.import_pdfs_from_directory(source_dir, books_dir) -> PdfDirectoryImportResult`とした。
+- `PdfDirectoryImportResult`は`@dataclass(frozen=True)`で、`copied`、`skipped`、`total`の非負整数と`total == copied + skipped`を検証する。
+- 例外分類は`PdfDirectoryImportError`を基底とする5分類（`PdfDirectorySourceNotFoundError`、`PdfDirectorySourceNotDirectoryError`、`PdfDirectoryOverlapError`、`PdfDirectoryBoundaryError`、`PdfDirectoryFilesystemError`）とした。
+- 移動前の維持対象はcharacterization testで固定し、安全性変更としてsource root symlink、PDF symlink、symlink directory、destination/中間symlink、broken symlink、内部パス露出を回帰テストで検証した。
+- 最終検証はPython 524件、Playwright 29件、`git diff --check`成功。
 
 ### 目的
 
@@ -12,7 +20,7 @@
 
 今回の主目的は責務分離である。公開HTTP契約と安全なファイル配置契約を明示しつつ、ファイル形式の拡張、HTTP method変更、自動インデックス、処理量制限等の別のプロダクト変更は混在させない。
 
-### 現在の責務と処理フロー
+### 実装前の責務と処理フロー
 
 - HTTP入口: `GET /settings/pdf-import`（`import_pdf_directory(source_dir: str = "")`）。設定画面のGET formがquery parameter `source_dir`を送る。
 - `web.py`のハンドラがdemo mode、空入力、BOOKS_DIR取得、service相当処理の呼出し、成功・失敗message、`/settings`への303 redirectを所有する。
@@ -238,12 +246,12 @@ symlink安全性と安全なHTTPエラーは現行の危険な挙動を変更す
 
 ### 実装PR構成
 
-characterization testと責務分離・安全性変更をレビュー可能な単位に分ける。
+characterization testと責務分離・安全性変更は、レビュー可能な単位として次の2コミットに分けて実装した。
 
 1. **characterization test**: HTTP redirect、件数、nested構造、既存の通常ファイルdestinationのskip、大小文字、Unicode、source/books関係、空directory、決定的順序、fail-fastと部分成功等、現在の維持対象・要観測挙動を追加する。危険なsymlink escapeと内部エラー露出を維持契約として固定しない。
 2. **責務分離と安全性変更**: `PdfDirectoryImportResult`・service例外・`import_pdfs_from_directory`を`pdf_import_service.py`へ実装し、`web.py`のhelper本体を除去してservice呼出し、logging、安全なmessage変換へ置き換える。同じPR内でsymlink境界と安全なエラー表示の回帰テストを追加する。
 
-実装PRを1本にするか2本に分けるかは着手時の差分量で決められるが、コミットは上記2目的を分け、危険な現行挙動をcharacterization commitに含めない。
+危険な現行挙動はcharacterization commitに含めず、同じPR内の責務分離・安全性変更で安全側へ変更した。
 
 ### 非目標（今回行わないこと）
 
@@ -285,10 +293,10 @@ characterization testと責務分離・安全性変更をレビュー可能な�
 - 内部絶対パスとOSエラー全文を利用者向け失敗messageへ含めず、service層ではログを出さず、web層が詳細とstack traceを`LOGGER.exception(...)`で一度だけ記録する。
 - fail-fastとrollbackなしの部分成功が移動前後で確認される。
 - 予定したHTTP契約テスト、service単体テスト、既存Python・Playwrightテストが成功する。
-- 本設計書、実装、テストが一致する。ROADMAP更新は設計レビュー・実装の進捗に応じて別途判断する。
+- 本設計書、実装、テスト、ROADMAPが一致する。
 
 ### R7-1との関係と残るR7子責務
 
 R7-1とR7-2は「外部からPDFをBOOKS_DIRへ持ち込む」という変更理由と、`web -> pdf_import_service -> pathlib/filesystem`の依存方向を共有するため同じmoduleに置く。一方、R7-1の`save_uploaded_pdf`は単一bytes、大小文字を区別しない`.pdf`、一意名生成、保存先`Path`という契約を持ち、R7-2はdirectory、複数の小文字`.pdf`、既存の通常ファイルdestinationのskip、件数結果、部分成功という別契約を持つ。公開関数、結果、例外処理を統合せず、R7-1を再設計しない。
 
-R7-2は本詳細設計の独立レビュー指摘反映済み・未実装である。R7-3（Scrapbox JSON保存・同期）・R7-4（PDF閲覧・変換・本文検索のHTTPオーケストレーション）も詳細設計済み・未実装であり、それぞれの専用文書で確定した境界を正とする。R7-2のmodule・API・例外判断をR7-3・R7-4へ自動的に適用しない。R7親項目も未完了のままとする。
+R7-2は本詳細設計に従って実装済みである。R7-3（Scrapbox JSON保存・同期）・R7-4（PDF閲覧・変換・本文検索のHTTPオーケストレーション）は詳細設計済み・未実装であり、それぞれの専用文書で確定した境界を正とする。R7-2のmodule・API・例外判断をR7-3・R7-4へ自動的に適用しない。R7親項目も未完了のままとする。

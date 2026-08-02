@@ -7,7 +7,6 @@ import json
 import re
 import sqlite3
 import time
-import shutil
 from datetime import datetime, timezone
 from typing import Iterable
 from urllib.parse import quote, urlencode
@@ -367,34 +366,6 @@ def get_library_items(books_dir: Path, db_path: Path) -> dict[str, object]:
         "pdf_items": pdf_items,
         "kindle_items": kindle_items,
     }
-
-
-def import_pdfs_from_directory(source_dir: Path, books_dir: Path) -> tuple[int, int, int]:
-    source_root = source_dir.expanduser().resolve()
-    books_root = books_dir.expanduser().resolve()
-
-    if not source_root.exists():
-        raise FileNotFoundError(source_root)
-    if not source_root.is_dir():
-        raise NotADirectoryError(source_root)
-    if source_root == books_root or source_root.is_relative_to(books_root) or books_root.is_relative_to(source_root):
-        raise ValueError("source_dir と books_dir は重ならない場所を指定してください")
-
-    pdf_paths = [path for path in sorted(source_root.rglob("*.pdf")) if path.is_file()]
-    books_root.mkdir(parents=True, exist_ok=True)
-
-    copied = 0
-    skipped = 0
-    for pdf_path in pdf_paths:
-        destination = books_root / pdf_path.relative_to(source_root)
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        if destination.exists():
-            skipped += 1
-            continue
-        shutil.copy2(pdf_path, destination)
-        copied += 1
-
-    return copied, skipped, len(pdf_paths)
 
 
 def _unique_destination_path(destination: Path) -> Path:
@@ -1487,15 +1458,35 @@ def import_pdf_directory(source_dir: str = "") -> RedirectResponse:
         return RedirectResponse(url=f"{target}?message={message}", status_code=303)
 
     try:
-        copied, skipped, total = import_pdfs_from_directory(source, books_dir)
-    except Exception as exc:
-        message = quote(f"PDFインポートに失敗しました: {exc}")
+        result = pdf_import_service.import_pdfs_from_directory(source, books_dir)
+    except pdf_import_service.PdfDirectoryImportError as exc:
+        LOGGER.exception("PDFディレクトリ取り込みに失敗しました")
+        message = quote(_pdf_directory_import_failure_message(exc))
+        return RedirectResponse(url=f"{target}?message={message}", status_code=303)
+    except Exception:
+        LOGGER.exception("PDFディレクトリ取り込みで予期しないエラーが発生しました")
+        message = quote("PDFインポートに失敗しました: 予期しないエラーが発生しました")
         return RedirectResponse(url=f"{target}?message={message}", status_code=303)
 
     message = quote(
-        f"PDF を {copied} 件 {books_dir} にインポートしました / スキップ {skipped} 件 ({total} 件中, {source})"
+        f"PDF を {result.copied} 件 {books_dir} にインポートしました / "
+        f"スキップ {result.skipped} 件 ({result.total} 件中, {source})"
     )
     return RedirectResponse(url=f"{target}?message={message}", status_code=303)
+
+
+def _pdf_directory_import_failure_message(exc: pdf_import_service.PdfDirectoryImportError) -> str:
+    if isinstance(exc, pdf_import_service.PdfDirectorySourceNotFoundError):
+        return "PDFインポートに失敗しました: 入力元フォルダが見つかりません"
+    if isinstance(exc, pdf_import_service.PdfDirectorySourceNotDirectoryError):
+        return "PDFインポートに失敗しました: 入力元がフォルダではありません"
+    if isinstance(exc, pdf_import_service.PdfDirectoryOverlapError):
+        return "PDFインポートに失敗しました: 入力元と保存先には重ならないフォルダを指定してください"
+    if isinstance(exc, pdf_import_service.PdfDirectoryBoundaryError):
+        return "PDFインポートに失敗しました: 安全でないパスが含まれているため取り込めません"
+    if isinstance(exc, pdf_import_service.PdfDirectoryFilesystemError):
+        return "PDFインポートに失敗しました: ファイルの読み取りまたはコピーに失敗しました"
+    return "PDFインポートに失敗しました: 予期しないエラーが発生しました"
 
 
 @app.post("/settings/pdf-upload")
