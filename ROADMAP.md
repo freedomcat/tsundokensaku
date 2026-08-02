@@ -162,7 +162,14 @@ Python・Playwrightの自動テストで継続的に確認できる。
     - [x] R7-2 PDFディレクトリ取り込み — `pdf_import_service.py`へ分離。characterization test、安全なsymlink境界、安全なHTTPエラー変換を実装済み（[docs/refactoring/r7-2-pdf-directory-import.md](docs/refactoring/r7-2-pdf-directory-import.md)参照）
     - [x] R7-3 Scrapbox JSON保存・同期 — 完了（2026-08-02）。Scrapbox/Cosense export JSONの固定cache保存、file/byte経路、DB接続・初期化・メモ同期・Kindle同期・closeを`src/tsundokensaku/scrapbox_import_service.py`へ分離し、HTTP契約と失敗時契約のテストを追加した（[docs/refactoring/r7-3-scrapbox-sync.md](docs/refactoring/r7-3-scrapbox-sync.md)参照）
     - [x] R7-4 PDF閲覧・変換・本文検索のHTTPオーケストレーション — 完了（2026-08-02）。PDF生成・server保存を`pdf_export.py`へ、indexed book照合とScrapbox URL解決を`pdf_metadata_service.py`へ、本文取得・ページ本文検索・Markdown生成を`pdf_text_service.py`へ分離し、`export_stats.py`の重複検索を共通APIへ置換した。`web.py`はHTTP入力・例外変換・JSON/template/download response生成中心のadapterへ整理した（[docs/refactoring/r7-4-http-orchestration.md](docs/refactoring/r7-4-http-orchestration.md)参照）
-  - [ ] R8 エクスポート業務ロジック — 詳細設計済み・実装未着手。単一`export_service.py`から開始し、集計・profile・ZIP・PDF/Markdown・履歴永続化は既存モジュール境界に残す方針（[docs/refactoring/r8-export-service.md](docs/refactoring/r8-export-service.md)参照）。characterization test・実装・完了反映は未実施
+  - [ ] R8 エクスポート業務ロジック — R8 PR1「R8詳細設計」は完了。R7-4完了後の設計再検証も完了済みで、設計書だけを先に更新する追加PRは不要と判断した。R8全体は未完了で、次の実装対象はPR2「現行契約のcharacterization test」。R8の詳細とPR分割は[詳細設計書 §22](docs/refactoring/r8-export-service.md#22-pr分割案)を正本とする。
+    - [x] PR1 R8詳細設計
+    - [ ] PR2 現行契約のcharacterization test
+    - [ ] PR3 previewとrequest policyの分離
+    - [ ] PR4 JSON export準備の分離
+    - [ ] PR5 archiveオーケストレーションの分離
+    - [ ] PR6 成功履歴とHTTP adapterの仕上げ
+    - 実施順: R8 PR2〜PR6を順に実施し、R8完了後にR5へ着手する。PR5はR7-4の非HTTP PDF/Markdown APIに加え、`resolve_pdf`相当の非HTTP契約が確定・実装済みであることを先行条件とする。
   - [ ] `test_web.py`の責務整理
     - サービス単体テストとWeb／HTTP契約テストの境界を整理し、責務ごとに段階的に移行する
     - 完了済みR項目の残存テストは、関連する後続PRまたは独立したテスト整理PRで回収する
@@ -170,7 +177,6 @@ Python・Playwrightの自動テストで継続的に確認できる。
     - テスト件数やファイル行数の削減自体は目的とせず、テスト対象の契約境界と変更影響範囲を明確にする
     - `test_web.py`がHTTP層の契約テストを中心とする構成になったことを最終確認する
     - 詳細設計: [Web責務分離に伴うテスト移行設計](docs/refactoring/test-web-responsibility.md)
-  - R5・R8の着手順は未確定。次の実装対象は勝手に確定しない
   - FastAPIのルーティング・入力検証・レスポンス生成を薄い層へ整理する
   - 検索、資料、PDFプレビュー、エクスポート、本の登録・設定の業務処理を分ける
   - 一つのPRでは一つの責務だけを移動する
