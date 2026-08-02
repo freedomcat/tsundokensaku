@@ -309,7 +309,7 @@ R2〜R8という番号の一括完了だけには依存しない。次をすべ�
 
 ### 未確定事項
 
-- `HighlightQueryTest`内の`ExportProfileParameterTest`に相当するchunk分割検証の一部が、`tests/test_export_profiles.py`と粒度で重なる可能性がある。R8実装時に精査する。現時点では重複と断定しない。
+- `ExportProfileParameterTest`のchunk分割検証の一部が、`tests/test_export_profiles.py`と粒度で重なる可能性がある。R8実装時に精査する。現時点では重複と断定しない。
 - 候補Cで`/search`routeのWeb契約テストを追加すべきかは追加調査が必要である。本文書では要否を確定しない。
 - R5に属する`/api/packs/stats`の集計値検証3件の最終的な所有先は、R5の所有先確定後に決まる。現時点では未確定である。
 - `IndexJobCharacterizationTest`のクラス名変更の要否は候補Dで扱う。本文書では必須としない。
