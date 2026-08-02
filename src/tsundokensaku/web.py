@@ -395,30 +395,6 @@ def render_pdf_export(candidate: Path, pages: str) -> tuple[bytes, str]:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-def save_pdf_export_to_configured_dir(pdf_path: str, pages: str, *, books_dir: Path, save_dir: Path | None) -> Path:
-    return pdf_export_service.save_pdf_export_to_configured_dir(
-        pdf_path,
-        pages,
-        books_dir=books_dir,
-        save_dir=save_dir,
-    )
-
-
-def _get_indexed_book(candidate: Path, *, books_dir: Path, db_path: Path):
-    relative = resolve_pdf_path(candidate, books_dir)
-    if relative is None:
-        return None
-    return pdf_metadata_service.get_indexed_book(relative, books_dir=books_dir, db_path=db_path)
-
-
-def load_pages_text(candidate: Path, page_numbers: list[int], *, books_dir: Path, db_path: Path) -> dict[int, str]:
-    return pdf_text_service.load_pages_text(candidate, page_numbers, books_dir=books_dir, db_path=db_path)
-
-
-def _page_snippet(text: str, query: str, *, width: int = 80) -> str:
-    return pdf_text_service._page_snippet(text, query, width=width)
-
-
 def search_book_pages(candidate: Path, query: str, *, books_dir: Path, db_path: Path, limit: int = 100) -> dict[str, object]:
     result = pdf_text_service.search_book_pages(candidate, query, books_dir=books_dir, db_path=db_path, limit=limit)
     return {

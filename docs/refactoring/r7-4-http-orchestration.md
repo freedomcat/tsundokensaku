@@ -25,7 +25,7 @@
 実装時の調整:
 
 - 指定参照パス`docs/refactoring/central-file-refactoring-inventory.md`は存在せず、設計書・ROADMAP上の実体である`docs/central-file-refactoring-inventory.md`を確認した。R7-4の設計内容自体との矛盾はなかった。
-- `web.py`の既存import互換を壊さないため、`save_pdf_export_to_configured_dir`、`_get_indexed_book`、`load_pages_text`、`_page_snippet`、`search_book_pages`、`resolve_pdf_scrapbox_url`は下位moduleへ委譲する薄い関数として残した。処理本体は下位moduleへ移動済みで、routeはserviceまたは薄いadapterを通じて既存HTTP契約へ変換する。
+- 実装当初は`web.py`の既存import互換を壊さないため、`save_pdf_export_to_configured_dir`、`_get_indexed_book`、`load_pages_text`、`_page_snippet`、`search_book_pages`、`resolve_pdf_scrapbox_url`を下位moduleへ委譲する薄い関数として残した。レビュー後、実際の参照元がなかった`save_pdf_export_to_configured_dir`、`_get_indexed_book`、`load_pages_text`、`_page_snippet`は削除した。現在の`web.py`はroute、HTTP入力、例外変換、JSON/template/download response生成を中心とし、service単体契約はserviceテストへ、`POST /export-pdf/save`成功時のJSON shapeはHTTP契約テストへ整理した。`search_book_pages`、`render_pdf_export`、`render_markdown_export`、`resolve_pdf_scrapbox_url`はHTTP responseやR8 callbackとの接続に必要な薄いadapterとして残している。
 - `pdf_text_service`のDB接続は既存の`database.connect`を利用し、row factoryを含む既存DBアクセス前提を維持した。
 
 実行したテスト:

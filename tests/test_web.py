@@ -63,7 +63,6 @@ from tsundokensaku.web import (
     pdf_thumbnails,
     resolve_pdf_path,
     resolve_pdf_scrapbox_url,
-    save_pdf_export_to_configured_dir,
     search_pages,
     sort_results,
     update_env_setting,
@@ -446,6 +445,37 @@ class HighlightQueryTest(unittest.TestCase):
         self.assertIn("text/markdown", md_response.headers["content-type"])
         self.assertIn("filename*=UTF-8''", md_response.headers["content-disposition"])
         self.assertIn(quote("日本語の本_p1.md"), md_response.headers["content-disposition"])
+
+    def test_save_export_pdf_http_success_returns_saved_path_json(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            books_dir = root / "books"
+            save_dir = root / "exports"
+            expected_path = save_dir / "sample_p1-2.pdf"
+            books_dir.mkdir()
+            save_dir.mkdir()
+
+            with (
+                patch("tsundokensaku.web.get_books_dir", return_value=books_dir),
+                patch("tsundokensaku.web.get_pdf_export_save_dir", return_value=save_dir),
+                patch(
+                    "tsundokensaku.web.pdf_export_service.save_pdf_export_to_configured_dir",
+                    return_value=expected_path,
+                ) as save_mock,
+            ):
+                client = TestClient(tsundokensaku_app)
+                response = client.post("/export-pdf/save", params={"pdf_path": "sample.pdf", "pages": "1-2"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"saved_path": str(expected_path)})
+        self.assertNotIn("path", response.json())
+        self.assertNotIn("file", response.json())
+        save_mock.assert_called_once_with(
+            "sample.pdf",
+            "1-2",
+            books_dir=books_dir,
+            save_dir=save_dir,
+        )
 
     def test_pdf_thumbnails_returns_base64_jpeg_for_requested_pages(self) -> None:
         import base64
@@ -930,56 +960,6 @@ class HighlightQueryTest(unittest.TestCase):
             body = response.body.decode("utf-8")
             self.assertIn("# sample（抜粋）", body)
             self.assertIn("live extracted text", body)
-
-    def test_save_pdf_export_requires_configured_dir(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            books_dir = Path(temp_dir) / "books"
-            books_dir.mkdir()
-            pdf_path = books_dir / "sample.pdf"
-            writer = PdfWriter()
-            writer.add_blank_page(width=72, height=72)
-            with pdf_path.open("wb") as handle:
-                writer.write(handle)
-
-            with self.assertRaises(ValueError):
-                save_pdf_export_to_configured_dir("sample.pdf", "1", books_dir=books_dir, save_dir=None)
-
-    def test_save_pdf_export_errors_when_save_dir_missing(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            books_dir = root / "books"
-            books_dir.mkdir()
-            pdf_path = books_dir / "sample.pdf"
-            writer = PdfWriter()
-            writer.add_blank_page(width=72, height=72)
-            with pdf_path.open("wb") as handle:
-                writer.write(handle)
-
-            with self.assertRaises(FileNotFoundError):
-                save_pdf_export_to_configured_dir("sample.pdf", "1", books_dir=books_dir, save_dir=root / "missing")
-
-    def test_save_pdf_export_writes_unique_file(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            books_dir = root / "books"
-            save_dir = root / "exports"
-            books_dir.mkdir()
-            save_dir.mkdir()
-            pdf_path = books_dir / "日本語の本.pdf"
-            writer = PdfWriter()
-            for _ in range(3):
-                writer.add_blank_page(width=72, height=72)
-            with pdf_path.open("wb") as handle:
-                writer.write(handle)
-            existing = save_dir / "日本語の本_p1-2.pdf"
-            existing.write_bytes(b"existing")
-
-            saved = save_pdf_export_to_configured_dir("日本語の本.pdf", "1-2", books_dir=books_dir, save_dir=save_dir)
-
-            self.assertEqual(saved.name, "日本語の本_p1-2_2.pdf")
-            self.assertTrue(saved.exists())
-            reader = PdfReader(str(saved))
-            self.assertEqual(len(reader.pages), 2)
 
     def test_resolve_pdf_scrapbox_url_prefers_database_value(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
