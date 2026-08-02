@@ -14,6 +14,7 @@ import json
 from pypdf import PdfReader, PdfWriter
 
 from fastapi import HTTPException
+from fastapi.responses import HTMLResponse
 from fastapi.testclient import TestClient
 
 import tsundokensaku.web as web
@@ -316,6 +317,135 @@ class HighlightQueryTest(unittest.TestCase):
 
             self.assertEqual(response.status_code, 200)
             self.assertEqual(json.loads(response.body), {"page_count": 1, "chapters": []})
+
+    def test_pdf_http_routes_keep_required_query_validation(self) -> None:
+        client = TestClient(tsundokensaku_app)
+
+        cases = [
+            ("GET", "/pdf-outline"),
+            ("GET", "/pdf-thumbnails?pdf_path=sample.pdf"),
+            ("GET", "/export-pdf?pdf_path=sample.pdf"),
+            ("GET", "/export-md?pdf_path=sample.pdf"),
+            ("POST", "/export-pdf/save?pdf_path=sample.pdf"),
+            ("GET", "/view/sample.pdf?page=abc"),
+        ]
+        for method, url in cases:
+            with self.subTest(method=method, url=url):
+                response = client.request(method, url)
+                self.assertEqual(response.status_code, 422)
+
+    def test_pdf_http_routes_return_404_for_missing_pdf(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            books_dir = root / "books"
+            save_dir = root / "exports"
+            books_dir.mkdir()
+            save_dir.mkdir()
+
+            with (
+                patch("tsundokensaku.web.get_books_dir", return_value=books_dir),
+                patch("tsundokensaku.web.get_db_path", return_value=root / "index.db"),
+                patch("tsundokensaku.web.get_pdf_export_save_dir", return_value=save_dir),
+            ):
+                client = TestClient(tsundokensaku_app)
+                cases = [
+                    ("GET", "/pdf/missing.pdf"),
+                    ("GET", "/pdf-outline?pdf_path=missing.pdf"),
+                    ("GET", "/pdf-thumbnails?pdf_path=missing.pdf&pages=1"),
+                    ("GET", "/export-pdf?pdf_path=missing.pdf&pages=1"),
+                    ("GET", "/search-pages?pdf_path=missing.pdf&q=query"),
+                    ("GET", "/export-md?pdf_path=missing.pdf&pages=1"),
+                    ("POST", "/export-pdf/save?pdf_path=missing.pdf&pages=1"),
+                    ("GET", "/view/missing.pdf"),
+                ]
+                for method, url in cases:
+                    with self.subTest(method=method, url=url):
+                        response = client.request(method, url)
+                        self.assertEqual(response.status_code, 404)
+                        self.assertEqual(response.json()["detail"], "PDF not found")
+
+    def test_pdf_http_routes_keep_empty_pages_and_invalid_pages_details(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            books_dir = root / "books"
+            save_dir = root / "exports"
+            books_dir.mkdir()
+            save_dir.mkdir()
+            pdf_path = books_dir / "sample.pdf"
+            writer = PdfWriter()
+            writer.add_blank_page(width=72, height=72)
+            with pdf_path.open("wb") as handle:
+                writer.write(handle)
+
+            with (
+                patch("tsundokensaku.web.get_books_dir", return_value=books_dir),
+                patch("tsundokensaku.web.get_db_path", return_value=root / "index.db"),
+                patch("tsundokensaku.web.get_pdf_export_save_dir", return_value=save_dir),
+            ):
+                client = TestClient(tsundokensaku_app)
+                empty_pages_cases = [
+                    ("GET", "/pdf-thumbnails?pdf_path=sample.pdf&pages=%20%20"),
+                    ("GET", "/export-pdf?pdf_path=sample.pdf&pages=%20%20"),
+                    ("GET", "/export-md?pdf_path=sample.pdf&pages=%20%20"),
+                    ("POST", "/export-pdf/save?pdf_path=sample.pdf&pages=%20%20"),
+                ]
+                for method, url in empty_pages_cases:
+                    with self.subTest(method=method, url=url):
+                        response = client.request(method, url)
+                        self.assertEqual(response.status_code, 400)
+                        self.assertEqual(response.json()["detail"], "pages is required")
+
+                invalid_cases = [
+                    ("GET", "/export-pdf?pdf_path=sample.pdf&pages=2", "Page number out of range: 2 (1-1)"),
+                    ("GET", "/export-md?pdf_path=sample.pdf&pages=2", "Page number out of range: 2 (1-1)"),
+                    ("POST", "/export-pdf/save?pdf_path=sample.pdf&pages=2", "Page number out of range: 2 (1-1)"),
+                    ("GET", "/pdf-thumbnails?pdf_path=sample.pdf&pages=2&size=detail", "page not found"),
+                ]
+                for method, url, detail in invalid_cases:
+                    with self.subTest(method=method, url=url):
+                        response = client.request(method, url)
+                        self.assertEqual(response.json()["detail"], detail)
+                        self.assertIn(response.status_code, {400, 404})
+
+    def test_search_pages_empty_query_returns_before_pdf_or_db_resolution(self) -> None:
+        with (
+            patch("tsundokensaku.web.get_books_dir", side_effect=AssertionError("books dir must not be read")),
+            patch("tsundokensaku.web.get_db_path", side_effect=AssertionError("db path must not be read")),
+        ):
+            client = TestClient(tsundokensaku_app)
+            response = client.get("/search-pages", params={"pdf_path": "missing.pdf", "q": "  "})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"indexed": True, "pages": []})
+
+    def test_export_downloads_keep_media_type_and_utf8_filename(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            books_dir = root / "books"
+            books_dir.mkdir()
+            db_path = root / "index.db"
+            pdf_path = books_dir / "日本語の本.pdf"
+            writer = PdfWriter()
+            writer.add_blank_page(width=72, height=72)
+            with pdf_path.open("wb") as handle:
+                writer.write(handle)
+
+            with (
+                patch("tsundokensaku.web.get_books_dir", return_value=books_dir),
+                patch("tsundokensaku.web.get_db_path", return_value=db_path),
+            ):
+                client = TestClient(tsundokensaku_app)
+                pdf_response = client.get("/export-pdf", params={"pdf_path": "日本語の本.pdf", "pages": "1"})
+                md_response = client.get("/export-md", params={"pdf_path": "日本語の本.pdf", "pages": "1"})
+
+        self.assertEqual(pdf_response.status_code, 200)
+        self.assertEqual(pdf_response.headers["content-type"], "application/pdf")
+        self.assertIn("filename*=UTF-8''", pdf_response.headers["content-disposition"])
+        self.assertIn(quote("日本語の本_p1.pdf"), pdf_response.headers["content-disposition"])
+        self.assertEqual(md_response.status_code, 200)
+        self.assertIn("text/markdown", md_response.headers["content-type"])
+        self.assertIn("filename*=UTF-8''", md_response.headers["content-disposition"])
+        self.assertIn(quote("日本語の本_p1.md"), md_response.headers["content-disposition"])
 
     def test_pdf_thumbnails_returns_base64_jpeg_for_requested_pages(self) -> None:
         import base64
@@ -878,6 +1008,44 @@ class HighlightQueryTest(unittest.TestCase):
                 resolve_pdf_scrapbox_url("sample.pdf", books_dir=books_dir, db_path=db_path),
                 "https://scrapbox.io/custom-project/sample",
             )
+
+    def test_view_pdf_keeps_template_context(self) -> None:
+        from unittest.mock import MagicMock
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            books_dir = root / "books"
+            books_dir.mkdir()
+            (books_dir / "sample.pdf").write_bytes(b"%PDF-1.4 sample")
+            db_path = root / "index.db"
+            request = MagicMock()
+            request.url.path = "/view/sample.pdf"
+            captured: dict[str, object] = {}
+
+            def fake_template_response(request_arg, template_name, context):
+                captured["request"] = request_arg
+                captured["template_name"] = template_name
+                captured["context"] = context
+                return HTMLResponse("ok")
+
+            with (
+                patch("tsundokensaku.web.get_books_dir", return_value=books_dir),
+                patch("tsundokensaku.web.get_db_path", return_value=db_path),
+                patch("tsundokensaku.web.resolve_pdf_scrapbox_url", return_value="https://scrapbox.io/x/sample"),
+                patch("tsundokensaku.web.templates.TemplateResponse", side_effect=fake_template_response),
+            ):
+                response = web.view_pdf(request, "sample.pdf", page=3)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(captured["template_name"], "pdf_viewer.html")
+        context = captured["context"]
+        self.assertEqual(context["request"], request)
+        self.assertEqual(context["books_dir"], books_dir)
+        self.assertEqual(context["db_path"], db_path)
+        self.assertEqual(context["pdf_src"], "/pdf/sample.pdf#page=3")
+        self.assertEqual(context["pdf_path"], "sample.pdf")
+        self.assertEqual(context["page"], 3)
+        self.assertEqual(context["scrapbox_url"], "https://scrapbox.io/x/sample")
 
     def test_build_scrapbox_page_url_includes_prefilled_body(self) -> None:
         with patch.dict("os.environ", {"SCRAPBOX_BASE_URL": "https://scrapbox.io/custom-project"}, clear=False):
