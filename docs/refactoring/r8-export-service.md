@@ -48,7 +48,7 @@ R7では、HTTP adapterと非HTTP処理を分け、既存のstatus、本文、he
 
 - `EXTERNALLY_AVAILABLE_EXPORT_PROFILES`は現在`web.py`の定数だが、「UI/APIから選択可能なprofile」というアプリケーションポリシーであり、HTTP型ではない。R8実装時はprofile解決ロジックと同じ側へ寄せる候補とする。
 - `_now_jst`はJSON/ZIP名とmanifest日時で使う横断時刻関数である。R8へ移動せず、時刻を引数注入してサービスから時計依存を外す方針を優先する。
-- `render_pdf_export`、`render_markdown_export`、`_resolve_pdf_file_or_404`はR7-4の対象である。R8はそれらの外部契約を変更せず利用するが、HTTP例外をサービスへ漏らさない接続条件を定める。
+- `render_pdf_export`、`render_markdown_export`、`_resolve_pdf_file_or_404`はR7-4で整理するHTTPオーケストレーションに関連する。R8はR7-4の責務範囲や外部契約を変更しないが、`resolve_pdf`相当のPDF解決を含め、HTTP例外をサービスへ漏らさず接続できることをarchive移動の先行条件とする。
 
 ## 4. 対象外・非目標
 
@@ -239,7 +239,7 @@ def build_pack_export_preview(
 - 接続、schema保証、pack/items/統計read、close、その後のplanという現在順序を維持する。
 - 戻りdictは現在のJSON shapeそのもの。`JSONResponse`は返さない。
 - 空pack、PDF欠損、pages不正、未索引は200 payloadのwarningであり失敗にしない。
-- chapter読取はHTTP非依存のpath解決と`list_chapters`を使う。PDF不在をpreview warningからHTTP例外へ逆戻りさせない。
+- chapter読取はHTTP非依存のpath解決と`list_chapters`を使う。`chapter_loader`から`HTTPException`を送出させず、PDF不在は実装前に確定する非HTTP例外またはresultで通知する。既に統計で判定できるPDF不在をpreview warningからHTTP例外へ逆戻りさせず、routeで変換すべき失敗だけをweb adapterが現在のHTTP契約へ変換する。
 - DB schema保証以外のwrite、event記録、pack更新は行わない。
 
 純粋関数としての`build_export_preview_warnings`、`build_export_preview_payload`、`build_export_preview_payload_for_profile`は直接単体テスト価値が高いため、service moduleの公開関数として維持する案を採る。`_export_preview_warning`はprivateのままとする。
@@ -311,7 +311,7 @@ def record_export_success_best_effort(
 
 - profile/formatの利用者入力不正、空pack、pages未指定、ページ指定不正は`ValueError`系を第一候補とする。メッセージは現在のHTTP detailを維持する。
 - pack不在は`None`結果を第一候補とする。専用`ExportPackNotFoundError`等を新設する場合は、契約固定PR後に名称と用途を確定し、本書を更新してから実装する。
-- PDF source不在は404へ区別できる非HTTP表現が必要である。R7-4実装後の専用例外、`FileNotFoundError`の明確なサブクラス、または明示resultのいずれかを実装前に確定する。一般の保存先/DBの`FileNotFoundError`と混同しない。
+- PDF source不在は404へ区別できる非HTTP表現が必要である。専用例外、`FileNotFoundError`の明確なサブクラス、または明示resultのいずれかを、現行のarchiveとchapter previewの契約をcharacterization testで確認してから確定する。一般の保存先/DBの`FileNotFoundError`と混同せず、service本体、`RenderContext.resolve_pdf`、`chapter_loader`のいずれも`HTTPException`を送出しない。
 - unexpectedなSQLite、PDF parser、ZIP、memory、filesystem例外は捕捉しない。現在どおり500になり得る。
 - event記録だけは例外種別を問わず内部で捕捉する。
 - HTTP statusやFastAPIのdetailをservice例外のfieldに持たせない。
@@ -328,6 +328,8 @@ def record_export_success_best_effort(
 | pages未指定 | 400、`{title}: ページを指定してください`。position順で最初の1件 |
 | PDF source不在 | 404、`PDF not found` |
 | pages parse/range不正 | 400、既存lower moduleの`str(exc)` |
+
+serviceやcallbackはこの表のHTTP statusを知らず、`web.py`のadapterだけが非HTTPの結果・例外をstatusとdetailへ変換する。特にPDF source不在は、archiveなど現在404となる経路でのみ`PDF not found`へ変換し、previewの既存warning経路を404へ変更しない。
 | previewの空/PDF欠損/pages不正/未索引 | 200、warning payload |
 | JSONの空/PDF欠損/pages不正 | 200、snapshot JSON |
 | event記録失敗 | 生成済み200を維持 |
@@ -366,10 +368,14 @@ profile→format→profile/format整合→packの検証順を維持する。prev
 - manifest/ZIP: `zip_export.py`が所有する。serviceはentry/manifest入力を組み立てるだけにする。
 - filesystem: archiveとJSONはtemporary fileを作らず、メモリ上で完成bytesを返す。streamingへ変更しない。
 
-R7-4未実装の現状では、archive callbackが`HTTPException`を送出する。preview純粋ロジックとJSONは先行移動できるが、archiveの完成形への移動は、次のいずれかを満たすまで行わない。
+R7-4未実装の現状では、archiveの`RenderContext.resolve_pdf`とchapter preview/archiveの`chapter_loader`に`_resolve_pdf_file_or_404`が渡され、callback経由で`HTTPException(404)`が送出され得る。R7-4の非HTTP PDF/Markdown rendererが実装されるだけでは、このPDF解決依存は解消しない。preview純粋ロジックとJSONは先行移動できるが、callbackを含む完成形では次の境界をすべて満たす。
 
-1. R7-4の非HTTP PDF/Markdown APIが実装済みである。
-2. 同等の非HTTP callback契約をR7-4設計と矛盾なく先に確定し、R7-4文書も同期する。
+1. `resolve_pdf`相当のPDF解決処理に、HTTPに依存しない契約を用意する。具体的な例外型またはresult型は現行契約をcharacterization testで確認してから確定し、根拠なく本設計PRで新設しない。
+2. service本体とserviceへ渡す`RenderContext`/`chapter_loader` callbackは`HTTPException`を送出せず、PDF不在を上記の非HTTP表現で通知する。
+3. `web.py`だけがPDF不在の非HTTP表現を捕捉し、archiveなど現在のroute契約で必要なHTTP 404 `PDF not found`へ変換する。chapter previewで既にwarningとなるPDF不在は200 warningのまま維持する。
+4. chapter previewの`chapter_loader`にもarchiveの`resolve_pdf`と同じ方針を適用し、preview service移動後にHTTP例外経路を残さない。
+
+archiveの完成形への移動は、R7-4の非HTTP PDF/Markdown APIが利用可能であることに加え、`resolve_pdf`相当の非HTTP契約が確定・実装済みで、`RenderContext`と`chapter_loader`の接続から`HTTPException`が排除されるまで行わない。この条件はR8からR7-4の責務範囲を拡張するものではなく、R8が利用する下位境界または協調する先行PRで満たす接続条件である。
 
 ## 18. 既存の外部契約
 
@@ -523,10 +529,12 @@ JSONのkey順・indent・末尾改行はJSONの意味論では不要で、現在
 12. `_now_jst`の呼出し回数と、archive日時・Markdown抽出日・UTC event日時が別時計である現在挙動。統一する場合は別の仕様変更PRにする。
 13. TestClientでactual status、`{"detail": ...}`、Content-Type、Content-Dispositionを確認する。直接関数呼出しだけに依存しない。
 14. `tsundokensaku.web`のR8対象関数に対するmonkeypatchが0件であることを再確認する。
+15. Python側のwarning codeと`workspace.html`のblocking判定文字列が一致するcross-layer契約をPlaywrightで固定する。`empty_pack`、`missing_pdf`、`missing_pages`、`invalid_pages`のblocking warningがある場合はexport操作が無効になり、`unindexed_pages`やplan warningなどnon-blocking warningだけの場合は操作可能であることを確認する。4種類すべてをE2Eで検証するか、代表E2Eと全codeのPython testへ分担するかはcharacterization test実装時に決定する。
+16. `RenderContext.resolve_pdf`とchapter preview/archiveの`chapter_loader`へ非HTTPのPDF不在を注入し、service境界から`HTTPException`が出ないこと、web adapterだけが必要な経路を404へ変換すること、preview warningの200契約を維持することを固定する。
 
 ## 20. 必要なテスト配置
 
-- 契約固定PR: `tests/test_web.py`へHTTP/現在import pathのcharacterization testを追加する。production codeは変更しない。
+- 契約固定PR: `tests/test_web.py`へHTTP/現在import pathのcharacterization testを追加し、Playwrightでwarning codeとblocking判定のcross-layer契約を固定する。production codeは変更しない。
 - pure preview移動PR: `tests/test_export_service.py`を新設し、直接関数testを移す。`tests/test_web.py`はroute adapter契約だけ残す。
 - shared summaryを`export_stats.py`へ置く場合: `tests/test_export_stats.py`に純粋集計testを置く。
 - JSON/archive移動PR: `tests/test_export_service.py`でHTTP非依存の生成結果、依存呼出し、失敗を検証し、`tests/test_web.py`でheader/status/historyを検証する。
@@ -537,12 +545,12 @@ JSONのkey順・indent・末尾改行はJSONの意味論では不要で、現在
 
 ## 21. 実装手順
 
-1. 本書の設計PRをレビューし、R7-4との順序、結果型、PDF source失敗表現、時刻契約を確定する。
+1. 本書の設計PRをレビューし、R7-4との順序、結果型、PDF source失敗表現、`resolve_pdf`/`chapter_loader`の非HTTP境界、時刻契約を確定する。
 2. production codeを変えず、§19.2のcharacterization testを追加する。
 3. `export_service.py`を作り、profile/format policyとpure preview logicを移す。共有基礎集計は`export_stats.py`へ置き、`/api/packs/stats`のR5境界を守る。
-4. preview use caseのDB read/close/planをserviceへ移し、web routeをHTTP adapter化する。
+4. preview use caseのDB read/close/planをserviceへ移し、`chapter_loader`からHTTP例外経路を排除したうえでweb routeをHTTP adapter化する。
 5. JSON serializerとHTTP非依存生成結果をserviceへ移す。JSON response構築と成功記録順をwebで維持する。
-6. R7-4の非HTTP PDF/Markdown APIが利用可能になった後、archive validation、placeholder/stats分岐、plan、entry/manifest/ZIP配線をserviceへ移す。
+6. R7-4の非HTTP PDF/Markdown APIと`resolve_pdf`相当の非HTTP契約が利用可能になり、`RenderContext`/`chapter_loader` callbackからHTTP例外経路を排除した後、archive validation、placeholder/stats分岐、plan、entry/manifest/ZIP配線をserviceへ移す。
 7. eventの別接続ベストエフォートhelperをserviceへ移し、Response構築後に呼ぶ。
 8. import、循環依存、route/OpenAPI、Python、Playwright、差分、文書状態を検証する。
 
@@ -560,12 +568,12 @@ JSONのkey順・indent・末尾改行はJSONの意味論では不要で、現在
 
 ### PR2: 現行契約のcharacterization test
 
-- 目的: §19.2、とくにJSON bytes、warning順、HTTP header、DB/event順を移動前に固定する。
+- 目的: §19.2、とくにJSON bytes、warning順、warning codeとUI blocking判定、PDF解決callbackの失敗境界、HTTP header、DB/event順を移動前に固定する。
 - 変更対象: 既存testのみ。必要なら新規test fileは作らず、まだ所有moduleがないR8 testは`test_web.py`に置く。
 - 変更しないもの: production code、API、output、文書上の実装状態。
 - 先行条件: PR1 merge、未確定4点のレビュー判断。
 - 必要なtest: 追加対象、Python全件、Playwright全件。
-- 完了条件: 挙動を変えず不足契約が再現可能なexpected値で固定される。
+- 完了条件: 挙動を変えず不足契約が再現可能なexpected値で固定され、blocking/non-blocking warningとUI操作可否のcross-layer契約が検証される。
 - リスク: 偶然のZIP metadataやclockを固定してflakyにすること。logical contentと注入clockだけを比較する。
 
 ### PR3: previewとrequest policyの分離
@@ -573,9 +581,9 @@ JSONのkey順・indent・末尾改行はJSONの意味論では不要で、現在
 - 目的: FastAPI非依存のserviceを作り、profile/format policy、warning、preview projection、preview DB進行を移す。
 - 変更対象: 新規`export_service.py`、`web.py`、`export_stats.py`（共有基礎集計を採用する場合）、test配置。
 - 変更しないもの: JSON/ZIP実行経路、event、R7-4、output contract。
-- 先行条件: PR2、shared summaryの名称/型確定。
+- 先行条件: PR2、shared summaryの名称/型確定、chapter previewで使うPDF解決の非HTTP失敗契約確定。
 - 必要なtest: pure service、preview HTTP、pack stats、profile tests、全件。
-- 完了条件: preview routeがHTTP変換中心、serviceがFastAPI/webをimportせず、standard payload互換。
+- 完了条件: preview routeがHTTP変換中心、serviceと`chapter_loader`がFastAPI/webをimportせず`HTTPException`を送出しない状態で、standard/profile payload互換。
 - リスク: `_preview_base_stats`をserviceに閉じてR5依存を悪化させること、chapter loaderのHTTP例外漏れ。
 
 ### PR4: JSON export準備の分離
@@ -593,9 +601,9 @@ JSONのkey順・indent・末尾改行はJSONの意味論では不要で、現在
 - 目的: validation、placeholder/stats、plan、render、manifest、ZIP配線をserviceへ移す。
 - 変更対象: `export_service.py`、`web.py`、service/web tests。R7-4の既存非HTTP APIを利用するだけとする。
 - 変更しないもの: profile algorithm、stats algorithm、ZIP/Markdown/PDF生成規則、R7-4本体、DB schema。
-- 先行条件: PR2〜PR4、かつR7-4非HTTP API実装済みまたは整合するcallback契約確定済み。
+- 先行条件: PR2〜PR4、R7-4の非HTTP PDF/Markdown APIが利用可能、かつ`resolve_pdf`相当の非HTTP契約が確定・実装済み。`RenderContext`と`chapter_loader`のcallbackから`HTTPException`が排除されていること。
 - 必要なtest: standard/chat/chapter、PDF/MD、全error、fixed time、preview/export filename一致、Python/Playwright全件。
-- 完了条件: serviceにFastAPI型/HTTPException経路がなく、既存ZIP logical contentが一致。
+- 完了条件: service本体と`RenderContext`/`chapter_loader` callbackにFastAPI型/`HTTPException`経路がなく、PDF不在はweb adapterだけが404へ変換し、既存ZIP logical contentが一致。
 - リスク: R7-4依存、標準経路で誤って寛容statsを使うこと、connection lifetime、メモリ使用。
 
 ### PR6: 成功履歴とHTTP adapterの仕上げ
@@ -608,7 +616,7 @@ JSONのkey順・indent・末尾改行はJSONの意味論では不要で、現在
 - 完了条件: R8対象の非HTTP進行がserviceに集まり、webはadapter、R8だけを完了に更新できる。
 - リスク: Responseより前に記録する順序変更、例外握りつぶし範囲の縮小、D7との責務重複。
 
-PR5はR7-4の実装順に依存する。R7-4を待つ間もPR1〜PR4は独立に進められるが、R8全体を完了扱いにしない。
+PR5はR7-4の非HTTP rendererだけでなく、`resolve_pdf`相当の非HTTP契約の確定・実装にも依存する。R7-4を待つ間もPR1〜PR4は各先行条件の範囲で進められるが、R8全体を完了扱いにしない。
 
 ## 23. 移行中の互換性方針
 
@@ -639,7 +647,7 @@ PR5はR7-4の実装順に依存する。R7-4を待つ間もPR1〜PR4は独立に
 
 ### 25.1 主なリスク
 
-- `RenderContext`の実callbackから`HTTPException`が漏れ、見かけだけFastAPI非依存になる。
+- `RenderContext.resolve_pdf`またはchapter preview/archiveの`chapter_loader`から`HTTPException`が漏れ、見かけだけFastAPI非依存になる。
 - standardで`collect_item_stats`を使い、invalid pageのdetailやPDF欠損の発生時点を変える。
 - `_preview_base_stats`をserviceへ閉じ、R5からR8への逆向き依存を作る。
 - DB接続を生成中まで保持、またはeventと生成を同一transactionにして現行順序を変える。
@@ -654,7 +662,7 @@ PR5はR7-4の実装順に依存する。R7-4を待つ間もPR1〜PR4は独立に
 
 - §18のstatus/body/header/file契約を維持できない。
 - service公開APIにFastAPI型またはHTTP statusを持ち込む必要がある。
-- archive移動にHTTPException callbackが必須で、R7-4との非HTTP境界を確定できない。
+- preview/archive移動に`HTTPException`を送出する`resolve_pdf`/`chapter_loader` callbackが必須で、非HTTPのPDF解決境界を確定・実装できない。
 - PDF source不在と一般FileNotFoundを404/500へ正しく区別できない。
 - eventをResponse生成後・別接続・best effortのまま維持できない。
 - R5、R7、D7の大規模再設計やDB schema変更が必要になる。
@@ -667,7 +675,7 @@ PR5はR7-4の実装順に依存する。R7-4を待つ間もPR1〜PR4は独立に
 ## 26. 未確認・実装前に確定する事項
 
 - 候補結果型`PreparedPackExport`とpack不在表現の最終名称。実コードには未存在。
-- PDF source不在の非HTTP例外/resultと、R7-4実装順。
+- PDF source不在を`RenderContext.resolve_pdf`と`chapter_loader`で共通して通知できる非HTTP例外/result、およびR7-4とR8各PRの実装順。現行契約を確認するまで具体型を確定しない。
 - `export_stats.py`へ置く共有基礎集計helperの名称と、dict/dataclassのどちらを返すか。
 - archiveの単一`exported_at`と、現在のMarkdown rendererごとの時刻取得をどう接続するか。現状変更はしない。
 - JSONのkey/whitespaceを移動中互換だけでなく恒久的bytes contractとするか。今回は変更しない。
@@ -680,7 +688,7 @@ PR5はR7-4の実装順に依存する。R7-4を待つ間もPR1〜PR4は独立に
 - `web.py`に残るのがquery受領、HTTP変換、Response/header、Response後の記録指示である。
 - profile/format、preview、JSON/archive進行、best-effort記録がFastAPI非依存の`export_service.py`へ移る。
 - 基礎統計、profile、ZIP、PDF/Markdown、DB永続化がそれぞれ既存module境界に残る。
-- serviceが`web.py`/FastAPIをimportせず、HTTPException callbackも通さない。
+- serviceが`web.py`/FastAPIをimportせず、`RenderContext.resolve_pdf`とchapter preview/archiveの`chapter_loader`を含むcallback経由でも`HTTPException`を通さない。PDF不在の非HTTP表現からHTTP 404への変換はweb adapterだけが行う。
 - read/生成/eventの接続・transaction・失敗順が§16どおりである。
 - characterization test、service test、HTTP test、Python全件、Playwright全件が成功する。
 - 循環importがなく、R5/R7/D7の進捗を誤って変更しない。
