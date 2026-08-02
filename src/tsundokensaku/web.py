@@ -43,8 +43,6 @@ from tsundokensaku.database import (
     resolve_active_pack_id,
     search,
     set_active_pack,
-    sync_kindle_books,
-    sync_memos,
     update_pack,
 )
 from tsundokensaku.database import initialize
@@ -64,6 +62,7 @@ from tsundokensaku import config
 from tsundokensaku import index_job
 from tsundokensaku import paths
 from tsundokensaku import pdf_import_service
+from tsundokensaku import scrapbox_import_service
 from tsundokensaku import search_view
 from tsundokensaku.pdf_export import default_output_path, parse_page_selection, render_selected_pages
 from tsundokensaku.pdf_outline import get_page_count, list_chapters
@@ -562,21 +561,6 @@ def resolve_pdf_scrapbox_url(pdf_path: str, *, books_dir: Path, db_path: Path) -
 
     metadata = metadata_for_pdf(str(relative), get_metadata())
     return metadata.scrapbox_url if metadata else None
-
-
-def import_scrapbox_export_bytes(content: bytes, db_path: Path) -> tuple[int, int]:
-    target = SCRAPBOX_EXPORT_CACHE
-    target.write_bytes(content)
-
-    connection = connect(db_path)
-    try:
-        initialize(connection)
-        imported = sync_memos(connection, target)
-        imported_kindle = sync_kindle_books(connection, target)
-    finally:
-        connection.close()
-
-    return imported, imported_kindle
 
 
 SEARCH_SCOPE_OPTIONS = [
@@ -1405,22 +1389,22 @@ def import_scrapbox_json(export_json_path: str = "") -> RedirectResponse:
         message = quote(DEMO_MODE_SETTING_MESSAGE)
         return RedirectResponse(url=f"/settings?message={message}", status_code=303)
     db_path = get_db_path()
-    connection = connect(db_path)
-    initialize(connection)
     source = Path(export_json_path).expanduser() if export_json_path.strip() else find_export_json(PROJECT_ROOT)
-    if source is None or not source.exists():
-        connection.close()
+    try:
+        result = scrapbox_import_service.import_scrapbox_export_file(
+            source,
+            cache_path=SCRAPBOX_EXPORT_CACHE,
+            db_path=db_path,
+        )
+    except scrapbox_import_service.ScrapboxExportNotFoundError:
         message = quote("Scrapbox の export JSON が見つかりませんでした")
         return RedirectResponse(url=f"/settings?message={message}", status_code=303)
 
-    source = source.resolve()
-    target = SCRAPBOX_EXPORT_CACHE
-    if source != target:
-        target.write_bytes(source.read_bytes())
-    imported = sync_memos(connection, target)
-    imported_kindle = sync_kindle_books(connection, target)
-    connection.close()
-    message = quote(f"Scrapbox JSON を同期しました: メモ {imported} 件 / Kindle {imported_kindle} 件 ({source.name})")
+    source_name = source.expanduser().resolve().name if source is not None else ""
+    message = quote(
+        f"Scrapbox JSON を同期しました: メモ {result.imported_memos} 件 / "
+        f"Kindle {result.imported_kindle_books} 件 ({source_name})"
+    )
     return RedirectResponse(url=f"/settings?message={message}", status_code=303)
 
 
@@ -1438,11 +1422,19 @@ async def upload_scrapbox_json(request: Request, filename: str = "") -> PlainTex
         return PlainTextResponse("empty body", status_code=400)
 
     try:
-        imported, imported_kindle = import_scrapbox_export_bytes(content, get_db_path())
+        result = scrapbox_import_service.import_scrapbox_export_bytes(
+            content,
+            cache_path=SCRAPBOX_EXPORT_CACHE,
+            db_path=get_db_path(),
+        )
     except Exception as exc:
         return PlainTextResponse(str(exc), status_code=400)
 
-    return PlainTextResponse(f"Scrapbox JSON を同期しました: メモ {imported} 件 / Kindle {imported_kindle} 件 ({filename})", status_code=201)
+    return PlainTextResponse(
+        f"Scrapbox JSON を同期しました: メモ {result.imported_memos} 件 / "
+        f"Kindle {result.imported_kindle_books} 件 ({filename})",
+        status_code=201,
+    )
 
 
 @app.get("/settings/pdf-import")
