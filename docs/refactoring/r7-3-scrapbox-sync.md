@@ -2,7 +2,7 @@
 
 [R7全体設計](../central-file-refactoring-inventory.md) / [R7-2詳細設計](r7-2-pdf-directory-import.md) / [ROADMAP](../../ROADMAP.md)
 
-状態: 詳細設計済み・未実装。実装とテスト変更はまだ行っていない。
+状態: 実装済み（2026-08-02、ブランチ`refactor/r7-3-scrapbox-import`）。
 
 調査基準: 2026-08-01、`develop`のコミット`6d39d24526a63506cebd0cb595aeca0c9904a585`。検索語だけで範囲を決めず、2つのHTTP入口から`web.py`、`database.py`、`metadata.py`、設定画面のJavaScript、CLI補助スクリプト、既存テストまで呼び出し元と呼び出し先を追跡した。
 
@@ -283,9 +283,63 @@ templates/settings_index.html
 - Python・Playwright全件が成功し、循環importがない。
 - ROADMAPはR7-3だけを実装済みに更新し、R7親項目・R7-2・R7-4を未完了のまま維持する。
 
+## 実装結果
+
+実装日: 2026-08-02
+
+実装ブランチ: `refactor/r7-3-scrapbox-import`
+
+新設したサービス: `src/tsundokensaku/scrapbox_import_service.py`
+
+公開API:
+
+- `ScrapboxImportResult(imported_memos: int, imported_kindle_books: int)`
+- `ScrapboxExportNotFoundError(ValueError)`
+- `import_scrapbox_export_bytes(content: bytes, *, cache_path: Path, db_path: Path) -> ScrapboxImportResult`
+- `import_scrapbox_export_file(source: Path | None, *, cache_path: Path, db_path: Path) -> ScrapboxImportResult`
+
+`web.py`に残した責務:
+
+- `GET /settings/scrapbox-import`と`POST /settings/scrapbox-upload`のroute定義。
+- demo mode判定。
+- GET queryの受け取り、空入力時の`find_export_json(PROJECT_ROOT)`、明示path時の`Path(...).expanduser()`。
+- POSTのfilename空チェック、`.json`拡張子チェック、空bodyチェック。
+- `SCRAPBOX_EXPORT_CACHE`と`get_db_path()`の決定。
+- service結果から既存の303 redirectまたは201 plain textを組み立てる処理。
+- `ScrapboxExportNotFoundError`をGETの既存303 redirectへ変換する処理。
+- POSTでservice例外を既存どおり400 plain textの`str(exc)`へ変換する処理。
+
+`web.py`から移動した責務:
+
+- Scrapbox export JSONの固定cacheへの直接保存。
+- 指定source JSONの読取りと固定cacheへのコピー。
+- DB接続、DB初期化、`sync_memos`、`sync_kindle_books`、DB接続close。
+- 同期件数を結果として返す処理。
+- source不存在をHTTP非依存の例外で表す処理。
+
+追加・移動したテスト:
+
+- `tests/test_web.py::ScrapboxImportHttpCharacterizationTest`を追加し、GET/POSTのHTTP契約、demo mode早期return、serviceへ固定cache pathとDB pathを渡す契約を固定した。
+- 旧`tests/test_web.py::HighlightQueryTest.test_import_scrapbox_export_bytes_syncs_metadata`相当は`tests/test_scrapbox_import_service.py`へ移した。
+- `tests/test_scrapbox_import_service.py`を新設し、byte/file経路、source不存在、不正UTF-8、不正JSON、期待外top-level、cache残存、部分成功、例外時close、同期順序を検証した。
+
+実行した検証:
+
+- 対象Pythonテスト: `docker compose run -T --rm --entrypoint python app -m unittest tests.test_scrapbox_import_service tests.test_web.ScrapboxImportHttpCharacterizationTest`
+- サービス単体テスト: `docker compose run -T --rm --entrypoint python app -m unittest tests.test_scrapbox_import_service`（12件成功）
+- HTTP契約テスト: `docker compose run -T --rm --entrypoint python app -m unittest tests.test_web.ScrapboxImportHttpCharacterizationTest`（12件成功）
+- Python全件: `docker compose run -T --rm --entrypoint python app -m unittest discover -s tests`（548件成功）
+- Playwright全件: `npm run test:ui`（29件成功）
+- `git diff --check`: 成功
+- 依存確認: `scrapbox_import_service.py`がFastAPI、`web.py`、`config.py`をimportしないこと、`database.py`/`metadata.py`からserviceへの逆依存がないこと、`web.py`がScrapbox同期目的で`sync_memos`/`sync_kindle_books`を直接呼ばないこと、互換用`web.import_scrapbox_export_bytes`が残っていないことを確認した。
+- 循環import確認: `docker compose run -T --rm --entrypoint python app -c "import tsundokensaku.scrapbox_import_service; import tsundokensaku.web; import tsundokensaku.database; import tsundokensaku.metadata"`が成功。
+
+設計との差異:
+
+- なし。source不存在時にDB接続やcache変更を行わない点、cacheの直接上書き、事前JSON検証なし、transaction/rollback追加なし、同期順序維持を設計どおり実装した。
+
 ## 非目標
 
-- R7-3の実装、テスト追加、既存コード変更（本PRは設計のみ）。
 - Scrapbox/Cosense APIへのHTTP通信、双方向同期、認証。
 - JSON schemaの新設、file size上限、streaming upload。
 - cacheのatomic write、backup、rollback、lock、並行実行制御。

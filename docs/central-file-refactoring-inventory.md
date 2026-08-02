@@ -2,7 +2,7 @@
 
 対象: `src/tsundokensaku/web.py`（1729行、R2・R3・R4・R6・R7-1分離後）・`src/tsundokensaku/database.py`（1922行、責務分離は未着手）
 位置づけ: ROADMAP「Phase 5着手前: 構造改善と回帰保証」の「構造と依存関係の棚卸し」の成果物
-状態: `web.py`系列はR2（`config.py`）・R3（`paths.py`）・R4（`search_view.py`）・R6（`index_job.py`）・R7-1/R7-2（`pdf_import_service.py`）が完了。R7-3〜R7-4とR8は詳細設計済み・実装未着手。R1・R9はHTTP層として分離不要、R5は候補整理のみ、R7親項目は未完了。R8のcharacterization test・実装・完了反映は未実施。`database.py`系列（D1〜D7）は未実装。現行コードの確認基準は2026-08-01、R7-4詳細設計は`develop`のコミット `8a0cff0cb996c2ace2c2032016470bf7f5c6820c`、R8詳細設計は同 `5cd645cbb116983e5b8c77ee61fcb3ee22948a06`を基準とする。
+状態: `web.py`系列はR2（`config.py`）・R3（`paths.py`）・R4（`search_view.py`）・R6（`index_job.py`）・R7-1/R7-2（`pdf_import_service.py`）・R7-3（`scrapbox_import_service.py`）が完了。R7-4とR8は詳細設計済み・実装未着手。R1・R9はHTTP層として分離不要、R5は候補整理のみ、R7親項目は未完了。R8のcharacterization test・実装・完了反映は未実施。`database.py`系列（D1〜D7）は未実装。現行コードの確認基準は2026-08-01、R7-3実装は2026-08-02の`refactor/r7-3-scrapbox-import`、R7-4詳細設計は`develop`のコミット `8a0cff0cb996c2ace2c2032016470bf7f5c6820c`、R8詳細設計は同 `5cd645cbb116983e5b8c77ee61fcb3ee22948a06`を基準とする。
 
 ### 番号体系とROADMAPとの対応
 
@@ -18,7 +18,7 @@
 | R4 | 表示整形中心の責務（検索結果整形） | `search_view.py` | 完了 | `web.py`の責務分離 |
 | R5 | ライブラリ/統計の集計 | `books_repo.py`側へ寄せる候補（`database.py`系列へ合流） | 候補のみ | `web.py`の責務分離 |
 | R6 | インデックスジョブ | `index_job.py` | 完了 | `web.py`の責務分離 |
-| R7 | ファイル入出力・取り込み（4子責務、§3参照） | 単一モジュールへ集約せず子責務ごとに分割。R7-1（PDFアップロード保存）とR7-2（PDFディレクトリ取り込み）は`pdf_import_service.py`へ分離済み。R7-3（Scrapbox JSON保存・同期）、R7-4（PDF閲覧・変換・本文検索のHTTPオーケストレーション）は詳細設計済み・未実装 | 一部完了 | `web.py`の責務分離 |
+| R7 | ファイル入出力・取り込み（4子責務、§3参照） | 単一モジュールへ集約せず子責務ごとに分割。R7-1（PDFアップロード保存）とR7-2（PDFディレクトリ取り込み）は`pdf_import_service.py`へ分離済み。R7-3（Scrapbox JSON保存・同期）は`scrapbox_import_service.py`へ分離済み。R7-4（PDF閲覧・変換・本文検索のHTTPオーケストレーション）は詳細設計済み・未実装 | 一部完了 | `web.py`の責務分離 |
 | R8 | エクスポート業務ロジック | 単一`export_service.py`から開始し、既存の集計・profile・生成・永続化module境界を維持（[詳細設計](refactoring/r8-export-service.md)） | 詳細設計済み・実装未着手（契約固定未実施） | `web.py`の責務分離 |
 | R9 | ルートハンドラ | `web.py`に維持 | 分離不要 | `web.py`の責務分離 |
 | D1 | レコード定義 | `records.py`候補 | 設計済み・未実装 | `database.py`の責務分離 |
@@ -163,14 +163,14 @@ PR #17（マージコミット `2c45ed1a245c2cb6ef29a924e2e31b2c3e5db06e`）で�
 - **R7の子責務分解（2026-08-01、PR #19で確定）**: 上記「主な定義」12関数を単一の`pdf_service.py`へ集約する設計は採らない。副作用の性質（外部からの取り込み・既存ファイルの変換や検索オーケストレーション）が異なる処理を1モジュールに集約すると、`pdf_service.py`自体が「小さな`web.py`」になり、責務混在という今回の分割動機と矛盾するため。変更理由の単位で次の4子責務に分ける。
   1. **R7-1: PDFアップロード保存 — 完了** — `POST /settings/pdf-upload`（`upload_pdf`）・`pdf_import_service.save_uploaded_pdf`。アップロード済みbyte列をBOOKS_DIR配下へ配置する。PR #20で現在契約を固定し、PR #21で`pdf_import_service.py`へ分離した（詳細は[R7-1専用文書](refactoring/r7-1-pdf-upload-storage.md)参照）。
   2. **R7-2: PDFディレクトリ取り込み — 完了** — `GET /settings/pdf-import`（`import_pdf_directory`）・`pdf_import_service.import_pdfs_from_directory`。指定ディレクトリ配下のPDFをBOOKS_DIRへ一括コピーする責務をR7-1と同じ`pdf_import_service.py`へ分離し、characterization test、安全なsymlink境界、安全なHTTPエラー変換を実装した（詳細は[R7-2専用文書](refactoring/r7-2-pdf-directory-import.md)参照）。
-  3. **R7-3: Scrapbox JSON保存・同期 — 詳細設計済み・未実装** — `GET /settings/scrapbox-import`、`POST /settings/scrapbox-upload`、`import_scrapbox_export_bytes`。固定cacheへの保存と既存DB APIによるメモ・Kindle同期を`scrapbox_import_service.py`へ分離する（[詳細設計](refactoring/r7-3-scrapbox-sync.md)）。
+  3. **R7-3: Scrapbox JSON保存・同期 — 完了** — `GET /settings/scrapbox-import`、`POST /settings/scrapbox-upload`。固定cacheへの保存と既存DB APIによるメモ・Kindle同期を`scrapbox_import_service.py`へ分離した（[詳細設計と実装結果](refactoring/r7-3-scrapbox-sync.md)）。
   4. **R7-4: PDF閲覧・変換・本文検索のHTTPオーケストレーション — 詳細設計済み・未実装** — 既存PDFの閲覧、outline、thumbnail、PDF/Markdown生成、本文検索、Scrapbox URL解決を、既存`pdf_export.py`と新規`pdf_text_service.py`・`pdf_metadata_service.py`へ分ける（[詳細設計](refactoring/r7-4-http-orchestration.md)）。
-  - 上記「主な定義」・「依存」・「テスト状況」・「判断」（157〜162行目）はR7全体を一括りにしていた2026-07-29時点の分離前調査であり、歴史的記録として維持する。R7-1とR7-2は現行コードに基づく再調査・詳細設計を経て完了した（[R7-1](refactoring/r7-1-pdf-upload-storage.md)・[R7-2](refactoring/r7-2-pdf-directory-import.md)参照）。R7-3〜R7-4は個別の再調査と詳細設計を終え、未実装である（[R7-3](refactoring/r7-3-scrapbox-sync.md)・[R7-4](refactoring/r7-4-http-orchestration.md)の各専用文書参照）。
-  - R7（親項目）は完了扱いにしない。R7-3〜R7-4が残る限りR7は未完了のまま。
+  - 上記「主な定義」・「依存」・「テスト状況」・「判断」（157〜162行目）はR7全体を一括りにしていた2026-07-29時点の分離前調査であり、歴史的記録として維持する。R7-1、R7-2、R7-3は現行コードに基づく再調査・詳細設計を経て完了した（[R7-1](refactoring/r7-1-pdf-upload-storage.md)・[R7-2](refactoring/r7-2-pdf-directory-import.md)・[R7-3](refactoring/r7-3-scrapbox-sync.md)参照）。R7-4は個別の再調査と詳細設計を終え、未実装である（[R7-4](refactoring/r7-4-http-orchestration.md)参照）。
+  - R7（親項目）は完了扱いにしない。R7-4が残る限りR7は未完了のまま。
 
 #### R7-2〜R7-4横断調査（2026-08-01、詳細設計前）
 
-**注記:** 以下はR7-2〜R7-4の個別設計着手前に行った横断調査の記録である。記載された「未設計」は調査時点の状態を表し、現在の正式な状態はR7-2が実装済み、R7-3〜R7-4が詳細設計済み・未実装である。現在の責務境界と公開service APIは各専用文書を正とする。
+**注記:** 以下はR7-2〜R7-4の個別設計着手前に行った横断調査の記録である。記載された「未設計」は調査時点の状態を表し、現在の正式な状態はR7-2とR7-3が実装済み、R7-4が詳細設計済み・未実装である。現在の責務境界と公開service APIは各専用文書を正とする。
 
 ##### 位置づけ
 
@@ -440,7 +440,7 @@ graph TD
 | `index_job.py` | インデックスジョブ | web R6 | `_run_index_job`, `_*_index_progress`, 進捗グローバル | threading, indexer, config | web | **完了**（PR #17・#18） |
 | `export_service.py` | エクスポートのプレビュー/JSON/アーカイブ組立と成功履歴の呼出し | web R8 | `build_export_preview_*`, `_export_pack_archive`, `_export_pack_json`、profile/format解決 | export_profiles, export_stats, zip_export, database、R7-4非HTTP API | web | 詳細設計済み・実装未着手（[詳細](refactoring/r8-export-service.md)）。characterization test未実施 |
 | `pdf_import_service.py` | PDF取り込み。R7-1の単一upload保存と、R7-2のdirectory一括取り込みを別の公開関数として所有する | web R7-1・R7-2 | `save_uploaded_pdf`（実装済み）、`import_pdfs_from_directory`（実装済み） | pathlib, fs（R7-1はpathsも利用） | web | R7-1完了（[詳細](refactoring/r7-1-pdf-upload-storage.md)）、R7-2完了（[詳細](refactoring/r7-2-pdf-directory-import.md)） |
-| `scrapbox_import_service.py` | Scrapbox export JSONの固定cache保存とメモ・Kindle DB同期のオーケストレーション | web R7-3 | `import_scrapbox_export_bytes`、path importの重複処理 | pathlib, fs, database | web | 詳細設計済み・未実装（[詳細](refactoring/r7-3-scrapbox-sync.md)） |
+| `scrapbox_import_service.py` | Scrapbox export JSONの固定cache保存とメモ・Kindle DB同期のオーケストレーション | web R7-3 | `import_scrapbox_export_bytes`、path importの重複処理 | pathlib, fs, database | web | 完了（[詳細](refactoring/r7-3-scrapbox-sync.md)） |
 | `pdf_export.py`（既存moduleを拡張） | page specに基づくPDF生成とserver directory保存 | web R7-4 | `render_pdf_export`、`save_pdf_export_to_configured_dir` | pypdf, paths, fs | web, export_profiles callback | 詳細設計済み・未実装（[詳細](refactoring/r7-4-http-orchestration.md)） |
 | `pdf_metadata_service.py` | PDF pathとDB/export metadataの対応付け | web R7-4, export_stats | `_get_indexed_book`、`resolve_pdf_scrapbox_url`、重複する`_find_indexed_book` | database, metadata, paths | web, pdf_text_service, export_stats | 詳細設計済み・未実装（[詳細](refactoring/r7-4-http-orchestration.md)） |
 | `pdf_text_service.py` | DB本文・PDF抽出fallback・page検索・Markdown生成 | web R7-4 | `load_pages_text`、`_page_snippet`、`search_book_pages`、`render_markdown_export` | database, pdf_metadata_service, pdf_extract, pdf_export, markdown_export | web, export_profiles callback | 詳細設計済み・未実装（[詳細](refactoring/r7-4-http-orchestration.md)） |
@@ -877,7 +877,7 @@ R7の全体像、共通する責務境界・依存方向・進捗は§3を正と
 
 #### 残るR7子責務
 
-- R7-3 Scrapbox JSON保存・同期: [詳細設計済み・未実装](refactoring/r7-3-scrapbox-sync.md)。
+- R7-3 Scrapbox JSON保存・同期: [実装済み](refactoring/r7-3-scrapbox-sync.md)。
 - R7-4 PDF閲覧・変換・本文検索のHTTPオーケストレーション: [詳細設計済み・未実装](refactoring/r7-4-http-orchestration.md)。
 - R7親項目は未完了のままとする。
 
@@ -891,7 +891,7 @@ R7の全体像、共通する責務境界・依存方向・進捗は§3を正と
 ### 段階8以降（計画時の候補・未実装）
 
 - R5（生SQL集計）→ 集計SQLを `books_repo` へ寄せ、web.py は値を受け取る。
-- R7（`pdf_service`）→ 副作用が大きいので最後。**この記述は策定当時の一括り判断の歴史的記録。R7はその後子責務分解され、R7-1（PDFアップロード保存）とR7-2（PDFディレクトリ取り込み）は完了、R7-3〜R7-4は詳細設計済み・未実装となった。詳細は§3「R7の子責務分解」と[R7-1](refactoring/r7-1-pdf-upload-storage.md)・[R7-2](refactoring/r7-2-pdf-directory-import.md)・[R7-3](refactoring/r7-3-scrapbox-sync.md)・[R7-4](refactoring/r7-4-http-orchestration.md)の各専用文書を参照。**
+- R7（`pdf_service`）→ 副作用が大きいので最後。**この記述は策定当時の一括り判断の歴史的記録。R7はその後子責務分解され、R7-1（PDFアップロード保存）・R7-2（PDFディレクトリ取り込み）・R7-3（Scrapbox JSON保存・同期）は完了、R7-4は詳細設計済み・未実装となった。詳細は§3「R7の子責務分解」と[R7-1](refactoring/r7-1-pdf-upload-storage.md)・[R7-2](refactoring/r7-2-pdf-directory-import.md)・[R7-3](refactoring/r7-3-scrapbox-sync.md)・[R7-4](refactoring/r7-4-http-orchestration.md)の各専用文書を参照。**
 - D4/D5/D6（books/search/packs repo）→ 完全分割はコスト高。`schema`＋`records` 分離で主目的達成済みなら、必要になるまで保留。
 
 各段階の完了条件は共通: **Python 全件緑＋（CI化後は）Playwright 全件緑＋主要フロー手動確認**。1段階ずつマージし、次に進む。

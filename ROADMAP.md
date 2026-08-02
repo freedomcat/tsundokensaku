@@ -160,7 +160,7 @@ Python・Playwrightの自動テストで継続的に確認できる。
   - [ ] R7 ファイル入出力・取り込み — 子責務別に分離（詳細は設計書参照）
     - [x] R7-1 PDFアップロード保存 — `pdf_import_service.py`へ分離
     - [x] R7-2 PDFディレクトリ取り込み — `pdf_import_service.py`へ分離。characterization test、安全なsymlink境界、安全なHTTPエラー変換を実装済み（[docs/refactoring/r7-2-pdf-directory-import.md](docs/refactoring/r7-2-pdf-directory-import.md)参照）
-    - [ ] R7-3 Scrapbox JSON保存・同期 — 詳細設計済み・未実装（[docs/refactoring/r7-3-scrapbox-sync.md](docs/refactoring/r7-3-scrapbox-sync.md)参照）
+    - [x] R7-3 Scrapbox JSON保存・同期 — 完了（2026-08-02）。Scrapbox/Cosense export JSONの固定cache保存、file/byte経路、DB接続・初期化・メモ同期・Kindle同期・closeを`src/tsundokensaku/scrapbox_import_service.py`へ分離し、HTTP契約と失敗時契約のテストを追加した（[docs/refactoring/r7-3-scrapbox-sync.md](docs/refactoring/r7-3-scrapbox-sync.md)参照）
     - [ ] R7-4 PDF閲覧・変換・本文検索のHTTPオーケストレーション — 詳細設計済み・未実装（[docs/refactoring/r7-4-http-orchestration.md](docs/refactoring/r7-4-http-orchestration.md)参照）
   - [ ] R8 エクスポート業務ロジック — 詳細設計済み・実装未着手。単一`export_service.py`から開始し、集計・profile・ZIP・PDF/Markdown・履歴永続化は既存モジュール境界に残す方針（[docs/refactoring/r8-export-service.md](docs/refactoring/r8-export-service.md)参照）。characterization test・実装・完了反映は未実施
   - [ ] `test_web.py`の責務整理
@@ -170,7 +170,7 @@ Python・Playwrightの自動テストで継続的に確認できる。
     - テスト件数やファイル行数の削減自体は目的とせず、テスト対象の契約境界と変更影響範囲を明確にする
     - `test_web.py`がHTTP層の契約テストを中心とする構成になったことを最終確認する
     - 詳細設計: [Web責務分離に伴うテスト移行設計](docs/refactoring/test-web-responsibility.md)
-  - R5・R7-3〜R7-4・R8の着手順は未確定。次の実装対象は勝手に確定しない
+  - R5・R7-4・R8の着手順は未確定。次の実装対象は勝手に確定しない
   - FastAPIのルーティング・入力検証・レスポンス生成を薄い層へ整理する
   - 検索、資料、PDFプレビュー、エクスポート、本の登録・設定の業務処理を分ける
   - 一つのPRでは一つの責務だけを移動する
