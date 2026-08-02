@@ -2,9 +2,36 @@
 
 [R7全体設計](../central-file-refactoring-inventory.md) / [R7-1](r7-1-pdf-upload-storage.md) / [R7-2](r7-2-pdf-directory-import.md) / [R7-3](r7-3-scrapbox-sync.md) / [ROADMAP](../../ROADMAP.md)
 
-状態: 詳細設計済み・未実装。実装とテスト変更はまだ行っていない。
+状態: 実装完了（2026-08-02）。
 
 調査基準: 2026-08-01、`develop`のコミット`8a0cff0cb996c2ace2c2032016470bf7f5c6820c`。最新のroute定義から、`web.py`内helper、既存PDF module、database・metadata、資料エクスポートのcallback注入、テンプレート・JavaScript、Python・Playwrightテストまで呼び出し元と呼び出し先を再調査した。
+
+実装結果: 2026-08-02、`refactor/r7-4-http-orchestration`で実装した。`src/tsundokensaku/pdf_export.py`へPDF切り出し生成・server側保存APIを追加し、`src/tsundokensaku/pdf_metadata_service.py`でDB上のindexed book照合とScrapbox URL解決を共通化し、`src/tsundokensaku/pdf_text_service.py`で本文取得・ページ本文検索・Markdown生成を分離した。`src/tsundokensaku/export_stats.py`は共通metadata APIを利用するよう置き換え、`src/tsundokensaku/web.py`は対象routeのHTTP入力、設定取得、例外変換、JSON/template/download response生成を中心とするadapterへ整理した。
+
+追加・変更した公開API:
+
+- `pdf_export.PdfSourceNotFoundError`
+- `pdf_export.render_pdf_export(candidate: Path, pages: str) -> tuple[bytes, str]`
+- `pdf_export.save_pdf_export_to_configured_dir(pdf_path: str, pages: str, *, books_dir: Path, save_dir: Path | None) -> Path`
+- `pdf_metadata_service.find_indexed_book(connection: sqlite3.Connection, resolved_relative_pdf_path: Path, *, books_dir: Path) -> BookRecord | None`
+- `pdf_metadata_service.get_indexed_book(resolved_relative_pdf_path: Path, *, books_dir: Path, db_path: Path) -> BookRecord | None`
+- `pdf_metadata_service.resolve_pdf_scrapbox_url(pdf_path: str, *, books_dir: Path, db_path: Path, project_root: Path) -> str | None`
+- `pdf_text_service.PdfPageSearchHit`
+- `pdf_text_service.PdfPageSearchResult`
+- `pdf_text_service.load_pages_text(candidate: Path, page_numbers: list[int], *, books_dir: Path, db_path: Path) -> dict[int, str]`
+- `pdf_text_service.search_book_pages(candidate: Path, query: str, *, books_dir: Path, db_path: Path, limit: int = 100) -> PdfPageSearchResult`
+- `pdf_text_service.render_markdown_export(candidate: Path, pages: str, *, books_dir: Path, db_path: Path, exported_at: datetime) -> tuple[str, str]`
+
+実装時の調整:
+
+- 指定参照パス`docs/refactoring/central-file-refactoring-inventory.md`は存在せず、設計書・ROADMAP上の実体である`docs/central-file-refactoring-inventory.md`を確認した。R7-4の設計内容自体との矛盾はなかった。
+- `web.py`の既存import互換を壊さないため、`save_pdf_export_to_configured_dir`、`_get_indexed_book`、`load_pages_text`、`_page_snippet`、`search_book_pages`、`resolve_pdf_scrapbox_url`は下位moduleへ委譲する薄い関数として残した。処理本体は下位moduleへ移動済みで、routeはserviceまたは薄いadapterを通じて既存HTTP契約へ変換する。
+- `pdf_text_service`のDB接続は既存の`database.connect`を利用し、row factoryを含む既存DBアクセス前提を維持した。
+
+実行したテスト:
+
+- Python: `docker compose run --rm --entrypoint python app -m unittest discover -s tests`、577件成功
+- Playwright: `npm run test:ui`、29件成功
 
 ## 背景と目的
 
@@ -428,9 +455,9 @@ characterization test、PDF export、metadata共通化、text service、web接�
 - Python・Playwright全件が成功し、循環importがない。
 - ROADMAPはR7-4だけを実装済みに更新する。R7親項目はR7-2・R7-3を含む全子責務の実装完了まで未完了とする。
 
-## 非目標
+## 詳細設計時点の非目標
 
-- R7-4の実装・テスト変更（本PRは設計のみ）。
+- 詳細設計PRではR7-4の実装・テスト変更を行わないこと。実装は2026-08-02に本節上部の「実装結果」として反映済み。
 - routeのAPIRouter分割、URL・method・query名変更。
 - R8のExportPlan、ZIP、manifest、profile、export eventの再設計。
 - PDF parser、outline、thumbnail、extract、Markdown formatのアルゴリズム変更。
