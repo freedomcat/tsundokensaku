@@ -328,12 +328,12 @@ def record_export_success_best_effort(
 | pages未指定 | 400、`{title}: ページを指定してください`。position順で最初の1件 |
 | PDF source不在 | 404、`PDF not found` |
 | pages parse/range不正 | 400、既存lower moduleの`str(exc)` |
-
-serviceやcallbackはこの表のHTTP statusを知らず、`web.py`のadapterだけが非HTTPの結果・例外をstatusとdetailへ変換する。特にPDF source不在は、archiveなど現在404となる経路でのみ`PDF not found`へ変換し、previewの既存warning経路を404へ変更しない。
 | previewの空/PDF欠損/pages不正/未索引 | 200、warning payload |
 | JSONの空/PDF欠損/pages不正 | 200、snapshot JSON |
 | event記録失敗 | 生成済み200を維持 |
 | その他 | 新たに変換せず500になり得る |
+
+serviceやcallbackはこの表のHTTP statusを知らず、`web.py`のadapterだけが非HTTPの結果・例外をstatusとdetailへ変換する。特にPDF source不在は、archiveなど現在404となる経路でのみ`PDF not found`へ変換し、previewの既存warning経路を404へ変更しない。
 
 profile→format→profile/format整合→packの検証順を維持する。previewはprofile→packの順を維持する。`pack_id`の型不正等はFastAPIの422に委ねる。
 
