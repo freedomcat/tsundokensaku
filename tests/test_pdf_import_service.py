@@ -452,16 +452,20 @@ class PdfImportServiceTest(unittest.TestCase):
             root = Path(temp_dir)
             source_dir = root / "source"
             books_dir = root / "books"
-            nested_dir = source_dir / "nested"
-            nested_dir.mkdir(parents=True)
+            source_dir.mkdir()
             created_relative_paths = [
                 Path("z-last.pdf"),
-                Path("nested") / "b-middle.pdf",
-                Path("a-first.pdf"),
+                Path("a-dir") / "z-nested.pdf",
+                Path("b-top.pdf"),
             ]
             for relative_path in created_relative_paths:
+                (source_dir / relative_path.parent).mkdir(parents=True, exist_ok=True)
                 (source_dir / relative_path).write_bytes(b"%PDF-1.4")
             expected_order = sorted(created_relative_paths, key=lambda path: path.as_posix())
+            name_only_order = sorted(created_relative_paths, key=lambda path: path.name)
+            self.assertNotEqual(created_relative_paths, expected_order)
+            self.assertNotEqual(list(reversed(created_relative_paths)), expected_order)
+            self.assertNotEqual(name_only_order, expected_order)
             copied_order: list[Path] = []
 
             def record_copy(source: Path, destination: Path) -> Path:
