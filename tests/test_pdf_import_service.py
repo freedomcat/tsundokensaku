@@ -447,6 +447,34 @@ class PdfImportServiceTest(unittest.TestCase):
                 with self.assertRaises(RuntimeError):
                     import_pdfs_from_directory(source_dir, root / "books")
 
+    def test_import_pdfs_from_directory_processes_pdfs_in_relative_path_order(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source_dir = root / "source"
+            books_dir = root / "books"
+            nested_dir = source_dir / "nested"
+            nested_dir.mkdir(parents=True)
+            created_relative_paths = [
+                Path("z-last.pdf"),
+                Path("nested") / "b-middle.pdf",
+                Path("a-first.pdf"),
+            ]
+            for relative_path in created_relative_paths:
+                (source_dir / relative_path).write_bytes(b"%PDF-1.4")
+            expected_order = sorted(created_relative_paths, key=lambda path: path.as_posix())
+            copied_order: list[Path] = []
+
+            def record_copy(source: Path, destination: Path) -> Path:
+                copied_order.append(Path(source).relative_to(source_dir))
+                Path(destination).write_bytes(Path(source).read_bytes())
+                return destination
+
+            with patch("tsundokensaku.pdf_import_service.shutil.copy2", side_effect=record_copy):
+                result = import_pdfs_from_directory(source_dir, books_dir)
+
+            self.assertEqual(result, PdfDirectoryImportResult(copied=3, skipped=0, total=3))
+            self.assertEqual(copied_order, expected_order)
+
     def test_import_pdfs_from_directory_is_deterministic_and_fails_fast_without_rollback(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

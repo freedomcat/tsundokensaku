@@ -156,7 +156,7 @@ Python・Playwrightの自動テストで継続的に確認できる。
   - [x] R3 パス解決・URL生成 — `paths.py`へ分離
   - [x] R4 表示整形中心の責務（検索結果整形）— `search_view.py`へ分離
   - [ ] R5 ライブラリ/統計の集計 — `books_repo.py`側へ寄せる候補（`database.py`系列へ合流、未実装）
-    - [x] R6 インデックスジョブ — `index_job.py`へ分離
+  - [x] R6 インデックスジョブ — `index_job.py`へ分離
   - [ ] R7 ファイル入出力・取り込み — 子責務別に分離（詳細は設計書参照）
     - [x] R7-1 PDFアップロード保存 — `pdf_import_service.py`へ分離
     - [x] R7-2 PDFディレクトリ取り込み — `pdf_import_service.py`へ分離。characterization test、安全なsymlink境界、安全なHTTPエラー変換を実装済み（[docs/refactoring/r7-2-pdf-directory-import.md](docs/refactoring/r7-2-pdf-directory-import.md)参照）
