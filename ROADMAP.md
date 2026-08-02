@@ -163,6 +163,13 @@ Python・Playwrightの自動テストで継続的に確認できる。
     - [ ] R7-3 Scrapbox JSON保存・同期 — 詳細設計済み・未実装（[docs/refactoring/r7-3-scrapbox-sync.md](docs/refactoring/r7-3-scrapbox-sync.md)参照）
     - [ ] R7-4 PDF閲覧・変換・本文検索のHTTPオーケストレーション — 詳細設計済み・未実装（[docs/refactoring/r7-4-http-orchestration.md](docs/refactoring/r7-4-http-orchestration.md)参照）
   - [ ] R8 エクスポート業務ロジック — 詳細設計済み・実装未着手。単一`export_service.py`から開始し、集計・profile・ZIP・PDF/Markdown・履歴永続化は既存モジュール境界に残す方針（[docs/refactoring/r8-export-service.md](docs/refactoring/r8-export-service.md)参照）。characterization test・実装・完了反映は未実施
+  - [ ] `test_web.py`の責務整理
+    - サービス単体テストとWeb／HTTP契約テストの境界を整理し、責務ごとに段階的に移行する
+    - 完了済みR項目の残存テストは、関連する後続PRまたは独立したテスト整理PRで回収する
+    - R5は最終的な所有先が確定し、該当テストをその境界へ整理した時点を移行完了とする
+    - テスト件数やファイル行数の削減自体は目的とせず、テスト対象の契約境界と変更影響範囲を明確にする
+    - `test_web.py`がHTTP層の契約テストを中心とする構成になったことを最終確認する
+    - 詳細設計: [Web責務分離に伴うテスト移行設計](docs/refactoring/test-web-responsibility.md)
   - R5・R7-3〜R7-4・R8の着手順は未確定。次の実装対象は勝手に確定しない
   - FastAPIのルーティング・入力検証・レスポンス生成を薄い層へ整理する
   - 検索、資料、PDFプレビュー、エクスポート、本の登録・設定の業務処理を分ける
