@@ -48,7 +48,6 @@ from tsundokensaku.web import (
     group_pdf_results,
     highlight_query,
     import_pdf_directory,
-    import_pdfs_from_directory,
     import_scrapbox_json,
     pdf_outline,
     pdf_url,
@@ -77,6 +76,14 @@ from tsundokensaku.web import (
 from tsundokensaku.web import app as tsundokensaku_app
 from tsundokensaku.database import PackItemRecord, SearchResult, connect, initialize, upsert_book
 from tsundokensaku.export_stats import ItemStats
+from tsundokensaku.pdf_import_service import (
+    PdfDirectoryBoundaryError,
+    PdfDirectoryFilesystemError,
+    PdfDirectoryImportResult,
+    PdfDirectoryOverlapError,
+    PdfDirectorySourceNotDirectoryError,
+    PdfDirectorySourceNotFoundError,
+)
 from tsundokensaku.token_estimate import TextStats
 
 
@@ -150,95 +157,6 @@ class HighlightQueryTest(unittest.TestCase):
         self.assertEqual(book["snippet"], "2ページ目")
         self.assertEqual(grouped[1]["kind"], "memo")
 
-    def test_import_pdfs_from_directory_copies_into_books_dir(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            source_dir = root / "source"
-            books_dir = root / "books"
-            nested_dir = source_dir / "nested"
-            nested_dir.mkdir(parents=True)
-            pdf_a = source_dir / "a.pdf"
-            pdf_b = nested_dir / "b.pdf"
-            pdf_a.write_bytes(b"%PDF-1.4 a")
-            pdf_b.write_bytes(b"%PDF-1.4 b")
-
-            copied, skipped, total = import_pdfs_from_directory(source_dir, books_dir)
-
-            self.assertEqual((copied, skipped, total), (2, 0, 2))
-            self.assertTrue((books_dir / "a.pdf").exists())
-            self.assertTrue((books_dir / "nested" / "b.pdf").exists())
-
-    def test_import_pdfs_from_directory_keeps_current_file_selection_and_skip_contract(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            source_dir = root / "source"
-            books_dir = root / "books"
-            nested_dir = source_dir / "空 白"
-            nested_dir.mkdir(parents=True)
-            books_dir.mkdir()
-            (source_dir / "a.pdf").write_bytes(b"%PDF-1.4 a")
-            (source_dir / "upper.PDF").write_bytes(b"%PDF-1.4 upper")
-            (nested_dir / "読書 メモ.pdf").write_bytes(b"%PDF-1.4 unicode")
-            existing = books_dir / "a.pdf"
-            existing.write_bytes(b"existing")
-
-            copied, skipped, total = import_pdfs_from_directory(source_dir, books_dir)
-
-            self.assertEqual((copied, skipped, total), (1, 1, 2))
-            self.assertEqual(existing.read_bytes(), b"existing")
-            self.assertEqual((books_dir / "空 白" / "読書 メモ.pdf").read_bytes(), b"%PDF-1.4 unicode")
-            self.assertFalse((books_dir / "upper.PDF").exists())
-
-    def test_import_pdfs_from_directory_empty_source_counts_zero(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            source_dir = root / "source"
-            books_dir = root / "books"
-            source_dir.mkdir()
-
-            copied, skipped, total = import_pdfs_from_directory(source_dir, books_dir)
-
-            self.assertEqual((copied, skipped, total), (0, 0, 0))
-
-    def test_import_pdfs_from_directory_rejects_overlapping_roots(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            source_dir = root / "source"
-            books_dir = root / "books"
-            source_dir.mkdir()
-            books_dir.mkdir()
-            cases = (
-                (source_dir, source_dir),
-                (books_dir / "inside", books_dir),
-                (source_dir, source_dir / "books"),
-            )
-            (books_dir / "inside").mkdir()
-
-            for source, books in cases:
-                with self.subTest(source=source, books=books):
-                    with self.assertRaisesRegex(ValueError, "source_dir と books_dir は重ならない場所を指定してください"):
-                        import_pdfs_from_directory(source, books)
-
-    def test_import_pdfs_from_directory_fails_fast_without_rollback(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            source_dir = root / "source"
-            books_dir = root / "books"
-            first_dir = source_dir / "01-ok"
-            failing_dir = source_dir / "02-fail"
-            first_dir.mkdir(parents=True)
-            failing_dir.mkdir()
-            (first_dir / "a.pdf").write_bytes(b"%PDF-1.4 a")
-            (failing_dir / "b.pdf").write_bytes(b"%PDF-1.4 b")
-            books_dir.mkdir()
-            (books_dir / "02-fail").write_bytes(b"file blocks mkdir")
-
-            with self.assertRaises(FileExistsError):
-                import_pdfs_from_directory(source_dir, books_dir)
-
-            self.assertEqual((books_dir / "01-ok" / "a.pdf").read_bytes(), b"%PDF-1.4 a")
-            self.assertFalse((books_dir / "02-fail" / "b.pdf").exists())
-
     def test_pdf_import_route_preserves_query_redirect_and_success_message(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -247,7 +165,10 @@ class HighlightQueryTest(unittest.TestCase):
             books_dir.mkdir()
             source_dir.mkdir()
             with patch("tsundokensaku.web.get_books_dir", return_value=books_dir), \
-                    patch("tsundokensaku.web.import_pdfs_from_directory", return_value=(3, 2, 5)) as import_mock, \
+                    patch(
+                        "tsundokensaku.web.pdf_import_service.import_pdfs_from_directory",
+                        return_value=PdfDirectoryImportResult(copied=3, skipped=2, total=5),
+                    ) as import_mock, \
                     patch.dict(os.environ, {"DEMO_MODE": "false"}):
                 client = TestClient(tsundokensaku_app)
                 response = client.get("/settings/pdf-import", params={"source_dir": str(source_dir)}, follow_redirects=False)
@@ -262,7 +183,7 @@ class HighlightQueryTest(unittest.TestCase):
             import_mock.assert_called_once_with(source_dir, books_dir)
 
     def test_pdf_import_route_requires_source_without_calling_import(self) -> None:
-        with patch("tsundokensaku.web.import_pdfs_from_directory") as import_mock, \
+        with patch("tsundokensaku.web.pdf_import_service.import_pdfs_from_directory") as import_mock, \
                 patch.dict(os.environ, {"DEMO_MODE": "false"}):
             client = TestClient(tsundokensaku_app)
             missing_response = client.get("/settings/pdf-import", follow_redirects=False)
@@ -282,7 +203,7 @@ class HighlightQueryTest(unittest.TestCase):
             books_dir.mkdir()
             (source_dir / "a.pdf").write_bytes(b"%PDF-1.4 a")
 
-            with patch("tsundokensaku.web.import_pdfs_from_directory") as import_mock, \
+            with patch("tsundokensaku.web.pdf_import_service.import_pdfs_from_directory") as import_mock, \
                     patch("tsundokensaku.web.index_job.start") as index_mock, \
                     patch.dict(os.environ, {"DEMO_MODE": "true"}):
                 client = TestClient(tsundokensaku_app)
@@ -293,6 +214,59 @@ class HighlightQueryTest(unittest.TestCase):
             import_mock.assert_not_called()
             index_mock.assert_not_called()
             self.assertFalse((books_dir / "a.pdf").exists())
+
+    def test_pdf_import_route_maps_service_errors_to_safe_messages(self) -> None:
+        cases = (
+            (PdfDirectorySourceNotFoundError("/secret/source"), "入力元フォルダが見つかりません"),
+            (PdfDirectorySourceNotDirectoryError("/secret/file.pdf"), "入力元がフォルダではありません"),
+            (PdfDirectoryOverlapError("/secret/overlap"), "入力元と保存先には重ならないフォルダを指定してください"),
+            (PdfDirectoryBoundaryError("/secret/link"), "安全でないパスが含まれているため取り込めません"),
+            (PdfDirectoryFilesystemError("/secret/oserror"), "ファイルの読み取りまたはコピーに失敗しました"),
+        )
+
+        for exc, expected_message in cases:
+            with self.subTest(exc=type(exc).__name__):
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    root = Path(temp_dir)
+                    books_dir = root / "books"
+                    source_dir = root / "source"
+                    books_dir.mkdir()
+                    source_dir.mkdir()
+                    with patch("tsundokensaku.web.get_books_dir", return_value=books_dir), \
+                            patch("tsundokensaku.web.pdf_import_service.import_pdfs_from_directory", side_effect=exc), \
+                            patch("tsundokensaku.web.LOGGER.exception") as log_mock, \
+                            patch.dict(os.environ, {"DEMO_MODE": "false"}):
+                        response = import_pdf_directory(source_dir=str(source_dir))
+
+                self.assertEqual(response.status_code, 303)
+                location = unquote(response.headers["location"])
+                self.assertIn(expected_message, location)
+                self.assertNotIn("/secret", location)
+                self.assertNotIn("oserror", location)
+                log_mock.assert_called_once()
+
+    def test_pdf_import_route_maps_unexpected_error_to_safe_message(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            books_dir = root / "books"
+            source_dir = root / "source"
+            books_dir.mkdir()
+            source_dir.mkdir()
+            with patch("tsundokensaku.web.get_books_dir", return_value=books_dir), \
+                    patch(
+                        "tsundokensaku.web.pdf_import_service.import_pdfs_from_directory",
+                        side_effect=RuntimeError("/secret/path permission denied"),
+                    ), \
+                    patch("tsundokensaku.web.LOGGER.exception") as log_mock, \
+                    patch.dict(os.environ, {"DEMO_MODE": "false"}):
+                response = import_pdf_directory(source_dir=str(source_dir))
+
+        self.assertEqual(response.status_code, 303)
+        location = unquote(response.headers["location"])
+        self.assertIn("予期しないエラーが発生しました", location)
+        self.assertNotIn("/secret/path", location)
+        self.assertNotIn("permission denied", location)
+        log_mock.assert_called_once()
 
     def test_format_indexed_at_renders_jst(self) -> None:
         self.assertEqual(format_indexed_at("2026-06-29T03:55:59.999358+00:00"), "2026/06/29 12:55")
