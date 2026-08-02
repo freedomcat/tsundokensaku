@@ -1,33 +1,15 @@
 from __future__ import annotations
 
-import sqlite3
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from tsundokensaku.database import PackItemRecord, get_book
+from tsundokensaku.database import PackItemRecord
 from tsundokensaku import paths
+from tsundokensaku.pdf_metadata_service import find_indexed_book
 from tsundokensaku.pdf_export import parse_page_selection
 from tsundokensaku.pdf_outline import get_page_count
 from tsundokensaku.token_estimate import TextStats, count_text_stats
-
-
-def _find_indexed_book(connection: sqlite3.Connection, relative: Path, *, books_dir: Path):
-    """web._get_indexed_book と同じ二重候補チェック（books.path の新旧表記ゆれ対応）。
-
-    パック関連APIは ensure_pack_schema（packs/pack_items/app_state のみ作成）で
-    足りるため、一度も index を実行していないDBでは books テーブル自体が
-    存在しない。この場合は「未インデックス」と同義として扱う
-    （web._get_indexed_book と同じ OperationalError の握りつぶし方）。
-    """
-    try:
-        for path_candidate in (relative, books_dir.expanduser().resolve() / relative):
-            book = get_book(connection, path=path_candidate)
-            if book is not None:
-                return book
-    except sqlite3.OperationalError:
-        pass
-    return None
 
 
 @dataclass(frozen=True)
@@ -88,7 +70,7 @@ def _collect_single_item_stats(
         return _empty_item_stats(item, missing_pdf=True)
 
     absolute_pdf_path = books_dir.expanduser().resolve() / relative
-    book = _find_indexed_book(connection, relative, books_dir=books_dir)
+    book = find_indexed_book(connection, relative, books_dir=books_dir)
     book_id = book.id if book is not None else None
 
     total_page_count = _resolve_total_page_count(connection, book_id=book_id, absolute_pdf_path=absolute_pdf_path)

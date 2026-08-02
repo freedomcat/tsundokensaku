@@ -4,7 +4,13 @@ import re
 from io import BytesIO
 from pathlib import Path
 
+from tsundokensaku import paths
+
 from pypdf import PdfReader, PdfWriter
+
+
+class PdfSourceNotFoundError(FileNotFoundError):
+    pass
 
 
 def parse_page_selection(spec: str, page_count: int) -> list[int]:
@@ -85,6 +91,48 @@ def render_selected_pages(input_pdf: Path, page_numbers: list[int]) -> bytes:
     buffer = BytesIO()
     writer.write(buffer)
     return buffer.getvalue()
+
+
+def render_pdf_export(candidate: Path, pages: str) -> tuple[bytes, str]:
+    page_spec = pages.strip()
+    if not page_spec:
+        raise ValueError("pages is required")
+
+    page_numbers = parse_page_selection(page_spec, len(PdfReader(str(candidate)).pages))
+    return render_selected_pages(candidate, page_numbers), default_output_path(candidate, page_numbers).name
+
+
+def save_pdf_export_to_configured_dir(
+    pdf_path: str,
+    pages: str,
+    *,
+    books_dir: Path,
+    save_dir: Path | None,
+) -> Path:
+    if save_dir is None:
+        raise ValueError("保存先フォルダが未設定です。設定画面で指定してください。")
+
+    save_root = save_dir.expanduser().resolve()
+    if not save_root.exists():
+        raise FileNotFoundError(save_root)
+    if not save_root.is_dir():
+        raise NotADirectoryError(save_root)
+
+    relative = paths.resolve_pdf_path(pdf_path, books_dir)
+    if relative is None:
+        raise PdfSourceNotFoundError(pdf_path)
+
+    candidate = books_dir.expanduser().resolve() / relative
+    content, filename = render_pdf_export(candidate, pages)
+    destination = (save_root / Path(filename).name).resolve()
+    try:
+        destination.relative_to(save_root)
+    except ValueError as exc:
+        raise ValueError("保存先が不正です") from exc
+
+    destination = paths.unique_export_destination_path(destination)
+    destination.write_bytes(content)
+    return destination
 
 
 def merge_rendered_pdfs(rendered_pdfs: list[bytes]) -> bytes:

@@ -27,7 +27,6 @@ from tsundokensaku.database import (
     create_pack,
     delete_pack,
     ensure_pack_schema,
-    get_book,
     get_pack,
     get_pack_items,
     import_cart_as_pack,
@@ -57,14 +56,16 @@ from tsundokensaku.metadata import (
     metadata_for_pdf,
     get_scrapbox_project_url,
 )
-from tsundokensaku.markdown_export import default_markdown_output_name, render_markdown_pages
 from tsundokensaku import config
 from tsundokensaku import index_job
 from tsundokensaku import paths
+from tsundokensaku import pdf_export as pdf_export_service
 from tsundokensaku import pdf_import_service
+from tsundokensaku import pdf_metadata_service
+from tsundokensaku import pdf_text_service
 from tsundokensaku import scrapbox_import_service
 from tsundokensaku import search_view
-from tsundokensaku.pdf_export import default_output_path, parse_page_selection, render_selected_pages
+from tsundokensaku.pdf_export import PdfSourceNotFoundError, parse_page_selection
 from tsundokensaku.pdf_outline import get_page_count, list_chapters
 from tsundokensaku.pdf_thumbnail import render_thumbnail_detail, render_thumbnails
 from tsundokensaku.token_estimate import ESTIMATOR_NAME, TextStats, estimate_tokens
@@ -388,179 +389,46 @@ def _resolve_pdf_file_or_404(pdf_path: str, books_dir: Path) -> Path:
 
 
 def render_pdf_export(candidate: Path, pages: str) -> tuple[bytes, str]:
-    page_spec = pages.strip()
-    if not page_spec:
-        raise HTTPException(status_code=400, detail="pages is required")
-
-    from pypdf import PdfReader
-
     try:
-        page_numbers = parse_page_selection(page_spec, len(PdfReader(str(candidate)).pages))
+        return pdf_export_service.render_pdf_export(candidate, pages)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return render_selected_pages(candidate, page_numbers), default_output_path(candidate, page_numbers).name
-
-
-def save_pdf_export_to_configured_dir(pdf_path: str, pages: str, *, books_dir: Path, save_dir: Path | None) -> Path:
-    if save_dir is None:
-        raise ValueError("保存先フォルダが未設定です。設定画面で指定してください。")
-
-    save_root = save_dir.expanduser().resolve()
-    if not save_root.exists():
-        raise FileNotFoundError(save_root)
-    if not save_root.is_dir():
-        raise NotADirectoryError(save_root)
-
-    candidate = _resolve_pdf_file_or_404(pdf_path, books_dir)
-    content, filename = render_pdf_export(candidate, pages)
-    destination = (save_root / Path(filename).name).resolve()
-    try:
-        destination.relative_to(save_root)
-    except ValueError as exc:
-        raise ValueError("保存先が不正です") from exc
-
-    destination = _unique_export_destination_path(destination)
-    destination.write_bytes(content)
-    return destination
-
-
-def _get_indexed_book(candidate: Path, *, books_dir: Path, db_path: Path):
-    relative = resolve_pdf_path(candidate, books_dir)
-    if relative is None:
-        return None
-    connection = None
-    try:
-        connection = connect(db_path)
-        for path_candidate in [relative, books_dir.expanduser().resolve() / relative]:
-            book = get_book(connection, path=path_candidate)
-            if book:
-                return book
-    except sqlite3.OperationalError:
-        pass
-    finally:
-        if connection is not None:
-            connection.close()
-    return None
-
-
-def load_pages_text(candidate: Path, page_numbers: list[int], *, books_dir: Path, db_path: Path) -> dict[int, str]:
-    texts: dict[int, str] = {}
-    book = _get_indexed_book(candidate, books_dir=books_dir, db_path=db_path)
-    if book is not None:
-        connection = None
-        try:
-            connection = connect(db_path)
-            placeholders = ",".join("?" for _ in page_numbers)
-            rows = connection.execute(
-                f"SELECT page_number, text FROM pages WHERE book_id = ? AND page_number IN ({placeholders})",
-                [book.id, *page_numbers],
-            ).fetchall()
-            texts = {int(row["page_number"]): str(row["text"]) for row in rows}
-        except sqlite3.OperationalError:
-            texts = {}
-        finally:
-            if connection is not None:
-                connection.close()
-
-    missing = {number for number in page_numbers if number not in texts}
-    if missing:
-        from tsundokensaku.pdf_extract import extract_pages
-
-        for page in extract_pages(candidate):
-            if page.page_number in missing:
-                texts[page.page_number] = page.text
-    return texts
-
-
-def _page_snippet(text: str, query: str, *, width: int = 80) -> str:
-    flat = " ".join(text.split())
-    index = flat.lower().find(query.lower())
-    if index < 0:
-        return flat[:width]
-    start = max(0, index - 20)
-    end = min(len(flat), index + len(query) + width - 20)
-    prefix = "…" if start > 0 else ""
-    suffix = "…" if end < len(flat) else ""
-    return f"{prefix}{flat[start:end]}{suffix}"
 
 
 def search_book_pages(candidate: Path, query: str, *, books_dir: Path, db_path: Path, limit: int = 100) -> dict[str, object]:
-    book = _get_indexed_book(candidate, books_dir=books_dir, db_path=db_path)
-    if book is None:
-        return {"indexed": False, "pages": []}
-
-    escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-    connection = connect(db_path)
-    try:
-        rows = connection.execute(
-            "SELECT page_number, text FROM pages "
-            "WHERE book_id = ? AND text LIKE ? ESCAPE '\\' "
-            "ORDER BY page_number LIMIT ?",
-            (book.id, f"%{escaped}%", limit),
-        ).fetchall()
-    except sqlite3.OperationalError:
-        return {"indexed": False, "pages": []}
-    finally:
-        connection.close()
-
+    result = pdf_text_service.search_book_pages(candidate, query, books_dir=books_dir, db_path=db_path, limit=limit)
     return {
-        "indexed": True,
+        "indexed": result.indexed,
         "pages": [
             {
-                "page_number": int(row["page_number"]),
-                "snippet": _page_snippet(str(row["text"]), query),
+                "page_number": hit.page_number,
+                "snippet": hit.snippet,
             }
-            for row in rows
+            for hit in result.pages
         ],
     }
 
 
 def render_markdown_export(candidate: Path, pages: str, *, books_dir: Path, db_path: Path) -> tuple[str, str]:
-    page_spec = pages.strip()
-    if not page_spec:
-        raise HTTPException(status_code=400, detail="pages is required")
-
-    from pypdf import PdfReader
-
     try:
-        page_numbers = parse_page_selection(page_spec, len(PdfReader(str(candidate)).pages))
+        return pdf_text_service.render_markdown_export(
+            candidate,
+            pages,
+            books_dir=books_dir,
+            db_path=db_path,
+            exported_at=_now_jst(),
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    book = _get_indexed_book(candidate, books_dir=books_dir, db_path=db_path)
-    title = book.title if book is not None else candidate.stem
-    texts = load_pages_text(candidate, page_numbers, books_dir=books_dir, db_path=db_path)
-    content = render_markdown_pages(
-        title=title,
-        source_name=candidate.name,
-        page_numbers=page_numbers,
-        texts=texts,
-        exported_at=_now_jst(),
-    )
-    return content, default_markdown_output_name(candidate, page_numbers)
-
 
 def resolve_pdf_scrapbox_url(pdf_path: str, *, books_dir: Path, db_path: Path) -> str | None:
-    relative = resolve_pdf_path(pdf_path, books_dir)
-    if relative is None:
-        return None
-
-    connection = None
-    try:
-        connection = connect(db_path)
-        path_candidates = [relative, books_dir.expanduser().resolve() / relative]
-        for path_candidate in path_candidates:
-            book = get_book(connection, path=path_candidate)
-            if book and book.scrapbox_url:
-                return book.scrapbox_url
-    except sqlite3.OperationalError:
-        pass
-    finally:
-        if connection is not None:
-            connection.close()
-
-    metadata = metadata_for_pdf(str(relative), get_metadata())
-    return metadata.scrapbox_url if metadata else None
+    return pdf_metadata_service.resolve_pdf_scrapbox_url(
+        pdf_path,
+        books_dir=books_dir,
+        db_path=db_path,
+        project_root=PROJECT_ROOT,
+    )
 
 
 SEARCH_SCOPE_OPTIONS = [
@@ -1666,14 +1534,14 @@ def export_markdown(pdf_path: str, pages: str) -> Response:
 @app.post("/export-pdf/save")
 def save_export_pdf(pdf_path: str, pages: str) -> JSONResponse:
     try:
-        saved = save_pdf_export_to_configured_dir(
+        saved = pdf_export_service.save_pdf_export_to_configured_dir(
             pdf_path,
             pages,
             books_dir=get_books_dir(),
             save_dir=get_pdf_export_save_dir(),
         )
-    except HTTPException:
-        raise
+    except PdfSourceNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="PDF not found") from exc
     except FileNotFoundError as exc:
         raise HTTPException(status_code=400, detail=f"保存先フォルダが存在しません: {exc.filename or exc}") from exc
     except NotADirectoryError as exc:
