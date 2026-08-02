@@ -4092,6 +4092,180 @@ class PdfUploadHttpCharacterizationTest(unittest.TestCase):
             self.assertFalse((books_dir / "sample.pdf ").exists())
 
 
+class ScrapboxImportHttpCharacterizationTest(unittest.TestCase):
+    def test_scrapbox_import_redirects_when_source_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "index.db"
+            missing = Path(temp_dir) / "missing.json"
+
+            with patch("tsundokensaku.web.get_db_path", return_value=db_path), \
+                    patch.dict(os.environ, {"DEMO_MODE": "false"}):
+                response = import_scrapbox_json(export_json_path=str(missing))
+
+            self.assertEqual(response.status_code, 303)
+            location = unquote(response.headers["location"])
+            self.assertEqual(location, "/settings?message=Scrapbox の export JSON が見つかりませんでした")
+
+    def test_scrapbox_import_explicit_source_success_redirect_and_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            db_path = root / "index.db"
+            source = root / "source.json"
+            cache_path = root / "cache.json"
+            source.write_text('{"pages":[]}', encoding="utf-8")
+            connection = unittest.mock.Mock()
+
+            with patch("tsundokensaku.web.get_db_path", return_value=db_path), \
+                    patch("tsundokensaku.web.SCRAPBOX_EXPORT_CACHE", cache_path), \
+                    patch("tsundokensaku.web.connect", return_value=connection) as connect_mock, \
+                    patch("tsundokensaku.web.initialize") as initialize_mock, \
+                    patch("tsundokensaku.web.sync_memos", return_value=3) as sync_memos_mock, \
+                    patch("tsundokensaku.web.sync_kindle_books", return_value=2) as sync_kindle_mock, \
+                    patch.dict(os.environ, {"DEMO_MODE": "false"}):
+                response = import_scrapbox_json(export_json_path=str(source))
+
+            self.assertEqual(response.status_code, 303)
+            self.assertEqual(cache_path.read_bytes(), source.read_bytes())
+            location = unquote(response.headers["location"])
+            self.assertEqual(location, "/settings?message=Scrapbox JSON を同期しました: メモ 3 件 / Kindle 2 件 (source.json)")
+            connect_mock.assert_called_once_with(db_path)
+            initialize_mock.assert_called_once_with(connection)
+            sync_memos_mock.assert_called_once_with(connection, cache_path)
+            sync_kindle_mock.assert_called_once_with(connection, cache_path)
+            connection.close.assert_called_once_with()
+
+    def test_scrapbox_import_uses_default_source_when_query_blank(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            db_path = root / "index.db"
+            source = root / "default.json"
+            cache_path = root / "cache.json"
+            source.write_text('{"pages":[]}', encoding="utf-8")
+
+            with patch("tsundokensaku.web.get_db_path", return_value=db_path), \
+                    patch("tsundokensaku.web.SCRAPBOX_EXPORT_CACHE", cache_path), \
+                    patch("tsundokensaku.web.find_export_json", return_value=source) as find_mock, \
+                    patch("tsundokensaku.web.connect") as connect_mock, \
+                    patch("tsundokensaku.web.initialize"), \
+                    patch("tsundokensaku.web.sync_memos", return_value=1), \
+                    patch("tsundokensaku.web.sync_kindle_books", return_value=0), \
+                    patch.dict(os.environ, {"DEMO_MODE": "false"}):
+                response = import_scrapbox_json(export_json_path="   ")
+
+            self.assertEqual(response.status_code, 303)
+            self.assertEqual(cache_path.read_bytes(), source.read_bytes())
+            find_mock.assert_called_once_with(web.PROJECT_ROOT)
+            connect_mock.assert_called_once_with(db_path)
+            self.assertIn("default.json", unquote(response.headers["location"]))
+
+    def test_scrapbox_import_does_not_rewrite_when_source_is_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            db_path = root / "index.db"
+            cache_path = root / "cache.json"
+            cache_path.write_text('{"pages":[]}', encoding="utf-8")
+            before_mtime = cache_path.stat().st_mtime_ns
+
+            with patch("tsundokensaku.web.get_db_path", return_value=db_path), \
+                    patch("tsundokensaku.web.SCRAPBOX_EXPORT_CACHE", cache_path), \
+                    patch("tsundokensaku.web.connect"), \
+                    patch("tsundokensaku.web.initialize"), \
+                    patch("tsundokensaku.web.sync_memos", return_value=0) as sync_memos_mock, \
+                    patch("tsundokensaku.web.sync_kindle_books", return_value=0), \
+                    patch.dict(os.environ, {"DEMO_MODE": "false"}):
+                response = import_scrapbox_json(export_json_path=str(cache_path))
+
+            self.assertEqual(response.status_code, 303)
+            self.assertEqual(cache_path.stat().st_mtime_ns, before_mtime)
+            sync_memos_mock.assert_called_once_with(unittest.mock.ANY, cache_path)
+
+    def test_scrapbox_import_demo_mode_does_not_touch_db_or_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "index.db"
+            cache_path = Path(temp_dir) / "cache.json"
+            with patch("tsundokensaku.web.get_db_path", return_value=db_path), \
+                    patch("tsundokensaku.web.SCRAPBOX_EXPORT_CACHE", cache_path), \
+                    patch("tsundokensaku.web.connect", side_effect=AssertionError("DB must not be used")), \
+                    patch.dict(os.environ, {"DEMO_MODE": "true"}):
+                response = import_scrapbox_json(export_json_path="")
+
+            self.assertEqual(response.status_code, 303)
+            self.assertIn("デモモードのため無効です", unquote(response.headers["location"]))
+            self.assertFalse(db_path.exists())
+            self.assertFalse(cache_path.exists())
+
+    def test_scrapbox_upload_rejects_empty_filename_before_body_and_import(self) -> None:
+        for filename in ("", "   "):
+            with self.subTest(filename=filename), \
+                    patch("tsundokensaku.web.import_scrapbox_export_bytes", side_effect=AssertionError("service must not be used")), \
+                    patch.dict(os.environ, {"DEMO_MODE": "false"}):
+                response = asyncio.run(upload_scrapbox_json(request=None, filename=filename))
+
+            self.assertEqual(response.status_code, 400)
+            self.assertEqual(response.body, "filename が必要です".encode())
+
+    def test_scrapbox_upload_rejects_non_json_extension_before_body_and_import(self) -> None:
+        with patch("tsundokensaku.web.import_scrapbox_export_bytes", side_effect=AssertionError("service must not be used")), \
+                patch.dict(os.environ, {"DEMO_MODE": "false"}):
+            response = asyncio.run(upload_scrapbox_json(request=None, filename="sample.txt"))
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.body, "JSON ファイルのみ受け付けます".encode())
+
+    def test_scrapbox_upload_accepts_uppercase_json_extension(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "index.db"
+            content = b'{"pages":[]}'
+            with patch("tsundokensaku.web.get_db_path", return_value=db_path), \
+                    patch("tsundokensaku.web.import_scrapbox_export_bytes", return_value=(4, 1)) as import_mock, \
+                    patch.dict(os.environ, {"DEMO_MODE": "false"}):
+                response = asyncio.run(upload_scrapbox_json(request=_FakeUploadRequest(content), filename="sample.JSON"))
+
+            self.assertEqual(response.status_code, 201)
+            self.assertEqual(response.body, "Scrapbox JSON を同期しました: メモ 4 件 / Kindle 1 件 (sample.JSON)".encode())
+            self.assertEqual(response.media_type, "text/plain")
+            import_mock.assert_called_once_with(content, db_path)
+
+    def test_scrapbox_upload_rejects_empty_body_before_import(self) -> None:
+        with patch("tsundokensaku.web.import_scrapbox_export_bytes", side_effect=AssertionError("service must not be used")), \
+                patch.dict(os.environ, {"DEMO_MODE": "false"}):
+            response = asyncio.run(upload_scrapbox_json(request=_FakeUploadRequest(b""), filename="sample.json"))
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.body, b"empty body")
+
+    def test_scrapbox_upload_success_passes_content_and_db_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "index.db"
+            content = b'{"pages":[{"title":"a","lines":[]}]}'
+            with patch("tsundokensaku.web.get_db_path", return_value=db_path), \
+                    patch("tsundokensaku.web.import_scrapbox_export_bytes", return_value=(1, 0)) as import_mock, \
+                    patch.dict(os.environ, {"DEMO_MODE": "false"}):
+                response = asyncio.run(upload_scrapbox_json(request=_FakeUploadRequest(content), filename="sample.json"))
+
+            self.assertEqual(response.status_code, 201)
+            self.assertEqual(response.body, "Scrapbox JSON を同期しました: メモ 1 件 / Kindle 0 件 (sample.json)".encode())
+            self.assertEqual(response.media_type, "text/plain")
+            import_mock.assert_called_once_with(content, db_path)
+
+    def test_scrapbox_upload_import_exception_returns_400_plain_text(self) -> None:
+        with patch("tsundokensaku.web.import_scrapbox_export_bytes", side_effect=ValueError("bad json")), \
+                patch.dict(os.environ, {"DEMO_MODE": "false"}):
+            response = asyncio.run(upload_scrapbox_json(request=_FakeUploadRequest(b"bad"), filename="sample.json"))
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.body, b"bad json")
+        self.assertEqual(response.media_type, "text/plain")
+
+    def test_scrapbox_upload_demo_mode_does_not_read_body_or_import(self) -> None:
+        with patch("tsundokensaku.web.import_scrapbox_export_bytes", side_effect=AssertionError("service must not be used")), \
+                patch.dict(os.environ, {"DEMO_MODE": "true"}):
+            response = asyncio.run(upload_scrapbox_json(request=None, filename="sample.json"))
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.body, b"Upload is disabled in demo mode.")
+
+
 class ConfigResolutionTest(unittest.TestCase):
     """R2（設定・環境変数の解決）の現在挙動を固定する characterization test。
 
