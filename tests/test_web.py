@@ -3051,6 +3051,7 @@ class ExportClockCallCountTest(unittest.TestCase):
         # archiveのexported_at（JST、_now_jst）と、export_eventのexported_at
         # （UTC、database.record_export_event内のdatetime.now(timezone.utc)）は
         # 別々の時計呼び出しであり、値の形式も異なる（統一しない）。
+        fixed_now = datetime(2026, 8, 19, 9, 30, tzinfo=ZoneInfo("Asia/Tokyo"))
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             db_path = root / "index.db"
@@ -3065,11 +3066,12 @@ class ExportClockCallCountTest(unittest.TestCase):
                 items = [{"pdf_path": "a.pdf", "title": "本A", "pages": "1-2", "collapsed": False, "position": 0}]
                 self._payload(api_replace_pack_items(created["id"], {"items": items}))
 
-                response = api_export_pack(created["id"], format="pdf")
+                with patch("tsundokensaku.web._now_jst", return_value=fixed_now):
+                    response = api_export_pack(created["id"], format="pdf")
                 self.assertEqual(response.status_code, 200)
                 disposition = response.headers["content-disposition"]
-                # archive名にはJSTの日付表記（%Y%m%d）が使われる
-                self.assertIn(f"{_now_jst():%Y%m%d}", unquote(disposition))
+                # archive名には、注入したJST日付表記（%Y%m%d）が使われる
+                self.assertIn("資料_20260819.zip", unquote(disposition))
 
             import sqlite3
             conn = sqlite3.connect(str(db_path))

@@ -47,7 +47,11 @@ archive名・manifest日時・JSON body・event記録のテストでは、`_now_
 
 warning code（`empty_pack`/`missing_pdf`/`missing_pages`/`invalid_pages`はblocking、`unindexed_pages`とplan warningはnon-blocking）とUIのexportボタン活性/非活性の対応は、既存Playwright specへ追記する。4種類全てをE2Eで確認するか、代表1〜2種を E2E、残りをPython側のwarning生成テストで分担するかは実装時に判断する（設計書§19.2-15が同様の裁量を許容している）。本設計では「blockingとnon-blockingの境界が両方最低1件ずつE2Eで確認される」ことを最低条件とする。
 
-**実装結果の追記**: blocking側は`empty_pack`（空packでモーダルを開くだけで確実に再現できる）をE2Eで固定した。non-blocking側は、`unindexed_pages`やplan warning（`item_exceeds_limit`等）をテスト環境のサンプルPDF（`cathedral.pdf`等、CIが動的に生成する一時`books_dir`）で確実に再現する条件（未インデックスページの存在、8万トークン超の単一項目など）を安定して用意できず、テストデータの実PDF内容に強く依存し不確実になるため、「warningが0件でexportSubmitButtonが有効」という代替の非blocking代表ケースをE2Eで固定した。残りのwarning code（`missing_pdf`/`missing_pages`/`invalid_pages`/`unindexed_pages`/plan warning群）は全てPython側（`ExportPreviewWarningContractTest`等）でcode・優先順位・メッセージが直接固定されており、BLOCKING_EXPORT_WARNINGSとPython側codeの対応自体は`workspace.html`の定数とPython側codeを突き合わせる形で維持している。
+**実装結果の追記**: blocking側は`empty_pack`（空packでモーダルを開くだけで確実に再現できる）をE2Eで固定した。non-blocking側は実PDFの内容に依存して自然発生させるのではなく、PlaywrightのAPI interceptionで`/api/packs/{pack_id}/export/preview`のレスポンスに`unindexed_pages`とplan warning（`item_exceeds_limit`）を含め、warningが実際に表示されていても`exportSubmitButton`が有効のままであることをE2Eで固定した。
+
+モーダルの既定選択プロファイルは`EXPORT_DESTINATIONS[0]`（`profile: 'chat'`、`templates/workspace.html`）であり、モーダルを開いた直後の`/export/preview`リクエストは`profile=chat`で発行される。このためモックレスポンスは、chat/chapterプロファイル固有の`profile`/`file_count`/`archive`/`chunks`を含む拡張構造でなければ、production実装（`build_export_preview_payload_for_profile`）が実際に返す形と乖離する。モックのレスポンスbodyは、`tests/test_web.py`の`ExportPreviewWarningContractTest.test_item_warnings_precede_plan_warnings_in_profile_payload`と同一のitem_stats（未インデックス本+巨大本）に対して`build_export_preview_payload_for_profile(item_stats, ChatProfile(), pack_name="資料")`を実際に呼び出して得た値をそのまま転記しており、warning文言（`「{title}」は1ファイルの上限を超えるため単独で出力します`、`src/tsundokensaku/export_profiles.py`の実際の文言）を含め、production実装と一致させている。
+
+残りのwarning code（`missing_pdf`/`missing_pages`/`invalid_pages`）はPython側（`ExportPreviewWarningContractTest`等）でcode・優先順位・メッセージを直接固定している。
 
 ### 5. `_resolve_export_profile_or_400`のunlisted分岐
 

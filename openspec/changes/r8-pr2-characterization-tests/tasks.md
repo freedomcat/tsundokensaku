@@ -62,8 +62,8 @@
 ## 11. cross-layer契約（Playwright）
 
 - [x] 11.1 warning code（`empty_pack`/`missing_pdf`/`missing_pages`/`invalid_pages`）がUIでexportボタンを無効化するblocking判定になることを、既存Playwright specへの追記で固定する（design.md 決定4: 最低blocking 1件・non-blocking 1件をE2Eで確認）。`empty_pack`（空packでモーダルを開くだけで確実に再現可能）をE2Eで固定した
-- [x] 11.2 `unindexed_pages`とplan warningがnon-blockingでexport操作可能であることを、既存Playwright specへの追記で固定する（テスト環境のサンプルPDFで`unindexed_pages`/plan warningを安定再現する条件を用意できないため、design.md決定4の追記のとおり「warning 0件でボタンが有効」という代替の非blocking代表ケースで固定した）
-- [x] 11.3 残りのwarning code（11.1で扱わなかったもの）は、Python側のwarning生成テストで代替検証されていることを確認し、design.mdの分担方針どおりであることを確認する（`ExportPreviewWarningContractTest`で`missing_pdf`/`missing_pages`/`invalid_pages`/`unindexed_pages`全codeとplan warning連結を直接固定済み）
+- [x] 11.2 `unindexed_pages`とplan warningがnon-blockingでexport操作可能であることを、既存Playwright specへの追記で固定する。実PDFの内容に依存して自然発生させるのではなく、PlaywrightのAPI interceptionでpreviewレスポンスに`unindexed_pages`と`item_exceeds_limit`を含め、warningが実際に表示されていてもexportボタンが有効であることを直接固定した。モーダル既定選択はchatプロファイルのため、モックレスポンスは`profile`/`file_count`/`archive`/`chunks`を含む拡張構造とし、`build_export_preview_payload_for_profile(item_stats, ChatProfile(), pack_name="資料")`を実際に呼び出して得た値（warning文言含む）をそのまま転記してproduction実装との一致を担保した
+- [x] 11.3 残りのwarning code（11.1/11.2で扱わなかった`missing_pdf`/`missing_pages`/`invalid_pages`）は、Python側のwarning生成テストで代替検証されていることを確認し、design.mdの分担方針どおりであることを確認する（`ExportPreviewWarningContractTest`で全codeのexact dict・優先順位を直接固定済み）
 
 ## 12. 全体検証
 
