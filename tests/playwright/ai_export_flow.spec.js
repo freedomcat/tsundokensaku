@@ -87,4 +87,28 @@ test.describe('AI export flow (Phase 3E E2E)', () => {
     expect(fs.statSync(downloadPath).size).toBeGreaterThan(0);
     expect(await download.failure()).toBeNull();
   });
+
+  test('empty pack shows a blocking empty_pack warning and disables the export submit button', async ({ page }) => {
+    // R8 PR2 characterization test（設計書§19.2-15 / design.md決定4）:
+    // Pythonの warning code 契約（empty_pack はBLOCKING_EXPORT_WARNINGS）
+    // と、workspace.html の disabled 判定が一致することをcross-layerで固定する。
+    const modal = await openExportModal(page);
+
+    const warningsSection = modal.locator('#ws-export-warnings-section');
+    await expect(warningsSection).toBeVisible();
+    await expect(modal.locator('#ws-export-warnings')).toContainText('この資料には資料項目がありません');
+    await expect(modal.getByRole('button', { name: '書き出す', exact: true })).toBeDisabled();
+  });
+
+  test('pack with a valid item has no blocking warning and enables the export submit button', async ({ page }) => {
+    // R8 PR2 characterization test（設計書§19.2-15 / design.md決定4）:
+    // non-blocking側の代表例として、warningが0件の通常状態で
+    // exportSubmitButton が有効であることを固定する（BLOCKING_EXPORT_WARNINGS
+    // に該当するwarningが1件も無ければ disabled にならないという契約の裏付け）。
+    await addOneBookToActivePack(page);
+    const modal = await openExportModal(page);
+
+    await expect(modal.locator('#ws-export-warnings-section')).toBeHidden();
+    await expect(modal.getByRole('button', { name: '書き出す', exact: true })).toBeEnabled();
+  });
 });
