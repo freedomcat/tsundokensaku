@@ -2655,6 +2655,39 @@ class PackStatsApiTest(unittest.TestCase):
             self.assertEqual(pack["total_pages"], 0)
             self.assertEqual(pack["estimated_tokens"], 0)
 
+    def test_stats_and_export_preview_share_the_same_four_aggregate_values(self) -> None:
+        # R8 PR2 characterization test（設計書§19.2-2）: /api/packs/stats と
+        # エクスポートプレビューが同一資料に対して同じ4集計値
+        # （book_count, item_count, total_pages, estimated_tokens）を返すこと。
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            db_path = root / "index.db"
+            books_dir = root / "books"
+            self._make_pdf(books_dir / "a.pdf", 5)
+            self._index_pages(
+                db_path, books_dir / "a.pdf", title="本A",
+                texts=["あ" * 10 for _ in range(5)],
+            )
+
+            with (
+                patch("tsundokensaku.web.get_db_path", return_value=db_path),
+                patch("tsundokensaku.web.get_books_dir", return_value=books_dir),
+            ):
+                created = self._payload(api_create_pack({"name": "共有集計テスト"}))
+                items = [
+                    {"pdf_path": "a.pdf", "title": "本A前半", "pages": "1-3", "collapsed": False, "position": 0},
+                    {"pdf_path": "a.pdf", "title": "本A後半", "pages": "4-5", "collapsed": False, "position": 1},
+                ]
+                self._payload(api_replace_pack_items(created["id"], {"items": items}))
+
+                stats_payload = self._payload(api_list_pack_stats())
+                preview_payload = self._payload(api_preview_pack_export(created["id"]))
+
+            pack_stats = next(p for p in stats_payload["packs"] if p["id"] == created["id"])
+            for key in ("book_count", "item_count", "total_pages", "estimated_tokens"):
+                self.assertEqual(pack_stats[key], preview_payload[key], msg=key)
+            self.assertGreater(pack_stats["estimated_tokens"], 0)
+
 
 class PackStatsRoutingTest(unittest.TestCase):
     """Phase 2C: /api/packs/stats が /api/packs/{pack_id} と競合しないことをHTTPルーティング層で確認する。
@@ -2704,6 +2737,435 @@ class PackStatsRoutingTest(unittest.TestCase):
 
         self.assertIn("/api/packs/stats", schema["paths"])
         self.assertIn("get", schema["paths"]["/api/packs/stats"])
+
+
+class ExportJsonContractTest(unittest.TestCase):
+    """R8 PR2 characterization test（設計書§19.2-5）。
+
+    JSON export の exact body bytes（UTF-8日本語含む、key順、indent 2、
+    LF、末尾改行なし）、filename、MIME、Content-Disposition、空pack・
+    不正資料でも200になることを、TestClient経由で固定する。
+    """
+
+    def _payload(self, response) -> dict:
+        return json.loads(response.body)
+
+    def test_json_export_exact_body_bytes_with_fixed_clock(self) -> None:
+        fixed_now = datetime(2026, 8, 19, 9, 30, tzinfo=ZoneInfo("Asia/Tokyo"))
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "index.db"
+            with patch("tsundokensaku.web.get_db_path", return_value=db_path):
+                created = self._payload(api_create_pack({"name": "日本語資料名"}))
+                items = [{"pdf_path": "a.pdf", "title": "本A", "pages": "1-2", "collapsed": False, "position": 0}]
+                replaced = self._payload(api_replace_pack_items(created["id"], {"items": items}))
+                added_at = replaced["items"][0]["addedAt"]
+
+                client = TestClient(tsundokensaku_app)
+                with patch("tsundokensaku.web._now_jst", return_value=fixed_now):
+                    response = client.get(f"/api/packs/{created['id']}/export", params={"format": "json"})
+
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.headers["content-type"], "application/json")
+            disposition = response.headers["content-disposition"]
+            self.assertIn("attachment", disposition)
+            self.assertEqual(disposition, "attachment; filename*=UTF-8''%E6%97%A5%E6%9C%AC%E8%AA%9E%E8%B3%87%E6%96%99%E5%90%8D_20260819.json")
+
+            expected_body = (
+                "{\n"
+                '  "version": 3,\n'
+                '  "name": "日本語資料名",\n'
+                '  "items": [\n'
+                "    {\n"
+                '      "pdf_path": "a.pdf",\n'
+                '      "title": "本A",\n'
+                '      "pages": "1-2",\n'
+                '      "collapsed": false,\n'
+                f'      "addedAt": "{added_at}",\n'
+                '      "position": 0\n'
+                "    }\n"
+                "  ]\n"
+                "}"
+            )
+            self.assertEqual(response.content, expected_body.encode("utf-8"))
+            self.assertFalse(response.content.endswith(b"\n"))
+
+    def test_json_export_empty_pack_returns_200(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "index.db"
+            with patch("tsundokensaku.web.get_db_path", return_value=db_path):
+                created = self._payload(api_create_pack({"name": "空資料"}))
+                response = api_export_pack(created["id"], format="json")
+                self.assertEqual(response.status_code, 200)
+                body = json.loads(response.body)
+                self.assertEqual(body["items"], [])
+
+    def test_json_export_missing_pdf_and_invalid_pages_returns_200(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "index.db"
+            with patch("tsundokensaku.web.get_db_path", return_value=db_path):
+                created = self._payload(api_create_pack({"name": "資料"}))
+                items = [
+                    {"pdf_path": "missing.pdf", "title": "消えた本", "pages": "1-3", "collapsed": False, "position": 0},
+                    {"pdf_path": "b.pdf", "title": "本B", "pages": "", "collapsed": False, "position": 1},
+                ]
+                self._payload(api_replace_pack_items(created["id"], {"items": items}))
+
+                response = api_export_pack(created["id"], format="json")
+                self.assertEqual(response.status_code, 200)
+                body = json.loads(response.body)
+                self.assertEqual(len(body["items"]), 2)
+                self.assertEqual(body["items"][0]["pdf_path"], "missing.pdf")
+                self.assertEqual(body["items"][1]["pages"], "")
+
+
+class ExportZipFixedClockContractTest(unittest.TestCase):
+    """R8 PR2 characterization test（設計書§19.2-6）。
+
+    ZIP export の archive名・Content-Disposition・manifest日時を、
+    fixed clock注入のうえで固定する。ZIP全bytesではなくlogical content
+    （manifest文字列内の日時表記）とarchive名だけを比較し、
+    zipfile が実行時に付与するentry timestampには依存しない。
+    """
+
+    def _payload(self, response) -> dict:
+        return json.loads(response.body)
+
+    def _make_pdf(self, path: Path, page_count: int) -> None:
+        writer = PdfWriter()
+        for _ in range(page_count):
+            writer.add_blank_page(width=72, height=72)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("wb") as handle:
+            writer.write(handle)
+
+    def test_standard_archive_uses_fixed_clock_for_name_disposition_and_manifest(self) -> None:
+        fixed_now = datetime(2026, 8, 19, 9, 30, tzinfo=ZoneInfo("Asia/Tokyo"))
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            db_path = root / "index.db"
+            books_dir = root / "books"
+            self._make_pdf(books_dir / "a.pdf", 2)
+
+            with (
+                patch("tsundokensaku.web.get_db_path", return_value=db_path),
+                patch("tsundokensaku.web.get_books_dir", return_value=books_dir),
+            ):
+                created = self._payload(api_create_pack({"name": "固定時計資料"}))
+                items = [{"pdf_path": "a.pdf", "title": "本A", "pages": "1-2", "collapsed": False, "position": 0}]
+                self._payload(api_replace_pack_items(created["id"], {"items": items}))
+
+                with patch("tsundokensaku.web._now_jst", return_value=fixed_now):
+                    response = api_export_pack(created["id"], format="pdf")
+
+            disposition = response.headers["content-disposition"]
+            self.assertIn(quote("固定時計資料_20260819.zip"), disposition)
+            with zipfile.ZipFile(BytesIO(response.body)) as archive:
+                manifest = archive.read("manifest.md").decode("utf-8")
+                self.assertIn("- 書き出し日時: 2026-08-19 09:30", manifest)
+
+    def test_chat_archive_uses_fixed_clock_for_name_disposition_and_manifest(self) -> None:
+        fixed_now = datetime(2026, 8, 19, 9, 30, tzinfo=ZoneInfo("Asia/Tokyo"))
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            db_path = root / "index.db"
+            books_dir = root / "books"
+            self._make_pdf(books_dir / "a.pdf", 2)
+
+            with (
+                patch("tsundokensaku.web.get_db_path", return_value=db_path),
+                patch("tsundokensaku.web.get_books_dir", return_value=books_dir),
+            ):
+                created = self._payload(api_create_pack({"name": "対比資料"}))
+                items = [{"pdf_path": "a.pdf", "title": "本A", "pages": "1-2", "collapsed": False, "position": 0}]
+                self._payload(api_replace_pack_items(created["id"], {"items": items}))
+
+                with patch("tsundokensaku.web._now_jst", return_value=fixed_now):
+                    response = api_export_pack(created["id"], profile="chat")
+
+            disposition = response.headers["content-disposition"]
+            self.assertIn(quote("対比資料_chat_20260819.zip"), disposition)
+            with zipfile.ZipFile(BytesIO(response.body)) as archive:
+                manifest = archive.read("manifest.md").decode("utf-8")
+                self.assertIn("2026-08-19 09:30", manifest)
+
+    def test_chapter_archive_uses_fixed_clock_for_name_disposition_and_manifest(self) -> None:
+        fixed_now = datetime(2026, 8, 19, 9, 30, tzinfo=ZoneInfo("Asia/Tokyo"))
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            db_path = root / "index.db"
+            books_dir = root / "books"
+            self._make_pdf(books_dir / "a.pdf", 2)
+
+            with (
+                patch("tsundokensaku.web.get_db_path", return_value=db_path),
+                patch("tsundokensaku.web.get_books_dir", return_value=books_dir),
+            ):
+                created = self._payload(api_create_pack({"name": "章分割資料"}))
+                items = [{"pdf_path": "a.pdf", "title": "本A", "pages": "1-2", "collapsed": False, "position": 0}]
+                self._payload(api_replace_pack_items(created["id"], {"items": items}))
+
+                with patch("tsundokensaku.web._now_jst", return_value=fixed_now):
+                    response = api_export_pack(created["id"], profile="chapter")
+
+            disposition = response.headers["content-disposition"]
+            self.assertIn(quote("章分割資料_chapter_20260819.zip"), disposition)
+            with zipfile.ZipFile(BytesIO(response.body)) as archive:
+                manifest = archive.read("manifest.md").decode("utf-8")
+                self.assertIn("2026-08-19 09:30", manifest)
+
+
+class ExportStatsCollectionStrategyTest(unittest.TestCase):
+    """R8 PR2 characterization test（設計書§19.2-7）。
+
+    standard archiveは`collect_item_stats`を呼ばず
+    `_placeholder_item_stats_for_export`のみを使うこと、chat/chapterは
+    `collect_item_stats`を呼ぶことを、呼び出し回数のspyで固定する。
+    """
+
+    def _payload(self, response) -> dict:
+        return json.loads(response.body)
+
+    def _make_pdf(self, path: Path, page_count: int) -> None:
+        writer = PdfWriter()
+        for _ in range(page_count):
+            writer.add_blank_page(width=72, height=72)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("wb") as handle:
+            writer.write(handle)
+
+    def test_standard_archive_does_not_call_collect_item_stats(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            db_path = root / "index.db"
+            books_dir = root / "books"
+            self._make_pdf(books_dir / "a.pdf", 2)
+
+            with (
+                patch("tsundokensaku.web.get_db_path", return_value=db_path),
+                patch("tsundokensaku.web.get_books_dir", return_value=books_dir),
+            ):
+                created = self._payload(api_create_pack({"name": "資料"}))
+                items = [{"pdf_path": "a.pdf", "title": "本A", "pages": "1-2", "collapsed": False, "position": 0}]
+                self._payload(api_replace_pack_items(created["id"], {"items": items}))
+
+                with patch("tsundokensaku.web.collect_item_stats", side_effect=web.collect_item_stats) as spy:
+                    response = api_export_pack(created["id"], format="pdf")
+                    self.assertEqual(response.status_code, 200)
+                    spy.assert_not_called()
+
+    def test_chat_and_chapter_archives_call_collect_item_stats(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            db_path = root / "index.db"
+            books_dir = root / "books"
+            self._make_pdf(books_dir / "a.pdf", 2)
+
+            with (
+                patch("tsundokensaku.web.get_db_path", return_value=db_path),
+                patch("tsundokensaku.web.get_books_dir", return_value=books_dir),
+            ):
+                created = self._payload(api_create_pack({"name": "資料"}))
+                items = [{"pdf_path": "a.pdf", "title": "本A", "pages": "1-2", "collapsed": False, "position": 0}]
+                self._payload(api_replace_pack_items(created["id"], {"items": items}))
+
+                with patch("tsundokensaku.web.collect_item_stats", side_effect=web.collect_item_stats) as spy:
+                    response = api_export_pack(created["id"], profile="chat")
+                    self.assertEqual(response.status_code, 200)
+                    spy.assert_called_once()
+
+                with patch("tsundokensaku.web.collect_item_stats", side_effect=web.collect_item_stats) as spy:
+                    response = api_export_pack(created["id"], profile="chapter")
+                    self.assertEqual(response.status_code, 200)
+                    spy.assert_called_once()
+
+
+class ExportClockCallCountTest(unittest.TestCase):
+    """R8 PR2 characterization test（設計書§19.2-12）。
+
+    `_now_jst`の呼出し回数（archive全体で1回か、Markdown entryごとに
+    追加で呼ばれるか）と、archive日時（JST）・event記録日時（UTC）が
+    別々の時計呼び出しである現状を固定する。統一はこのPRの対象外。
+    """
+
+    def _payload(self, response) -> dict:
+        return json.loads(response.body)
+
+    def _make_pdf(self, path: Path, page_count: int = 2) -> None:
+        writer = PdfWriter()
+        for _ in range(page_count):
+            writer.add_blank_page(width=72, height=72)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("wb") as handle:
+            writer.write(handle)
+
+    def test_pdf_archive_calls_now_jst_exactly_once(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            db_path = root / "index.db"
+            books_dir = root / "books"
+            self._make_pdf(books_dir / "a.pdf")
+
+            with (
+                patch("tsundokensaku.web.get_db_path", return_value=db_path),
+                patch("tsundokensaku.web.get_books_dir", return_value=books_dir),
+            ):
+                created = self._payload(api_create_pack({"name": "資料"}))
+                items = [{"pdf_path": "a.pdf", "title": "本A", "pages": "1-2", "collapsed": False, "position": 0}]
+                self._payload(api_replace_pack_items(created["id"], {"items": items}))
+
+                with patch("tsundokensaku.web._now_jst", wraps=web._now_jst) as spy:
+                    response = api_export_pack(created["id"], format="pdf")
+                    self.assertEqual(response.status_code, 200)
+                    # PDF archiveはrender_pdf_exportが_now_jstを使わないため、
+                    # archive全体のexported_at取得（1回）のみ
+                    spy.assert_called_once()
+
+    def test_markdown_archive_calls_now_jst_once_per_chunk_plus_archive(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            db_path = root / "index.db"
+            books_dir = root / "books"
+            self._make_pdf(books_dir / "a.pdf")
+            self._make_pdf(books_dir / "b.pdf")
+
+            with (
+                patch("tsundokensaku.web.get_db_path", return_value=db_path),
+                patch("tsundokensaku.web.get_books_dir", return_value=books_dir),
+            ):
+                created = self._payload(api_create_pack({"name": "資料"}))
+                items = [
+                    {"pdf_path": "a.pdf", "title": "本A", "pages": "1-2", "collapsed": False, "position": 0},
+                    {"pdf_path": "b.pdf", "title": "本B", "pages": "1-2", "collapsed": False, "position": 1},
+                ]
+                self._payload(api_replace_pack_items(created["id"], {"items": items}))
+
+                with patch("tsundokensaku.web._now_jst", wraps=web._now_jst) as spy:
+                    response = api_export_pack(created["id"], format="md")
+                    self.assertEqual(response.status_code, 200)
+                    # standardのMarkdown archiveは項目ごとにrender_markdown_export
+                    # ラッパー(web.py内)が個別に_now_jst()を呼ぶため、
+                    # archive全体分(1) + 項目数分(2) = 3回
+                    self.assertEqual(spy.call_count, 3)
+
+    def test_archive_datetime_and_event_datetime_are_independent_clocks(self) -> None:
+        # archiveのexported_at（JST、_now_jst）と、export_eventのexported_at
+        # （UTC、database.record_export_event内のdatetime.now(timezone.utc)）は
+        # 別々の時計呼び出しであり、値の形式も異なる（統一しない）。
+        fixed_now = datetime(2026, 8, 19, 9, 30, tzinfo=ZoneInfo("Asia/Tokyo"))
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            db_path = root / "index.db"
+            books_dir = root / "books"
+            self._make_pdf(books_dir / "a.pdf")
+
+            with (
+                patch("tsundokensaku.web.get_db_path", return_value=db_path),
+                patch("tsundokensaku.web.get_books_dir", return_value=books_dir),
+            ):
+                created = self._payload(api_create_pack({"name": "資料"}))
+                items = [{"pdf_path": "a.pdf", "title": "本A", "pages": "1-2", "collapsed": False, "position": 0}]
+                self._payload(api_replace_pack_items(created["id"], {"items": items}))
+
+                with patch("tsundokensaku.web._now_jst", return_value=fixed_now):
+                    response = api_export_pack(created["id"], format="pdf")
+                self.assertEqual(response.status_code, 200)
+                disposition = response.headers["content-disposition"]
+                # archive名には、注入したJST日付表記（%Y%m%d）が使われる
+                self.assertIn("資料_20260819.zip", unquote(disposition))
+
+            import sqlite3
+            conn = sqlite3.connect(str(db_path))
+            try:
+                row = conn.execute("SELECT exported_at FROM export_events ORDER BY id DESC LIMIT 1").fetchone()
+            finally:
+                conn.close()
+            # eventのexported_atはISO8601のUTC表記（末尾+00:00やZを含む、または
+            # タイムゾーン情報付き）であり、archive名のJST日付とは独立した値
+            self.assertIsNotNone(row)
+            self.assertRegex(row[0], r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}")
+
+
+class ExportPdfResolutionCallbackBoundaryTest(unittest.TestCase):
+    """R8 PR2 characterization test（設計書§19.2-16 / design.md決定6）。
+
+    RenderContext.resolve_pdf と chapter preview/archive の chapter_loader は、
+    現状 _resolve_pdf_file_or_404 を直接呼び出しており、callback内部から
+    HTTPException を直接送出する実装である。この非HTTP境界の分離自体は
+    R7-4完了・resolve_pdf相当の非HTTP契約確定後のPR5以降のスコープであり、
+    本PRでは「service境界からHTTPExceptionが出ないこと」ではなく、逆に
+    「現状はcallback内部から直接HTTPExceptionが送出される」という
+    現状の実装詳細を固定する。
+
+    PR5でこの非HTTP境界（callbackからHTTPExceptionを排除する変更）が
+    実装されたら、本テストは意図的に置き換える前提である
+    （置き換え忘れ＝本テストの失敗、という形で回帰検知として機能する）。
+    """
+
+    def _payload(self, response) -> dict:
+        return json.loads(response.body)
+
+    def test_resolve_pdf_file_or_404_raises_http_exception_directly(self) -> None:
+        # _export_pack_archive の resolve_pdf callback
+        # （lambda pdf_path: _resolve_pdf_file_or_404(pdf_path, books_dir)）が
+        # 呼び出す実体そのものを直接呼び出し、callback内部からHTTPExceptionが
+        # 直接送出される現状の実装詳細を固定する。
+        with tempfile.TemporaryDirectory() as temp_dir:
+            books_dir = Path(temp_dir)
+            with self.assertRaises(HTTPException) as ctx:
+                web._resolve_pdf_file_or_404("missing.pdf", books_dir)
+            self.assertEqual(ctx.exception.status_code, 404)
+            self.assertEqual(ctx.exception.detail, "PDF not found")
+
+    def test_chapter_loader_is_not_invoked_for_missing_pdf_items(self) -> None:
+        # export_profiles.py の ChapterProfile.split_items_with_warnings は
+        # stats.missing_pdf な項目に対して chapter_loader
+        # （内部でHTTPExceptionを送出しうる _resolve_pdf_file_or_404 経由）を
+        # 呼ばず、そのままfragment化する（395行のショートサーキット）。
+        # このため、PDF欠損項目単体ではchapter previewでHTTPExceptionへ
+        # 到達しない現状を、chapter_loaderの呼び出し有無で直接固定する。
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "index.db"
+            books_dir = Path(temp_dir) / "books"
+            books_dir.mkdir()
+
+            with (
+                patch("tsundokensaku.web.get_db_path", return_value=db_path),
+                patch("tsundokensaku.web.get_books_dir", return_value=books_dir),
+            ):
+                created = self._payload(api_create_pack({"name": "資料"}))
+                items = [{"pdf_path": "missing.pdf", "title": "消えた本", "pages": "1-3", "collapsed": False, "position": 0}]
+                self._payload(api_replace_pack_items(created["id"], {"items": items}))
+
+                with patch("tsundokensaku.web._resolve_pdf_file_or_404") as resolve_spy:
+                    preview = self._payload(api_preview_pack_export(created["id"], profile="chapter"))
+                    resolve_spy.assert_not_called()
+
+            self.assertEqual(preview["profile"], "chapter")
+            codes = [warning["code"] for warning in preview["warnings"]]
+            self.assertIn("missing_pdf", codes)
+
+    def test_chapter_preview_missing_pdf_item_keeps_200_warning_contract(self) -> None:
+        # chapter previewでPDF欠損項目があっても既存のwarning 200契約
+        # （HTTPExceptionへの逆戻りではない）が維持されることを固定する。
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "index.db"
+            books_dir = Path(temp_dir) / "books"
+            books_dir.mkdir()
+
+            with (
+                patch("tsundokensaku.web.get_db_path", return_value=db_path),
+                patch("tsundokensaku.web.get_books_dir", return_value=books_dir),
+            ):
+                created = self._payload(api_create_pack({"name": "資料"}))
+                items = [{"pdf_path": "missing.pdf", "title": "消えた本", "pages": "1-3", "collapsed": False, "position": 0}]
+                self._payload(api_replace_pack_items(created["id"], {"items": items}))
+
+                # HTTPExceptionを送出せず200が返ることそのものがテスト対象
+                preview = self._payload(api_preview_pack_export(created["id"], profile="chapter"))
+
+            self.assertEqual(preview["file_count"], 1)
+            warning = next(w for w in preview["warnings"] if w["code"] == "missing_pdf")
+            self.assertIn("消えた本", warning["message"])
 
 
 class ExportArchiveBackwardCompatibilityTest(unittest.TestCase):
@@ -3164,6 +3626,28 @@ class ExportProfileParameterTest(unittest.TestCase):
                 self.assertEqual(ctx.exception.status_code, 400)
                 self.assertEqual(ctx.exception.detail, "不明なエクスポートプロファイルです: unknown")
 
+    def test_unlisted_but_resolvable_profile_returns_same_400_as_unknown(self) -> None:
+        # R8 PR2 characterization test（設計書§19.2-4 / design.md決定5）:
+        # _resolve_export_profile_or_400 は (a) resolve_profile自体が知らない
+        # 完全未知のprofile名と、(b) resolve_profileには存在するが
+        # EXTERNALLY_AVAILABLE_EXPORT_PROFILESに含まれないprofile名の
+        # 2つの異なるコードパスを持つ。現状PROFILESと
+        # EXTERNALLY_AVAILABLE_EXPORT_PROFILESの登録名は完全一致しており
+        # (b)は自然発生しないため、EXTERNALLY_AVAILABLE_EXPORT_PROFILESを
+        # 一時的に絞ってこの分岐を直接検証する。両方とも同一の400・
+        # 同一メッセージ（異なる動作を新設するわけではない）であることを固定する。
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "index.db"
+            with (
+                patch("tsundokensaku.web.get_db_path", return_value=db_path),
+                patch("tsundokensaku.web.EXTERNALLY_AVAILABLE_EXPORT_PROFILES", frozenset({"chat", "chapter"})),
+            ):
+                created = self._payload(api_create_pack({"name": "資料"}))
+                with self.assertRaises(HTTPException) as ctx:
+                    api_export_pack(created["id"], profile="standard", format="pdf")
+                self.assertEqual(ctx.exception.status_code, 400)
+                self.assertEqual(ctx.exception.detail, "不明なエクスポートプロファイルです: standard")
+
     def test_old_profile_name_notebooklm_is_rejected(self) -> None:
         # notebooklm は chapter へ改名済み。旧名を受理しないことを明示的に確認する
         # （docs/export-profile-naming-review.md）
@@ -3487,6 +3971,29 @@ class BuildExportPreviewPayloadTest(unittest.TestCase):
         self.assertEqual(payload["estimation"], "approximate")
         self.assertEqual(payload["estimator"], "char-class-v1")
 
+    def test_seven_base_stat_fields_exact_values(self) -> None:
+        # R8 PR2 characterization test（設計書§19.2-2）: _preview_base_stats
+        # 相当の7 field（estimation, estimator, book_count, item_count,
+        # total_pages, estimated_chars, estimated_tokens）を同時に固定する。
+        stats = [
+            ItemStats(item=self._item(1, pdf_path="a.pdf", pages="1-2"), page_numbers=[1, 2], stats=TextStats(cjk_chars=10, other_chars=0), unindexed_pages=0, missing_pdf=False),
+            ItemStats(item=self._item(2, pdf_path="a.pdf", pages="5"), page_numbers=[5], stats=TextStats(cjk_chars=0, other_chars=4), unindexed_pages=0, missing_pdf=False),
+        ]
+        payload = build_export_preview_payload(stats)
+        self.assertEqual(
+            {key: payload[key] for key in ("estimation", "estimator", "book_count", "item_count", "total_pages", "estimated_chars", "estimated_tokens")},
+            {
+                "estimation": "approximate",
+                "estimator": "char-class-v1",
+                "book_count": 1,
+                "item_count": 2,
+                "total_pages": 3,
+                "estimated_chars": 14,
+                # cjk_chars合計10 x 1.0 + other_chars合計4 x 0.25 = 11.0 -> ceil(11.0) = 11
+                "estimated_tokens": 11,
+            },
+        )
+
     def test_empty_list_returns_empty_pack_warning(self) -> None:
         payload = build_export_preview_payload([])
         self.assertEqual(
@@ -3513,6 +4020,114 @@ class BuildExportPreviewPayloadTest(unittest.TestCase):
         warnings = build_export_preview_warnings(stats)
         self.assertEqual(len(warnings), 1)
         self.assertEqual(warnings[0]["code"], "missing_pdf")
+
+
+class ExportPreviewWarningContractTest(unittest.TestCase):
+    """R8 PR2 characterization test（設計書§19.2-1）。
+
+    build_export_preview_warnings の4種類のwarning codeそれぞれのexact
+    dict、同一項目内の優先順位（missing_pdf > missing_pages > invalid_pages
+    > unindexed_pages）の全組み合わせ、複数項目でのposition順、item
+    warning→plan warningの連結順を、移動前の現状値として固定する。
+    """
+
+    def _item(self, item_id: int, *, pdf_path: str = "a.pdf", pages: str = "1-2", title: str = "本") -> PackItemRecord:
+        return PackItemRecord(
+            id=item_id,
+            pdf_path=pdf_path,
+            title=title,
+            pages=pages,
+            collapsed=False,
+            position=item_id,
+            added_at="2026-07-11T00:00:00.000Z",
+            updated_at="2026-07-11T00:00:00.000Z",
+        )
+
+    def test_missing_pdf_warning_exact_dict(self) -> None:
+        stats = [ItemStats(item=self._item(1, title="消えた本"), page_numbers=[], stats=TextStats(0, 0), unindexed_pages=0, missing_pdf=True)]
+        warnings = build_export_preview_warnings(stats)
+        self.assertEqual(warnings, [{"code": "missing_pdf", "item_id": 1, "message": "「消えた本」はPDFファイルが見つかりません"}])
+
+    def test_missing_pages_warning_exact_dict(self) -> None:
+        stats = [ItemStats(item=self._item(1, pages="", title="本A"), page_numbers=[], stats=TextStats(0, 0), unindexed_pages=0, missing_pdf=False)]
+        warnings = build_export_preview_warnings(stats)
+        self.assertEqual(warnings, [{"code": "missing_pages", "item_id": 1, "message": "「本A」はページが指定されていません"}])
+
+    def test_invalid_pages_warning_exact_dict(self) -> None:
+        # pages は非空だが page_numbers が空 = ページ指定を解釈できなかった現状の表現
+        stats = [ItemStats(item=self._item(1, pages="???", title="本A"), page_numbers=[], stats=TextStats(0, 0), unindexed_pages=0, missing_pdf=False)]
+        warnings = build_export_preview_warnings(stats)
+        self.assertEqual(warnings, [{"code": "invalid_pages", "item_id": 1, "message": "「本A」のページ指定を解釈できませんでした"}])
+
+    def test_unindexed_pages_warning_exact_dict(self) -> None:
+        stats = [ItemStats(item=self._item(1, pages="1-3", title="本A"), page_numbers=[1, 2, 3], stats=TextStats(0, 0), unindexed_pages=3, missing_pdf=False)]
+        warnings = build_export_preview_warnings(stats)
+        self.assertEqual(warnings, [{"code": "unindexed_pages", "item_id": 1, "message": "「本A」は未インデックスのため3ページ分を概算に含めていません"}])
+
+    def test_missing_pdf_takes_priority_over_invalid_pages(self) -> None:
+        stats = [ItemStats(item=self._item(1, pages="???"), page_numbers=[], stats=TextStats(0, 0), unindexed_pages=0, missing_pdf=True)]
+        warnings = build_export_preview_warnings(stats)
+        self.assertEqual(len(warnings), 1)
+        self.assertEqual(warnings[0]["code"], "missing_pdf")
+
+    def test_missing_pdf_takes_priority_over_unindexed_pages(self) -> None:
+        stats = [ItemStats(item=self._item(1, pages="1-3"), page_numbers=[1, 2, 3], stats=TextStats(0, 0), unindexed_pages=3, missing_pdf=True)]
+        warnings = build_export_preview_warnings(stats)
+        self.assertEqual(len(warnings), 1)
+        self.assertEqual(warnings[0]["code"], "missing_pdf")
+
+    def test_missing_pages_takes_priority_over_invalid_pages(self) -> None:
+        # pages="" かつ page_numbers=[] の組み合わせは実運用では両方の条件を満たすが、
+        # missing_pages 判定（pages.strip() が空）が invalid_pages 判定より先に評価される
+        stats = [ItemStats(item=self._item(1, pages=""), page_numbers=[], stats=TextStats(0, 0), unindexed_pages=0, missing_pdf=False)]
+        warnings = build_export_preview_warnings(stats)
+        self.assertEqual(len(warnings), 1)
+        self.assertEqual(warnings[0]["code"], "missing_pages")
+
+    def test_missing_pages_takes_priority_over_unindexed_pages(self) -> None:
+        stats = [ItemStats(item=self._item(1, pages=""), page_numbers=[], stats=TextStats(0, 0), unindexed_pages=5, missing_pdf=False)]
+        warnings = build_export_preview_warnings(stats)
+        self.assertEqual(len(warnings), 1)
+        self.assertEqual(warnings[0]["code"], "missing_pages")
+
+    def test_invalid_pages_takes_priority_over_unindexed_pages(self) -> None:
+        stats = [ItemStats(item=self._item(1, pages="???"), page_numbers=[], stats=TextStats(0, 0), unindexed_pages=5, missing_pdf=False)]
+        warnings = build_export_preview_warnings(stats)
+        self.assertEqual(len(warnings), 1)
+        self.assertEqual(warnings[0]["code"], "invalid_pages")
+
+    def test_multiple_items_warnings_follow_position_order(self) -> None:
+        stats = [
+            ItemStats(item=self._item(1, pages="", title="1件目"), page_numbers=[], stats=TextStats(0, 0), unindexed_pages=0, missing_pdf=False),
+            ItemStats(item=self._item(2, title="2件目"), page_numbers=[], stats=TextStats(0, 0), unindexed_pages=0, missing_pdf=True),
+            ItemStats(item=self._item(3, pages="1-3", title="3件目"), page_numbers=[1, 2, 3], stats=TextStats(0, 0), unindexed_pages=3, missing_pdf=False),
+        ]
+        warnings = build_export_preview_warnings(stats)
+        self.assertEqual(
+            [(w["item_id"], w["code"]) for w in warnings],
+            [(1, "missing_pages"), (2, "missing_pdf"), (3, "unindexed_pages")],
+        )
+
+    def test_item_warnings_precede_plan_warnings_in_profile_payload(self) -> None:
+        from tsundokensaku.export_profiles import ChatProfile
+
+        item_stats = [
+            ItemStats(
+                item=self._item(1, title="未インデックス本"),
+                page_numbers=[1, 2], stats=TextStats(cjk_chars=0, other_chars=0),
+                unindexed_pages=2, missing_pdf=False,
+            ),
+            ItemStats(
+                item=self._item(2, title="巨大本"),
+                page_numbers=[1], stats=TextStats(cjk_chars=90_000, other_chars=0),
+                unindexed_pages=0, missing_pdf=False,
+            ),
+        ]
+        payload = build_export_preview_payload_for_profile(item_stats, ChatProfile(), pack_name="資料")
+
+        codes = [warning["code"] for warning in payload["warnings"]]
+        # item warning（unindexed_pages）が先、plan warning（item_exceeds_limit）が後
+        self.assertEqual(codes, ["unindexed_pages", "item_exceeds_limit"])
 
 
 class BuildExportPreviewPayloadForProfileTest(unittest.TestCase):
@@ -4788,6 +5403,167 @@ class ExportEventRecordingTest(unittest.TestCase):
                 api_export_pack(created["id"], format="pdf")
 
             self.assertEqual(self._count_events(db_path), 2)
+
+    def test_read_connection_closes_before_event_connection_opens(self) -> None:
+        # R8 PR2 characterization test（設計書§19.2-8 / design.md決定3）:
+        # pack読み取り接続はレスポンス生成前にcloseされ、eventは生成成功後の
+        # 別接続で記録される。connect/close/record_export_eventの呼び出し順を
+        # spyで直接固定する。
+        events: list[str] = []
+        original_connect = web.connect
+        original_record = web.record_export_event
+
+        class _ConnectionCloseSpy:
+            # sqlite3.Connection の close はインスタンス属性として
+            # 上書きできない（read-only）ため、委譲プロキシで代替する。
+            def __init__(self, real_connection) -> None:
+                object.__setattr__(self, "_real", real_connection)
+
+            def close(self) -> None:
+                events.append("close")
+                self._real.close()
+
+            def __getattr__(self, name):
+                return getattr(self._real, name)
+
+        def spy_connect(db_path):
+            events.append("connect")
+            return _ConnectionCloseSpy(original_connect(db_path))
+
+        def spy_record(*args, **kwargs):
+            events.append("record_export_event")
+            return original_record(*args, **kwargs)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            db_path = root / "index.db"
+            books_dir = root / "books"
+            self._make_pdf(books_dir / "a.pdf")
+
+            with (
+                patch("tsundokensaku.web.get_db_path", return_value=db_path),
+                patch("tsundokensaku.web.get_books_dir", return_value=books_dir),
+            ):
+                created = self._payload(api_create_pack({"name": "接続順序テスト"}))
+                items = [{"pdf_path": "a.pdf", "title": "本A", "pages": "1-2", "collapsed": False, "position": 0}]
+                self._payload(api_replace_pack_items(created["id"], {"items": items}))
+
+                with (
+                    patch("tsundokensaku.web.connect", side_effect=spy_connect),
+                    patch("tsundokensaku.web.record_export_event", side_effect=spy_record),
+                ):
+                    response = api_export_pack(created["id"], format="pdf")
+                    self.assertEqual(response.status_code, 200)
+
+        # pack読み取り接続の connect/close が、event記録用の2つ目の
+        # connect/record_export_event/close より必ず先行する
+        self.assertEqual(events, ["connect", "close", "connect", "record_export_event", "close"])
+
+    def test_preview_never_records_event(self) -> None:
+        # R8 PR2 characterization test（設計書§19.2-9後半）:
+        # previewは（成功・警告いずれの場合も）export_eventsへ記録しない。
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            db_path = root / "index.db"
+            books_dir = root / "books"
+            self._make_pdf(books_dir / "a.pdf")
+
+            with (
+                patch("tsundokensaku.web.get_db_path", return_value=db_path),
+                patch("tsundokensaku.web.get_books_dir", return_value=books_dir),
+            ):
+                created = self._payload(api_create_pack({"name": "プレビュー記録テスト"}))
+                items = [{"pdf_path": "a.pdf", "title": "本A", "pages": "1-2", "collapsed": False, "position": 0}]
+                self._payload(api_replace_pack_items(created["id"], {"items": items}))
+
+                before = self._count_events(db_path)
+                api_preview_pack_export(created["id"])
+                api_preview_pack_export(created["id"], profile="chat")
+                api_preview_pack_export(created["id"], profile="chapter")
+                after = self._count_events(db_path)
+
+            self.assertEqual(after, before)
+
+    def test_missing_pages_and_missing_pdf_and_invalid_range_do_not_record(self) -> None:
+        # R8 PR2 characterization test（設計書§19.2-9前半の拡充）:
+        # 空pack以外の失敗経路（pages未指定・PDF不在・不正pages範囲）でも
+        # eventが記録されないことを固定する。
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            db_path = root / "index.db"
+            books_dir = root / "books"
+            self._make_pdf(books_dir / "a.pdf")
+
+            with (
+                patch("tsundokensaku.web.get_db_path", return_value=db_path),
+                patch("tsundokensaku.web.get_books_dir", return_value=books_dir),
+            ):
+                missing_pages_pack = self._payload(api_create_pack({"name": "ページ未指定"}))
+                self._payload(api_replace_pack_items(missing_pages_pack["id"], {"items": [
+                    {"pdf_path": "a.pdf", "title": "本A", "pages": "", "collapsed": False, "position": 0},
+                ]}))
+                before = self._count_events(db_path)
+                with self.assertRaises(HTTPException):
+                    api_export_pack(missing_pages_pack["id"], format="pdf")
+                self.assertEqual(self._count_events(db_path), before)
+
+                missing_pdf_pack = self._payload(api_create_pack({"name": "PDF欠損"}))
+                self._payload(api_replace_pack_items(missing_pdf_pack["id"], {"items": [
+                    {"pdf_path": "does-not-exist.pdf", "title": "消えた本", "pages": "1", "collapsed": False, "position": 0},
+                ]}))
+                before = self._count_events(db_path)
+                with self.assertRaises(HTTPException):
+                    api_export_pack(missing_pdf_pack["id"], format="pdf")
+                self.assertEqual(self._count_events(db_path), before)
+
+                invalid_range_pack = self._payload(api_create_pack({"name": "不正範囲"}))
+                self._payload(api_replace_pack_items(invalid_range_pack["id"], {"items": [
+                    {"pdf_path": "a.pdf", "title": "本A", "pages": "99-100", "collapsed": False, "position": 0},
+                ]}))
+                before = self._count_events(db_path)
+                with self.assertRaises(HTTPException):
+                    api_export_pack(invalid_range_pack["id"], format="pdf")
+                self.assertEqual(self._count_events(db_path), before)
+
+    def test_chapter_export_records_original_item_snapshot_not_fragments(self) -> None:
+        # R8 PR2 characterization test（設計書§19.2-11後半）:
+        # chapterプロファイルでexportしても、items_jsonにはchapter fragment
+        # ではなく元のpack item（position順・4フィールド）がそのまま記録される。
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            db_path = root / "index.db"
+            books_dir = root / "books"
+            self._make_pdf(books_dir / "a.pdf", page_count=6)
+
+            with (
+                patch("tsundokensaku.web.get_db_path", return_value=db_path),
+                patch("tsundokensaku.web.get_books_dir", return_value=books_dir),
+                patch.dict(os.environ, {"TSUNDOKENSAKU_CHAPTER_MAX_PAGES_PER_FILE": "2"}),
+            ):
+                created = self._payload(api_create_pack({"name": "章分割記録テスト"}))
+                items = [{"pdf_path": "a.pdf", "title": "本A", "pages": "1-6", "collapsed": False, "position": 0}]
+                self._payload(api_replace_pack_items(created["id"], {"items": items}))
+
+                response = api_export_pack(created["id"], profile="chapter")
+                self.assertEqual(response.status_code, 200)
+                # アウトラインなしのため連続ページで3ファイルに分割されるが、
+                # 記録される items は分割前の元項目1件のままであるはず
+                with zipfile.ZipFile(BytesIO(response.body)) as archive:
+                    self.assertEqual(len(archive.namelist()), 4)  # manifest + 3チャンク
+
+            import sqlite3
+            conn = sqlite3.connect(str(db_path))
+            try:
+                row = conn.execute("SELECT items_json FROM export_events ORDER BY id DESC LIMIT 1").fetchone()
+            finally:
+                conn.close()
+            payload = json.loads(row[0])
+            self.assertEqual(len(payload["items"]), 1)
+            item = payload["items"][0]
+            self.assertEqual(item["pdf_path"], "a.pdf")
+            self.assertEqual(item["title"], "本A")
+            self.assertEqual(item["pages"], "1-6")
+            self.assertEqual(item["position"], 0)
 
 
 class ArtifactRemovalApiTest(unittest.TestCase):
