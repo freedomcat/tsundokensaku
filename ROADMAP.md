@@ -162,9 +162,9 @@ Python・Playwrightの自動テストで継続的に確認できる。
     - [x] R7-2 PDFディレクトリ取り込み — `pdf_import_service.py`へ分離。characterization test、安全なsymlink境界、安全なHTTPエラー変換を実装済み（[docs/refactoring/r7-2-pdf-directory-import.md](docs/refactoring/r7-2-pdf-directory-import.md)参照）
     - [x] R7-3 Scrapbox JSON保存・同期 — 完了（2026-08-02）。Scrapbox/Cosense export JSONの固定cache保存、file/byte経路、DB接続・初期化・メモ同期・Kindle同期・closeを`src/tsundokensaku/scrapbox_import_service.py`へ分離し、HTTP契約と失敗時契約のテストを追加した（[docs/refactoring/r7-3-scrapbox-sync.md](docs/refactoring/r7-3-scrapbox-sync.md)参照）
     - [x] R7-4 PDF閲覧・変換・本文検索のHTTPオーケストレーション — 完了（2026-08-02）。PDF生成・server保存を`pdf_export.py`へ、indexed book照合とScrapbox URL解決を`pdf_metadata_service.py`へ、本文取得・ページ本文検索・Markdown生成を`pdf_text_service.py`へ分離し、`export_stats.py`の重複検索を共通APIへ置換した。`web.py`はHTTP入力・例外変換・JSON/template/download response生成中心のadapterへ整理した（[docs/refactoring/r7-4-http-orchestration.md](docs/refactoring/r7-4-http-orchestration.md)参照）
-  - [ ] R8 エクスポート業務ロジック — R8 PR1「R8詳細設計」は完了。R7-4完了後の設計再検証も完了済みで、設計書だけを先に更新する追加PRは不要と判断した。R8全体は未完了で、次の実装対象はPR2「現行契約のcharacterization test」。R8の詳細とPR分割は[詳細設計書 §22](docs/refactoring/r8-export-service.md#22-pr分割案)を正本とする。
+  - [ ] R8 エクスポート業務ロジック — R8 PR1「R8詳細設計」・PR2「現行契約のcharacterization test」は完了。R8全体は未完了で、次の実装対象はPR3「previewとrequest policyの分離」。R8の詳細とPR分割は[詳細設計書 §22](docs/refactoring/r8-export-service.md#22-pr分割案)を正本とする。
     - [x] PR1 R8詳細設計
-    - [ ] PR2 現行契約のcharacterization test
+    - [x] PR2 現行契約のcharacterization test — 完了（2026-08-19）。設計書§19.2の16項目（warning契約、JSON/ZIP exact契約、DB接続・event記録順、時計契約、PDF解決callbackの現状実装詳細等）をproduction codeを変更せずcharacterization testとして固定した。Python 607件・Playwright 31件通過
     - [ ] PR3 previewとrequest policyの分離
     - [ ] PR4 JSON export準備の分離
     - [ ] PR5 archiveオーケストレーションの分離
