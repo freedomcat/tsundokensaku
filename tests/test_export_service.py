@@ -9,8 +9,6 @@ import zipfile
 
 from pypdf import PdfWriter
 
-from fastapi import HTTPException
-
 from tsundokensaku import export_service
 from tsundokensaku import pdf_export
 from tsundokensaku.pdf_export import PdfSourceNotFoundError
