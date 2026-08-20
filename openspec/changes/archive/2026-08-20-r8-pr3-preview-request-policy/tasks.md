@@ -70,5 +70,5 @@
 - [x] 11.1 `export_service.py`が`web.py`・`fastapi`をimportしていないことを確認する（`grep -n "import"`等での目視確認）。
 - [x] 11.2 `export_stats.py`・`export_profiles.py`・`pdf_export.py`・`paths.py`・`database.py`のいずれも`export_service.py`・`web.py`をimportしていないこと（循環依存がないこと）を確認する。`export_service.py -> pdf_export.py`という新規依存が、既存の`export_stats.py -> pdf_export.py`・`export_profiles.py -> pdf_export.py`と同じ向きであることも確認する。
 - [x] 11.3 `git diff --stat -- src/tsundokensaku/`で変更ファイル一覧を確認し、design.md Impactに列挙したファイル（`web.py`、`export_service.py`、`export_stats.py`、`pdf_export.py`）以外に意図しない変更が無いことを確認する。`paths.py`に差分がないことも確認する。
-- [ ] 11.4 ROADMAP.mdおよびdocs/refactoring/r8-export-service.mdの実装状態表記（R8は「PR3 previewとrequest policyの分離」が未完了→完了に更新可）を、実装完了後にのみ更新する。今回のセッションではユーザー指示によりROADMAP更新自体を行わないため、実装（tasks 1〜11.3）は完了したが本項目は次回セッションで対応する。
+- [x] 11.4 ROADMAP.mdおよびdocs/refactoring/r8-export-service.mdの実装状態表記を更新した（PR #37マージ後）。ROADMAP.mdはPR3を`[x]`にし、R8親項目の「次の実装対象」をPR3からPR4へ更新した。PR4〜PR6・R8親項目は未完了のまま維持した。docs/refactoring/r8-export-service.mdはタイトルと冒頭の「状態:」行を「PR1〜PR3実装済み・PR4以降未着手」に更新した。§22 PR3セクション自体は設計時点の記述のまま残し（完了条件が実装で満たされていることを確認済みのため、無理な追記はしない）、PR4〜PR6セクションは変更していない。
 - 維持する契約: `openapi.json`のroute一覧・schemaが変わらないこと（`PackStatsRoutingTest.test_openapi_schema_includes_new_stats_endpoint`等、既存のroute定義に影響がないこと）。
