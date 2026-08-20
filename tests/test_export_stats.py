@@ -5,7 +5,7 @@ from pathlib import Path
 from pypdf import PdfWriter
 
 from tsundokensaku.database import PackItemRecord, PageRecord, connect, initialize, replace_pages, upsert_book
-from tsundokensaku.export_stats import collect_item_stats
+from tsundokensaku.export_stats import ItemStats, collect_item_stats, summarize_item_stats
 from tsundokensaku.token_estimate import TextStats, count_text_stats
 
 
@@ -340,6 +340,60 @@ class ExportStatsUsesSharedPathsModuleTest(unittest.TestCase):
         from tsundokensaku import export_stats, paths
 
         self.assertIs(export_stats.paths.resolve_pdf_path, paths.resolve_pdf_path)
+
+
+class SummarizeItemStatsTest(unittest.TestCase):
+    """R8 PR3: previewと`/api/packs/stats`が共有する純粋な基礎集計。design.md §5。
+
+    book_count/item_count/total_pagesと、estimated_chars/estimated_tokensの
+    元になるTextStats合算値（combined_stats）のみを返す。estimation/estimator
+    や、それらの値そのものの算出（projection）は含まない。
+    """
+
+    def test_empty_list_returns_zeroed_summary(self) -> None:
+        summary = summarize_item_stats([])
+        self.assertEqual(summary.book_count, 0)
+        self.assertEqual(summary.item_count, 0)
+        self.assertEqual(summary.total_pages, 0)
+        self.assertEqual(summary.combined_stats, TextStats(cjk_chars=0, other_chars=0))
+
+    def test_aggregates_book_item_page_counts_and_text_stats(self) -> None:
+        item_stats = [
+            ItemStats(
+                item=_pack_item(item_id=1, pdf_path="a.pdf", pages="1-2"),
+                page_numbers=[1, 2],
+                stats=TextStats(cjk_chars=10, other_chars=0),
+                unindexed_pages=0,
+                missing_pdf=False,
+            ),
+            ItemStats(
+                item=_pack_item(item_id=2, pdf_path="a.pdf", pages="5"),
+                page_numbers=[5],
+                stats=TextStats(cjk_chars=0, other_chars=4),
+                unindexed_pages=0,
+                missing_pdf=False,
+            ),
+        ]
+        summary = summarize_item_stats(item_stats)
+        self.assertEqual(summary.book_count, 1)
+        self.assertEqual(summary.item_count, 2)
+        self.assertEqual(summary.total_pages, 3)
+        self.assertEqual(summary.combined_stats, TextStats(cjk_chars=10, other_chars=4))
+
+    def test_distinct_pdf_paths_count_as_separate_books(self) -> None:
+        item_stats = [
+            ItemStats(
+                item=_pack_item(item_id=1, pdf_path="a.pdf", pages="1"),
+                page_numbers=[1], stats=TextStats(0, 0), unindexed_pages=0, missing_pdf=False,
+            ),
+            ItemStats(
+                item=_pack_item(item_id=2, pdf_path="b.pdf", pages="1"),
+                page_numbers=[1], stats=TextStats(0, 0), unindexed_pages=0, missing_pdf=False,
+            ),
+        ]
+        summary = summarize_item_stats(item_stats)
+        self.assertEqual(summary.book_count, 2)
+        self.assertEqual(summary.item_count, 2)
 
 
 if __name__ == "__main__":

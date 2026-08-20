@@ -45,8 +45,8 @@ from tsundokensaku.database import (
     update_pack,
 )
 from tsundokensaku.database import initialize
-from tsundokensaku.export_profiles import PROFILES, ExportProfile, RenderContext, resolve_profile
-from tsundokensaku.export_stats import ItemStats, collect_item_stats
+from tsundokensaku.export_profiles import ExportProfile, RenderContext
+from tsundokensaku.export_stats import ItemStats, collect_item_stats, summarize_item_stats
 from tsundokensaku.indexer import find_pdfs
 from tsundokensaku.metadata import (
     BookMetadata,
@@ -57,6 +57,7 @@ from tsundokensaku.metadata import (
     get_scrapbox_project_url,
 )
 from tsundokensaku import config
+from tsundokensaku import export_service
 from tsundokensaku import index_job
 from tsundokensaku import paths
 from tsundokensaku import pdf_export as pdf_export_service
@@ -68,7 +69,7 @@ from tsundokensaku import search_view
 from tsundokensaku.pdf_export import PdfSourceNotFoundError, parse_page_selection
 from tsundokensaku.pdf_outline import get_page_count, list_chapters
 from tsundokensaku.pdf_thumbnail import render_thumbnail_detail, render_thumbnails
-from tsundokensaku.token_estimate import ESTIMATOR_NAME, TextStats, estimate_tokens
+from tsundokensaku.token_estimate import TextStats, estimate_tokens
 from tsundokensaku.zip_export import (
     PackExportEntry,
     PlanManifestChunk,
@@ -87,7 +88,6 @@ DEFAULT_BOOKS_DIR = config.DEFAULT_BOOKS_DIR
 CONTAINER_BOOKS_DIRS = paths.CONTAINER_BOOKS_DIRS
 DEFAULT_DB_PATH = config.DEFAULT_DB_PATH
 PDF_EXPORT_SAVE_DIR_ENV = config.PDF_EXPORT_SAVE_DIR_ENV
-EXTERNALLY_AVAILABLE_EXPORT_PROFILES = frozenset({"standard", "chat", "chapter"})
 
 
 def _find_project_root() -> Path:
@@ -381,11 +381,10 @@ def update_env_setting(key: str, value: str, env_file: Path = ENV_FILE) -> None:
 
 
 def _resolve_pdf_file_or_404(pdf_path: str, books_dir: Path) -> Path:
-    books_root = books_dir.expanduser().resolve()
-    relative = resolve_pdf_path(pdf_path, books_root)
-    if relative is None:
-        raise HTTPException(status_code=404, detail="PDF not found")
-    return books_root / relative
+    try:
+        return pdf_export_service.resolve_pdf_source(pdf_path, books_dir)
+    except PdfSourceNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="PDF not found") from exc
 
 
 def render_pdf_export(candidate: Path, pages: str) -> tuple[bytes, str]:
@@ -647,7 +646,7 @@ def api_list_pack_stats() -> JSONResponse:
         for pack in list_packs(connection):
             items = get_pack_items(connection, pack.id)
             item_stats = collect_item_stats(connection, items, books_dir=books_dir)
-            stats = _preview_base_stats(item_stats)
+            summary = summarize_item_stats(item_stats)
             packs.append(
                 {
                     "id": pack.id,
@@ -655,10 +654,10 @@ def api_list_pack_stats() -> JSONResponse:
                     "note": pack.note,
                     "created_at": pack.created_at,
                     "updated_at": pack.updated_at,
-                    "book_count": stats["book_count"],
-                    "item_count": stats["item_count"],
-                    "total_pages": stats["total_pages"],
-                    "estimated_tokens": stats["estimated_tokens"],
+                    "book_count": summary.book_count,
+                    "item_count": summary.item_count,
+                    "total_pages": summary.total_pages,
+                    "estimated_tokens": estimate_tokens(summary.combined_stats),
                 }
             )
     finally:
@@ -776,177 +775,24 @@ def api_replace_pack_items(pack_id: int, payload: dict = Body(default={})) -> JS
     return JSONResponse({"pack_id": pack_id, "cart": cart, **items_payload})
 
 
-# エクスポート前の概算（トークンバジェット）。実行系エクスポートと異なり、
-# 空資料・PDF欠損・不正なページ範囲・未インデックスのいずれも例外にせず、
-# warnings として列挙して返す（設計書 14章「プレビューは寛容、実行は厳格」）。
-# Phase 3A では profile パラメータを受け付けず、常に standard 相当の概算を返す。
-# profile 追加時（Phase 3C）も、省略時はこの挙動を後方互換として維持する
-# （設計書 12.1）。
-def _export_preview_warning(code: str, *, item_id: int | None, message: str) -> dict[str, object]:
-    return {"code": code, "item_id": item_id, "message": message}
-
-
-def build_export_preview_warnings(item_stats: list[ItemStats]) -> list[dict[str, object]]:
-    if not item_stats:
-        return [_export_preview_warning("empty_pack", item_id=None, message="この資料には資料項目がありません")]
-
-    warnings: list[dict[str, object]] = []
-    for entry in item_stats:
-        item = entry.item
-        if entry.missing_pdf:
-            warnings.append(
-                _export_preview_warning(
-                    "missing_pdf", item_id=item.id, message=f"「{item.title}」はPDFファイルが見つかりません"
-                )
-            )
-            continue
-        if not item.pages.strip():
-            warnings.append(
-                _export_preview_warning(
-                    "missing_pages", item_id=item.id, message=f"「{item.title}」はページが指定されていません"
-                )
-            )
-            continue
-        if not entry.page_numbers:
-            warnings.append(
-                _export_preview_warning(
-                    "invalid_pages", item_id=item.id, message=f"「{item.title}」のページ指定を解釈できませんでした"
-                )
-            )
-            continue
-        if entry.unindexed_pages > 0:
-            warnings.append(
-                _export_preview_warning(
-                    "unindexed_pages",
-                    item_id=item.id,
-                    message=f"「{item.title}」は未インデックスのため{entry.unindexed_pages}ページ分を概算に含めていません",
-                )
-            )
-    return warnings
-
-
-def _preview_base_stats(item_stats: list[ItemStats]) -> dict[str, object]:
-    book_count = len({entry.item.pdf_path for entry in item_stats})
-    total_pages = sum(len(entry.page_numbers) for entry in item_stats)
-    total_stats = TextStats(
-        cjk_chars=sum(entry.stats.cjk_chars for entry in item_stats),
-        other_chars=sum(entry.stats.other_chars for entry in item_stats),
-    )
-
-    return {
-        "estimation": "approximate",
-        "estimator": ESTIMATOR_NAME,
-        "book_count": book_count,
-        "item_count": len(item_stats),
-        "total_pages": total_pages,
-        "estimated_chars": total_stats.cjk_chars + total_stats.other_chars,
-        "estimated_tokens": estimate_tokens(total_stats),
-    }
-
-
-def build_export_preview_payload(item_stats: list[ItemStats]) -> dict[str, object]:
-    # Phase 3A からの既存レスポンス形式（profile未指定・profile=standard用）。
-    # フィールド集合・値とも Phase 3C 導入前から不変（設計書12.1の後方互換方針）
-    return {
-        **_preview_base_stats(item_stats),
-        "warnings": build_export_preview_warnings(item_stats),
-    }
-
-
-def build_export_preview_payload_for_profile(
-    item_stats: list[ItemStats],
-    profile: ExportProfile,
-    *,
-    pack_name: str,
-    chapter_loader=None,
-) -> dict[str, object]:
-    """standard以外（chat等）向けの拡張プレビュー。設計書12.1のchunks付きレスポンス。
-
-    実エクスポート（_export_pack_archive）と同じ plan() / chunk_filename() を
-    呼ぶことで、分冊結果・ファイル名・警告をエクスポート実行前に一致させる。
-    """
-    item_warnings = build_export_preview_warnings(item_stats)
-
-    if not item_stats:
-        return {
-            "profile": profile.name,
-            **_preview_base_stats(item_stats),
-            "file_count": 0,
-            "archive": "zip",
-            "chunks": [],
-            "warnings": item_warnings,
-        }
-
-    plan = profile.plan(item_stats, chapter_loader=chapter_loader)
-    # primary_format を持たないプロファイル（standardのみ）はこの関数の対象外のため
-    # 実際には使われないが、chunk_filename の型契約上フォーマット文字列が必要
-    format_for_naming = profile.primary_format or "pdf"
-
-    chunks_payload = [
-        {
-            "filename": profile.chunk_filename(chunk, pack_name=pack_name, format=format_for_naming),
-            "estimated_tokens": chunk.estimated_tokens,
-            "pages": chunk.total_pages,
-            "items": [
-                {
-                    "item_id": fragment.item.id,
-                    "title": fragment.item.title,
-                    "pdf_path": fragment.item.pdf_path,
-                    "pages": fragment.page_spec,
-                    "label": fragment.label,
-                    "fragment_index": fragment.fragment_index,
-                    "fragment_count": fragment.fragment_count,
-                    "estimated_tokens": estimate_tokens(fragment.stats),
-                }
-                for fragment in chunk.fragments
-            ],
-        }
-        for chunk in plan.chunks
-    ]
-    plan_warnings = [
-        {"code": warning.code, "item_id": warning.item_id, "message": warning.message}
-        for warning in plan.warnings
-    ]
-
-    return {
-        "profile": profile.name,
-        **_preview_base_stats(item_stats),
-        "file_count": len(plan.chunks),
-        "archive": "zip",
-        "chunks": chunks_payload,
-        "warnings": item_warnings + plan_warnings,
-    }
-
-
 @app.get("/api/packs/{pack_id}/export/preview")
 def api_preview_pack_export(pack_id: int, profile: str | None = None) -> JSONResponse:
-    resolved_profile = _resolve_export_profile_or_400(profile)
-
-    connection = _pack_connection()
     try:
-        pack = get_pack(connection, pack_id)
-        if pack is None:
-            raise HTTPException(status_code=404, detail="資料が見つかりません")
-        items = get_pack_items(connection, pack_id)
-        item_stats = collect_item_stats(connection, items, books_dir=get_books_dir())
-    finally:
-        connection.close()
-
-    if not resolved_profile.uses_plan_output:
-        return JSONResponse(build_export_preview_payload(item_stats))
-
-    chapter_loader = None
-    if resolved_profile.needs_chapter_loader:
-        chapter_loader = lambda pdf_path: list_chapters(_resolve_pdf_file_or_404(str(pdf_path), get_books_dir()))
-
-    return JSONResponse(
-        build_export_preview_payload_for_profile(
-            item_stats,
-            resolved_profile,
-            pack_name=pack.name,
-            chapter_loader=chapter_loader,
+        preview = export_service.build_pack_export_preview(
+            pack_id,
+            profile_name=profile,
+            db_path=get_db_path(),
+            books_dir=get_books_dir(),
         )
-    )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"不明なエクスポートプロファイルです: {exc}") from exc
+    except PdfSourceNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="PDF not found") from exc
+
+    if preview is None:
+        raise HTTPException(status_code=404, detail="資料が見つかりません")
+
+    return JSONResponse(preview)
 
 
 def _export_pack_json(pack, items: list) -> Response:
@@ -1092,35 +938,17 @@ def _export_pack_archive(pack, items: list, *, format: str, profile: ExportProfi
     )
 
 
-def _resolve_export_profile_or_400(name: str | None) -> ExportProfile:
-    try:
-        profile = resolve_profile(name)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=f"不明なエクスポートプロファイルです: {exc}") from exc
-    if profile.name not in EXTERNALLY_AVAILABLE_EXPORT_PROFILES:
-        raise HTTPException(status_code=400, detail=f"不明なエクスポートプロファイルです: {profile.name}")
-    return profile
-
-
 @app.get("/api/packs/{pack_id}/export")
 def api_export_pack(pack_id: int, profile: str | None = None, format: str | None = None) -> Response:
-    resolved_profile = _resolve_export_profile_or_400(profile)
+    try:
+        resolved_profile = export_service.resolve_external_profile(profile)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"不明なエクスポートプロファイルです: {exc}") from exc
 
-    if format is None:
-        # 省略時は profile の主形式（standard は None なので現行既定の pdf）
-        format = resolved_profile.primary_format if resolved_profile.primary_format is not None else "pdf"
-
-    if format not in ("pdf", "md", "json"):
-        raise HTTPException(status_code=400, detail="format は pdf, md, または json を指定してください")
-
-    # standard は primary_format=None（format を実行時に選べる）ため、この時点では
-    # 常にスキップされる。chat/chapter 追加時に固定形式との矛盾を弾く構造だけ
-    # 用意しておく（B-3では仮実装や分岐を追加しない）
-    if resolved_profile.primary_format is not None and format != resolved_profile.primary_format:
-        raise HTTPException(
-            status_code=400,
-            detail=f"profile={resolved_profile.name} では format={resolved_profile.primary_format} のみ指定できます",
-        )
+    try:
+        format = export_service.resolve_export_format(resolved_profile, format)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     connection = _pack_connection()
     try:
