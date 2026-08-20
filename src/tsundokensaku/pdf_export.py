@@ -102,6 +102,19 @@ def render_pdf_export(candidate: Path, pages: str) -> tuple[bytes, str]:
     return render_selected_pages(candidate, page_numbers), default_output_path(candidate, page_numbers).name
 
 
+def resolve_pdf_source(pdf_path: str, books_dir: Path) -> Path:
+    """books_dir配下のPDF実体を解決する。FastAPI非依存。
+
+    存在しない、またはbooks_dir境界外なら PdfSourceNotFoundError を送出する。
+    一般のfilesystem/保存先の FileNotFoundError とは区別される専用の非HTTP例外。
+    """
+    books_root = books_dir.expanduser().resolve()
+    relative = paths.resolve_pdf_path(pdf_path, books_root)
+    if relative is None:
+        raise PdfSourceNotFoundError(pdf_path)
+    return books_root / relative
+
+
 def save_pdf_export_to_configured_dir(
     pdf_path: str,
     pages: str,
@@ -118,11 +131,7 @@ def save_pdf_export_to_configured_dir(
     if not save_root.is_dir():
         raise NotADirectoryError(save_root)
 
-    relative = paths.resolve_pdf_path(pdf_path, books_dir)
-    if relative is None:
-        raise PdfSourceNotFoundError(pdf_path)
-
-    candidate = books_dir.expanduser().resolve() / relative
+    candidate = resolve_pdf_source(pdf_path, books_dir)
     content, filename = render_pdf_export(candidate, pages)
     destination = (save_root / Path(filename).name).resolve()
     try:

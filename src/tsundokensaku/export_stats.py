@@ -21,6 +21,37 @@ class ItemStats:
     missing_pdf: bool
 
 
+@dataclass(frozen=True)
+class PackItemStatsSummary:
+    """previewと`/api/packs/stats`が共有する純粋な基礎集計。
+
+    book_count/item_count/total_pagesと、estimated_chars/estimated_tokensの
+    元になるTextStats合算値（combined_stats）のみを持つ。estimation/estimator
+    といった表示用フィールドや、それらの値そのものの算出（projection）は
+    含まない。各consumerが必要な値だけをここから導出する。
+    """
+
+    book_count: int
+    item_count: int
+    total_pages: int
+    combined_stats: TextStats
+
+
+def summarize_item_stats(item_stats: Sequence[ItemStats]) -> PackItemStatsSummary:
+    book_count = len({entry.item.pdf_path for entry in item_stats})
+    total_pages = sum(len(entry.page_numbers) for entry in item_stats)
+    combined_stats = TextStats(
+        cjk_chars=sum(entry.stats.cjk_chars for entry in item_stats),
+        other_chars=sum(entry.stats.other_chars for entry in item_stats),
+    )
+    return PackItemStatsSummary(
+        book_count=book_count,
+        item_count=len(item_stats),
+        total_pages=total_pages,
+        combined_stats=combined_stats,
+    )
+
+
 def _empty_item_stats(item: PackItemRecord, *, missing_pdf: bool) -> ItemStats:
     return ItemStats(
         item=item,
