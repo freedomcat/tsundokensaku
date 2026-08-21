@@ -72,6 +72,7 @@ from tsundokensaku.web import (
 )
 from tsundokensaku.web import app as tsundokensaku_app
 from tsundokensaku.database import PackItemRecord, SearchResult, connect, initialize, upsert_book
+from tsundokensaku.export_service import PreparedJsonExport
 from tsundokensaku.export_stats import ItemStats
 from tsundokensaku import scrapbox_import_service
 from tsundokensaku.pdf_import_service import (
@@ -2750,44 +2751,41 @@ class ExportJsonContractTest(unittest.TestCase):
     def _payload(self, response) -> dict:
         return json.loads(response.body)
 
-    def test_json_export_exact_body_bytes_with_fixed_clock(self) -> None:
+    def test_json_export_returns_service_content_via_http_response(self) -> None:
+        """R8 PR4決定5: web.pyはserviceが返したcontent/filenameを変形せずHTTP Responseへ渡す。
+
+        JSON構造のexact値・UTF-8・key順・indent・末尾改行などの生成契約は
+        `tests/test_export_service.py`の`PrepareJsonExportTest`が担う。ここでは
+        HTTP層（status・Content-Type・Content-Disposition・body）の受け渡しと、
+        `_now_jst()`の戻り値がそのまま`exported_at`としてserviceへ渡ることだけを確認する。
+        """
         fixed_now = datetime(2026, 8, 19, 9, 30, tzinfo=ZoneInfo("Asia/Tokyo"))
+        prepared = PreparedJsonExport(
+            content=b'{"stub": "json-export-content"}',
+            filename="stub_pack_20260819.json",
+        )
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / "index.db"
             with patch("tsundokensaku.web.get_db_path", return_value=db_path):
-                created = self._payload(api_create_pack({"name": "日本語資料名"}))
+                created = self._payload(api_create_pack({"name": "資料"}))
                 items = [{"pdf_path": "a.pdf", "title": "本A", "pages": "1-2", "collapsed": False, "position": 0}]
-                replaced = self._payload(api_replace_pack_items(created["id"], {"items": items}))
-                added_at = replaced["items"][0]["addedAt"]
+                self._payload(api_replace_pack_items(created["id"], {"items": items}))
 
                 client = TestClient(tsundokensaku_app)
-                with patch("tsundokensaku.web._now_jst", return_value=fixed_now):
+                with (
+                    patch("tsundokensaku.web._now_jst", return_value=fixed_now),
+                    patch("tsundokensaku.web.export_service.prepare_json_export", return_value=prepared) as prepare_mock,
+                ):
                     response = client.get(f"/api/packs/{created['id']}/export", params={"format": "json"})
 
             self.assertEqual(response.status_code, 200)
             self.assertEqual(response.headers["content-type"], "application/json")
-            disposition = response.headers["content-disposition"]
-            self.assertIn("attachment", disposition)
-            self.assertEqual(disposition, "attachment; filename*=UTF-8''%E6%97%A5%E6%9C%AC%E8%AA%9E%E8%B3%87%E6%96%99%E5%90%8D_20260819.json")
-
-            expected_body = (
-                "{\n"
-                '  "version": 3,\n'
-                '  "name": "日本語資料名",\n'
-                '  "items": [\n'
-                "    {\n"
-                '      "pdf_path": "a.pdf",\n'
-                '      "title": "本A",\n'
-                '      "pages": "1-2",\n'
-                '      "collapsed": false,\n'
-                f'      "addedAt": "{added_at}",\n'
-                '      "position": 0\n'
-                "    }\n"
-                "  ]\n"
-                "}"
+            self.assertEqual(
+                response.headers["content-disposition"],
+                "attachment; filename*=UTF-8''stub_pack_20260819.json",
             )
-            self.assertEqual(response.content, expected_body.encode("utf-8"))
-            self.assertFalse(response.content.endswith(b"\n"))
+            self.assertEqual(response.content, prepared.content)
+            self.assertEqual(prepare_mock.call_args.kwargs["exported_at"], fixed_now)
 
 
 class ExportZipFixedClockContractTest(unittest.TestCase):
