@@ -1,8 +1,7 @@
 ## 1. 準備
 
 - [ ] 1.1 `src/tsundokensaku/web.py`の`_export_pack_archive`（826行付近）、`_resolve_pdf_file_or_404`（382行付近）、`render_pdf_export`（389行付近）、`api_export_pack`（924行付近）の現状実装を再確認する。
-- [ ] 1.2 `tests/test_web.py`の`ExportArchiveBackwardCompatibilityTest`・`ExportProfileParameterTest`・`ExportZipFixedClockContractTest`・`ExportStatsCollectionStrategyTest`・`ExportClockCallCountTest`・`ExportPdfResolutionCallbackBoundaryTest`の現状内容を確認し、各テストがservice/webどちらに移るかの対応表を作る（design.md決定6）。
-- [ ] 1.3 `_resolve_pdf_file_or_404`・`render_pdf_export`が、archive以外のroute（`/export-pdf`、`/export-md`等）から呼ばれているかをgrepで確認する（design.md Open Questions 2）。
+- [ ] 1.2 `tests/test_web.py`の`ExportArchiveBackwardCompatibilityTest`・`ExportProfileParameterTest`・`ExportZipFixedClockContractTest`・`ExportStatsCollectionStrategyTest`・`ExportClockCallCountTest`・`ExportPdfResolutionCallbackBoundaryTest`の現状内容を確認し、各テストがservice/webどちらに移るかの対応表を作る（design.md決定6。ZIPの中身そのものを検証しているテストはservice側、HTTPステータス・ヘッダーのみのテストはweb側）。
 
 ## 2. `export_service.py`へのarchive生成関数の追加
 
@@ -21,12 +20,12 @@
 - [ ] 3.2 service関数が送出する`ValueError`を捕捉して400（`str(exc)`をdetailとする）、`PdfSourceNotFoundError`を捕捉して404（`"PDF not found"`）へ変換する（design.md決定1）。
 - [ ] 3.3 service関数が返したZIP bytes・filenameから、`Response`（`media_type="application/zip"`、`Content-Disposition`）を組み立てる。
 - [ ] 3.4 event記録（`try/except`ブロック）の位置・順序を変えないことを確認する（design.md決定5）。
-- [ ] 3.5 1.3の確認結果に基づき、`_resolve_pdf_file_or_404`・`render_pdf_export`（wrapper関数自体）を残すか整理するかを判断する（design.md Open Questions 2）。他routeで使われていれば残す。
+- [ ] 3.5 `_resolve_pdf_file_or_404`・`render_pdf_export`（wrapper関数自体）は削除・整理せずそのまま残すことを確認する（design.md決定2で確定済み。他routeでの利用状況の確認・整理は本PRのスコープ外とし、別PRで扱う）。
 
 ## 4. テスト配置の変更
 
 - [ ] 4.1 1.2の対応表に基づき、ZIPのexact logical content（entry名・順・展開bytes、fixed clock注入下のmanifest日時）、空pack・pages未指定時の`ValueError`文言、PDF不在時の`PdfSourceNotFoundError`伝播、統計収集の分岐を、service関数を直接呼び出すテストとして`tests/test_export_service.py`へ移す・追加する。
-- [ ] 4.2 `tests/test_web.py`には、`TestClient`経由の400・404・200 status、`Content-Type`・`Content-Disposition`ヘッダー契約を残す。代表として残すケースの件数を確定する（design.md Open Questions 3）。
+- [ ] 4.2 `tests/test_web.py`には、`TestClient`経由の400・404・200 status、`Content-Type`・`Content-Disposition`ヘッダー契約と、service関数をスタブへ差し替えてHTTP層の受け渡しだけを見るテスト（PR4の`test_json_export_returns_service_content_via_http_response`と同じパターン）を残す。ZIPの中身そのものを確認するテストは残さない（design.md決定6）。
 - [ ] 4.3 `ExportEventRecordingTest`内のarchive export event記録テストは変更せず、そのまま`tests/test_web.py`に残すことを確認する。
 
 ## 5. 全体検証

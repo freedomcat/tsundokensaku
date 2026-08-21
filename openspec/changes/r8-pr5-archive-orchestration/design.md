@@ -9,11 +9,12 @@
 
 「ZIPを作る作業」の内部に埋め込まれていた、「これは404/400としてWebに見せる」という判断を、資料の入り口（`web.py`）だけに集める。ZIPを作る作業そのもの（PDFのページを切り出す・目次を作る・ZIPにまとめる、といった一連の処理）は、「PDFが見つからない」「ページ指定がない」という**事実だけ**を報告する形に変え、Webの応答形式を一切知らない状態にする。これにより、ZIPを作る作業を`export_service.py`（Webと無関係な場所）へ移せるようにする。
 
-## レビューで判断が必要な点（3件）
+## レビューで判断が必要な点（2件）
 
 1. **失敗の事実をどう表現するか**（Decisions 1）: 「資料が空」「ページ指定がない」は`ValueError`、「PDFが見つからない」はPR3で新設済みの`PdfSourceNotFoundError`をそのまま使う設計とした。この選択が妥当か。
 2. **archive生成の戻り値の型**（Open Questions 1）: PR4で作った`PreparedJsonExport`と同じ名前の系列にするか、archive専用の別の型にするかは今回確定していない。
-3. **PDF解決・PDF生成のcallback非HTTP化の範囲**（Decisions 2）: 今回はarchive経路のcallbackだけを非HTTP化し、`web.py`内の既存wrapper関数（`_resolve_pdf_file_or_404`、`render_pdf_export`）自体は削除しない方針とした。他route（`/export-pdf`等）への影響を避けるための判断だが、この境界の引き方が妥当か。
+
+`web.py`内の既存wrapper関数（`_resolve_pdf_file_or_404`・`render_pdf_export`）を削除しないこと、および`tests/test_web.py`にZIPの中身そのものを確認するテストを残さないことは、レビュー指摘を受けて本designで確定済み（Decisions 2・6参照）。
 
 ---
 
@@ -82,7 +83,7 @@ serviceは次の非HTTP表現を使い、`HTTPException`を一切送出しない
 - `chapter_loader`: 同様に`pdf_export_service.resolve_pdf_source`を直接使う
 - `render_pdf`: `pdf_export_service.render_pdf_export`を直接使う（`web.py`内`render_pdf_export`ラッパーを経由しない）
 
-`web.py`内の`_resolve_pdf_file_or_404`・`render_pdf_export`（`HTTPException`変換wrapper）自体は削除しない。これらが他route（`/export-pdf`、`/export-md`等）からも呼ばれている可能性があり、その利用状況の確認・整理は本PRのスコープ外とする（Open Questions 2）。archiveのcallbackだけを、wrapperを経由しない直接呼び出しへ切り替える。
+`web.py`内の`_resolve_pdf_file_or_404`・`render_pdf_export`（`HTTPException`変換wrapper）自体は削除しない、とここで確定する。これらは他route（`/export-pdf`、`/export-md`等）からも呼ばれている可能性があり、その利用状況の確認・整理（不要になったwrapperの整理を含む）は、利用箇所を確認した別PRで扱う（本PRのスコープ外）。archiveのcallbackだけを、wrapperを経由しない直接呼び出しへ切り替える。
 
 ### 3. 検証順序を維持する
 
@@ -105,10 +106,11 @@ PR3・PR4のテスト配置方針（route/TestClient経由の契約に限定し�
   - 空pack・pages未指定時の`ValueError`文言（position順で最初の1件のみ）
   - PDF不在時に`PdfSourceNotFoundError`がservice関数から捕捉されず伝播すること
   - 統計収集の分岐（standard経路が`collect_item_stats`を呼ばずプレースホルダーを使うこと、chat/chapterのみ実統計を使うこと）
-- `tests/test_web.py`が担当する（HTTP契約）:
+- `tests/test_web.py`が担当する（HTTP契約。ZIPの中身そのものは確認しない）:
   - `TestClient`経由の400・404・200 status、`Content-Type`・`Content-Disposition`ヘッダー
+  - service関数の戻り値（ZIP bytes・filename）が変形されずそのままHTTP応答として渡ることの確認。PR4の`test_json_export_returns_service_content_via_http_response`と同じパターン（service関数をスタブへ差し替え、HTTP層の受け渡しだけを見る）を踏襲する。
   - event記録順序（`ExportEventRecordingTest`内の該当テスト、変更なし）
-  - 既存`ExportArchiveBackwardCompatibilityTest`・`ExportProfileParameterTest`のうち、HTTP契約として残すべき代表ケース（件数はOpen Questions 3で実装時に確定）
+  - 既存`ExportArchiveBackwardCompatibilityTest`・`ExportProfileParameterTest`のうち、ZIPのentry名・順・展開bytesそのものを検証しているテストは`tests/test_export_service.py`へ移す。HTTPステータス・ヘッダーのみを見ているテストは`tests/test_web.py`に残す。
 
 ## Risks / Trade-offs
 
@@ -124,5 +126,5 @@ PR3・PR4のテスト配置方針（route/TestClient経由の契約に限定し�
 ## Open Questions
 
 1. archive生成の戻り値の具体的な型（PR4の`PreparedJsonExport`と同系列の名前にするか、`PreparedArchiveExport`等の別名にするか、フィールド構成）は実装時に確定する。
-2. `web.py`内の`_resolve_pdf_file_or_404`・`render_pdf_export`（HTTPException変換wrapper）が、archive経路の切り替え後も他routeで使われ続けるかどうかを実装時に確認し、使われなくなった場合の整理方針（削除するか残すか）を判断する。
-3. `tests/test_web.py`に残すZIP exact contentテストの件数（既存`ExportArchiveBackwardCompatibilityTest`等の何件を代表として残すか）は、PR4と同様、実装時に既存テストの重複度を見て確定する。
+
+`web.py`内の既存wrapper関数の扱い（削除しない）、`tests/test_web.py`に残すテストの範囲（ZIPの中身は確認しない）は、レビュー指摘を受けて本designで確定済み（Decisions 2・6）。
