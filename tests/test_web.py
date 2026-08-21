@@ -2738,11 +2738,13 @@ class PackStatsRoutingTest(unittest.TestCase):
 
 
 class ExportJsonContractTest(unittest.TestCase):
-    """R8 PR2 characterization test（設計書§19.2-5）。
+    """R8 PR4: JSON export準備は`export_service.prepare_json_export`へ移動済み。
 
-    JSON export の exact body bytes（UTF-8日本語含む、key順、indent 2、
-    LF、末尾改行なし）、filename、MIME、Content-Disposition、空pack・
-    不正資料でも200になることを、TestClient経由で固定する。
+    ここではHTTP契約（`TestClient`経由のstatus・Content-Type・
+    Content-Disposition・レスポンスbodyの受け渡し）のみを、通常の成功
+    ケース1件で固定する（design.md決定5）。JSON構造のexact値・空pack・
+    PDF不在・pages不正な資料でも生成される契約は
+    `tests/test_export_service.py`の`PrepareJsonExportTest`が担う。
     """
 
     def _payload(self, response) -> dict:
@@ -2786,34 +2788,6 @@ class ExportJsonContractTest(unittest.TestCase):
             )
             self.assertEqual(response.content, expected_body.encode("utf-8"))
             self.assertFalse(response.content.endswith(b"\n"))
-
-    def test_json_export_empty_pack_returns_200(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            db_path = Path(temp_dir) / "index.db"
-            with patch("tsundokensaku.web.get_db_path", return_value=db_path):
-                created = self._payload(api_create_pack({"name": "空資料"}))
-                response = api_export_pack(created["id"], format="json")
-                self.assertEqual(response.status_code, 200)
-                body = json.loads(response.body)
-                self.assertEqual(body["items"], [])
-
-    def test_json_export_missing_pdf_and_invalid_pages_returns_200(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            db_path = Path(temp_dir) / "index.db"
-            with patch("tsundokensaku.web.get_db_path", return_value=db_path):
-                created = self._payload(api_create_pack({"name": "資料"}))
-                items = [
-                    {"pdf_path": "missing.pdf", "title": "消えた本", "pages": "1-3", "collapsed": False, "position": 0},
-                    {"pdf_path": "b.pdf", "title": "本B", "pages": "", "collapsed": False, "position": 1},
-                ]
-                self._payload(api_replace_pack_items(created["id"], {"items": items}))
-
-                response = api_export_pack(created["id"], format="json")
-                self.assertEqual(response.status_code, 200)
-                body = json.loads(response.body)
-                self.assertEqual(len(body["items"]), 2)
-                self.assertEqual(body["items"][0]["pdf_path"], "missing.pdf")
-                self.assertEqual(body["items"][1]["pages"], "")
 
 
 class ExportZipFixedClockContractTest(unittest.TestCase):

@@ -1,14 +1,18 @@
 from __future__ import annotations
 
+import json
+from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 from tsundokensaku import database
 from tsundokensaku import pdf_export
-from tsundokensaku.database import get_pack, get_pack_items
+from tsundokensaku.database import PackItemRecord, PackRecord, get_pack, get_pack_items
 from tsundokensaku.export_profiles import ExportProfile, resolve_profile
 from tsundokensaku.export_stats import ItemStats, collect_item_stats, summarize_item_stats
 from tsundokensaku.pdf_outline import list_chapters
 from tsundokensaku.token_estimate import ESTIMATOR_NAME, estimate_tokens
+from tsundokensaku.zip_export import sanitize_filename_component
 
 
 EXTERNALLY_AVAILABLE_EXPORT_PROFILES = frozenset({"standard", "chat", "chapter"})
@@ -225,3 +229,43 @@ def build_pack_export_preview(
         pack_name=pack.name,
         chapter_loader=chapter_loader,
     )
+
+
+@dataclass(frozen=True)
+class PreparedJsonExport:
+    content: bytes
+    filename: str
+
+
+def prepare_json_export(
+    pack: PackRecord,
+    items: list[PackItemRecord],
+    *,
+    exported_at: datetime,
+) -> PreparedJsonExport:
+    """JSON export（version 3）の準備。FastAPI非依存。
+
+    itemsのJSON構造への組み立て・bytes化・filename決定を行う。webがResponse生成・
+    Content-Dispositionへの変換を担う（設計書§12.3の分担）。空pack・PDF不在・
+    pages不正でも検証せずそのまま生成する現状の性質を維持する（設計書§18.5）。
+    時刻は呼び出し元が解決したJST時刻(`exported_at`)のみを使い、ここでは
+    `datetime.now()`相当を呼ばない。
+    """
+    export_data = {
+        "version": 3,
+        "name": pack.name,
+        "items": [
+            {
+                "pdf_path": item.pdf_path,
+                "title": item.title,
+                "pages": item.pages,
+                "collapsed": item.collapsed,
+                "addedAt": item.added_at,
+                "position": item.position,
+            }
+            for item in items
+        ],
+    }
+    content = json.dumps(export_data, ensure_ascii=False, indent=2).encode("utf-8")
+    filename = f"{sanitize_filename_component(pack.name)}_{exported_at:%Y%m%d}.json"
+    return PreparedJsonExport(content=content, filename=filename)

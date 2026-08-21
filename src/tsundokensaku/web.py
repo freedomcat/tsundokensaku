@@ -79,7 +79,6 @@ from tsundokensaku.zip_export import (
     build_pack_zip_filename,
     build_pack_zip_with_manifest,
     render_plan_manifest,
-    sanitize_filename_component,
 )
 
 
@@ -796,28 +795,11 @@ def api_preview_pack_export(pack_id: int, profile: str | None = None) -> JSONRes
 
 
 def _export_pack_json(pack, items: list) -> Response:
-    import json
-    export_data = {
-        "version": 3,
-        "name": pack.name,
-        "items": [
-            {
-                "pdf_path": item.pdf_path,
-                "title": item.title,
-                "pages": item.pages,
-                "collapsed": item.collapsed,
-                "addedAt": item.added_at,
-                "position": item.position,
-            }
-            for item in items
-        ]
-    }
-    json_bytes = json.dumps(export_data, ensure_ascii=False, indent=2).encode("utf-8")
-    filename = f"{sanitize_filename_component(pack.name)}_{_now_jst():%Y%m%d}.json"
+    prepared = export_service.prepare_json_export(pack, items, exported_at=_now_jst())
     return Response(
-        content=json_bytes,
+        content=prepared.content,
         media_type="application/json",
-        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"},
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(prepared.filename)}"},
     )
 
 
