@@ -1,6 +1,6 @@
 # つんどけんさく ロードマップ
 
-最終更新: 2026-07-26
+最終更新: 2026-08-21
 
 ## コンセプト
 
@@ -166,7 +166,7 @@ Python・Playwrightの自動テストで継続的に確認できる。
     - [x] PR1 R8詳細設計
     - [x] PR2 現行契約のcharacterization test — 完了（2026-08-19）。設計書§19.2の16項目（warning契約、JSON/ZIP exact契約、DB接続・event記録順、時計契約、PDF解決callbackの現状実装詳細等）をproduction codeを変更せずcharacterization testとして固定した。Python 607件・Playwright 31件通過
     - [x] PR3 previewとrequest policyの分離 — 完了（2026-08-20、PR #37）。FastAPI非依存の`export_service.py`を新設し、profile/format request policy（`resolve_external_profile`/`resolve_export_format`）、preview warning生成、standard/profile preview projection、previewのDB read/close/plan進行を移した。`/api/packs/stats`と共有する基礎集計を`export_stats.PackItemStatsSummary`/`summarize_item_stats`へ整理し、previewのchapter previewが使うPDF解決は既存`pdf_export.PdfSourceNotFoundError`を再利用した非HTTP関数`pdf_export.resolve_pdf_source`へ置き換えた（通常のmissing PDFは既存どおり200+warning、race時のPDF source消失のみweb adapterが404へ変換）。JSON/archive実行経路・export event記録は変更していない（PR4〜PR6のスコープ）。Python 621件（既存の環境固有failure5件を除く）・Playwright 31件通過
-    - [x] PR4 JSON export準備の分離 — 完了（2026-08-21、PR #41）。`_export_pack_json`が担っていたJSON export準備（`items`配列の組み立て・bytes化・filename決定）を、FastAPI非依存の`export_service.py`の`prepare_json_export`（`PreparedJsonExport`を返す）へ移した。`web.py`はservice戻り値をHTTP Response（media type・Content-Disposition）へ変換するだけに縮小し、`_now_jst()`の呼び出し元はweb.py側に残した。JSON schema・bytes形式・filename規則・event記録・ZIP/archive実行経路・profile/format policyは変更していない（PR5〜PR6のスコープ）。Python 629件（既存の環境固有failure5件を除く）・Playwright 31件通過
+    - [x] PR4 JSON export準備の分離 — 完了（2026-08-21、PR #41）。`_export_pack_json`が担っていたJSON export準備（`items`配列の組み立て・bytes化・filename決定）を、FastAPI非依存の`export_service.py`の`prepare_json_export`（`PreparedJsonExport`を返す）へ移した。`web.py`はservice戻り値をHTTP Response（media type・Content-Disposition）へ変換するだけに縮小し、`_now_jst()`の呼び出し元はweb.py側に残した。JSON schema・bytes形式・filename規則・event記録・ZIP/archive実行経路・profile/format policyは変更していない（PR5〜PR6のスコープ）。Python 629件・Playwright 31件通過
     - [ ] PR5 archiveオーケストレーションの分離
     - [ ] PR6 成功履歴とHTTP adapterの仕上げ
     - 実施順: R8 PR2〜PR6を順に実施し、R8完了後にR5へ着手する。PR5はR7-4の非HTTP PDF/Markdown APIに加え、`resolve_pdf`相当の非HTTP契約が確定・実装済みであることを先行条件とする。
