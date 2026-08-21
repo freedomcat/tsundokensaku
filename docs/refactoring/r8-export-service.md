@@ -1,8 +1,8 @@
-# R8: エクスポート業務ロジックの詳細設計 — PR1〜PR3実装済み・PR4以降未着手
+# R8: エクスポート業務ロジックの詳細設計 — PR1〜PR4実装済み・PR5以降未着手
 
 [中心ファイル責務棚卸し](../central-file-refactoring-inventory.md) / [ROADMAP](../../ROADMAP.md) / [R7-4詳細設計](r7-4-http-orchestration.md)
 
-状態: PR1（詳細設計）・PR2（現行契約のcharacterization test、2026-08-19）・PR3（previewとrequest policyの分離、2026-08-20、PR #37）が完了した。`export_service.py`の新設、request policy（`resolve_external_profile`/`resolve_export_format`）・preview warning/projection・preview DB orchestrationの移動、`/api/packs/stats`と共有する基礎集計（`export_stats.PackItemStatsSummary`/`summarize_item_stats`）の整理、previewのPDF解決の非HTTP化（既存`pdf_export.PdfSourceNotFoundError`の再利用、`pdf_export.resolve_pdf_source`の新設）は実装済みである。PR4（JSON export準備の分離）以降のcharacterization test追加・関数移動・HTTP adapter整理は未着手である。本書の型名・関数名のうち「候補」「要判断」と記したもののうち、PR3で確定・実装されたものは実コードに存在する。PR4以降に関わる候補・要判断事項は、契約固定PRの結果を見て実装前に確定する方針を維持する。
+状態: PR1（詳細設計）・PR2（現行契約のcharacterization test、2026-08-19）・PR3（previewとrequest policyの分離、2026-08-20、PR #37）・PR4（JSON export準備の分離、2026-08-21、PR #41）が完了した。`export_service.py`の新設、request policy（`resolve_external_profile`/`resolve_export_format`）・preview warning/projection・preview DB orchestrationの移動、`/api/packs/stats`と共有する基礎集計（`export_stats.PackItemStatsSummary`/`summarize_item_stats`）の整理、previewのPDF解決の非HTTP化（既存`pdf_export.PdfSourceNotFoundError`の再利用、`pdf_export.resolve_pdf_source`の新設）、JSON export準備（`items`組み立て・bytes化・filename決定を`export_service.prepare_json_export`が返す`PreparedJsonExport`へ分離、`web.py`はHTTP Response変換のみに縮小）は実装済みである。PR5（archiveオーケストレーションの分離）以降のcharacterization test追加・関数移動・HTTP adapter整理は未着手である。本書の型名・関数名のうち「候補」「要判断」と記したもののうち、PR3・PR4で確定・実装されたものは実コードに存在する。PR5以降に関わる候補・要判断事項は、契約固定PRの結果を見て実装前に確定する方針を維持する。
 
 ## 1. 背景
 
