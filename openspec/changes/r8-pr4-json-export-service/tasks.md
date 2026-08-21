@@ -6,8 +6,8 @@
 
 ## 2. `export_service.py`へのJSON export準備関数の追加
 
-- [ ] 2.1 戻り値の型を確定する（design.md決定1）。`tuple[bytes, str]`か小さい`dataclass`か、フィールド名を設計書§12.3の`PreparedPackExport`と揃えるかを決めたうえで実装する。
-- [ ] 2.2 JSON export準備関数を実装する。引数として`pack`・`items`・解決済みJST時刻（`exported_at`）を受け取り、`items`配列の組み立て・`json.dumps(..., ensure_ascii=False, indent=2).encode("utf-8")`によるbytes化・filename文字列の組み立て（`sanitize_filename_component`呼び出しを含む）を行い、bytesとfilenameを返す。FastAPIの型（`Response`等）を一切importしない。
+- [ ] 2.1 `PreparedJsonExport`（`content: bytes`, `filename: str`の`dataclass`。design.md決定1）を定義する。
+- [ ] 2.2 JSON export準備関数を実装する。引数として`pack`・`items`・解決済みJST時刻（`exported_at`）を受け取り、`items`配列の組み立て・`json.dumps(..., ensure_ascii=False, indent=2).encode("utf-8")`によるbytes化・filename文字列の組み立て（`sanitize_filename_component`呼び出しを含む）を行い、`PreparedJsonExport`を返す。FastAPIの型（`Response`等）を一切importしない。
 - [ ] 2.3 関数内部で`datetime.now()`相当を呼ばないこと（design.md決定2）を確認する。時刻は呼び出し元から渡された`exported_at`のみを使う。
 - [ ] 2.4 空pack・PDF不在・pages不正な資料でも検証を行わずそのまま生成する現状の性質（design.md決定4）を、実装時に変えていないことを確認する。
 
@@ -21,7 +21,7 @@
 
 - [ ] 4.1 `ExportJsonContractTest`の`test_json_export_empty_pack_returns_200`・`test_json_export_missing_pdf_and_invalid_pages_returns_200`相当を、2.2の関数を直接呼び出すテストとして`tests/test_export_service.py`へ移す。
 - [ ] 4.2 JSON構造のexact値テスト（`version`/`name`/`items`各fieldの値、UTF-8日本語、key順、indent 2、LF、末尾改行なし）とfilenameの組み立て結果（sanitize後の文字列＋日付）を、2.2の関数を直接呼び出すテストとして`tests/test_export_service.py`に追加する。
-- [ ] 4.3 `tests/test_web.py`の`ExportJsonContractTest`には、`TestClient`経由のHTTP status・`Content-Type`・`Content-Disposition`ヘッダーの契約、および同経路でも同じ結果が得られることを確認する最小限のexact body bytesケース（design.md Open Questionsのとおり、既存3件を残すか1件に絞るかは4.1・4.2の移動内容を見て決める）を残す。
+- [ ] 4.3 `tests/test_web.py`の`ExportJsonContractTest`は、通常の成功ケース（PDF欠損等の異常がなく項目が1件以上あるpack）1件のみを残す（design.md決定5）。`TestClient`経由でHTTPステータス200・`Content-Type: application/json`・`Content-Disposition`ヘッダー・レスポンスbodyがservice関数の`content`と一致することを確認する。空pack・PDF不在・pages不正のケース（4.1で`test_export_service.py`へ移した分）は`test_web.py`側からは削除する。
 - [ ] 4.4 `ExportEventRecordingTest`内のJSON export event記録テストは変更せず、そのまま`tests/test_web.py`に残すことを確認する。
 
 ## 5. 全体検証

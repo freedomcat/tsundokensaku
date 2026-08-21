@@ -36,9 +36,22 @@
 
 設計書§12.3は`PreparedPackExport`（`content: bytes`, `download_filename: str`, `output_kind: Literal["json", "zip"]`等）というJSON/ZIP共通型を候補として示しているが、これは「候補であり実装前に確定する」とも明記されている。ZIP側（PR5スコープ）の要件が固まっていない現時点で共通型を先取りすると、PR4の変更対象が本来のJSON exportの範囲を超え、PR5の設計判断を先取りしてしまう。
 
-そのため、PR4では戻り値をJSON専用の狭い型（`bytes`と`filename: str`の組）とする。具体的な型（`tuple[bytes, str]`か小さい`dataclass`か、フィールド名を`PreparedPackExport`と揃えるか）は実装時に確定する（Open Questions参照）。ZIP側と統一するかどうかの判断はPR5着手時に持ち越す。
+そのため、PR4では戻り値をJSON専用の狭い型とし、次の`dataclass`を採用する。
 
-代替案として§12.3の共通型を今回前倒しで実装する案も検討したが、ZIP側のフィールド要件（`output_kind`分岐の必要性、archive特有のmanifest情報を含めるか等）がPR5で初めて確定するため、今回は採用しない。
+```python
+@dataclass(frozen=True)
+class PreparedJsonExport:
+    content: bytes
+    filename: str
+```
+
+`tuple[bytes, str]`ではなく`dataclass`を選ぶ理由は次の3点である。
+
+- **意味の明確化**: `tuple[bytes, str]`は呼び出し側で`result[0]`/`result[1]`のように位置で取り出すことになり、どちらがcontentでどちらがfilenameかがコード上自明でない。フィールド名を持つ`dataclass`はこの取り違えを防ぐ。
+- **将来の拡張耐性**: PR5でZIP側の要件が確定し、この型をJSON/ZIP共通の`PreparedPackExport`へ発展・統合する判断になった場合、`dataclass`はフィールド追加（例: `output_kind`）が既存コードを壊さずに行える。`tuple`は要素追加が位置ズレのリスクを伴う。
+- **命名の一貫性**: 設計書§12.3の`PreparedPackExport`と同じ「Prepared+名詞」という命名にすることで、JSON専用型がPR5以降の統合候補であることが名前から分かる。ただし`PreparedPackExport`という名前そのものは§12.3が「候補であり実装前に確定する」としているため、ここでは`PreparedJsonExport`というJSON専用の名前を採用し、`PreparedPackExport`への改名・統合はPR5着手時の判断に持ち越す。
+
+代替案として§12.3の共通型（`output_kind: Literal["json", "zip"]`を含む`PreparedPackExport`）を今回前倒しで実装する案も検討したが、ZIP側のフィールド要件（`output_kind`分岐の必要性、archive特有のmanifest情報を含めるか等）がPR5で初めて確定するため、今回は採用しない。`tuple[bytes, str]`のまま実装する案も検討したが、上記の理由により`dataclass`を優先する。
 
 ### 2. `_now_jst()`の呼び出し元は`web.py`に残す
 
@@ -58,8 +71,18 @@ JSON exportは現状、`_export_pack_archive`と異なり、空pack・PDF不在�
 
 PR3のテスト配置方針（route/TestClient経由の契約に限定して`test_web.py`に残す）を踏襲する。
 
-- `tests/test_export_service.py`へ移す・追加する: JSON構造のexact値テスト（`version`/`name`/`items`各fieldの値）、空pack・PDF不在・pages不正でも生成されること、filenameの組み立て結果（sanitize後の文字列＋日付）。いずれもservice関数を直接呼び出すテストとする。
-- `tests/test_web.py`に残す: `TestClient`経由のHTTP status・`Content-Type`・`Content-Disposition`ヘッダーの形状確認、およびJSON export成功時のevent記録順序（`ExportEventRecordingTest`内の該当テスト）。exact body bytesの一字一句比較は、service関数を直接呼ぶ形で`test_export_service.py`側に主として置き、`test_web.py`側はHTTP経由でも同じ結果が得られることを確認する最小限のケース（1件）に絞る候補とする（tasks.mdで具体的な割り振りを確定する）。
+最終的な分担は次のとおり確定する。
+
+- `tests/test_export_service.py`が担当する（詳細な生成契約）:
+  - JSON構造のexact値テスト（`version`/`name`/`items`各fieldの値、UTF-8日本語、key順、indent 2、LF、末尾改行なし）
+  - 空pack・PDF不在・pages不正な資料でも検証なしで生成されること
+  - filenameの組み立て結果（sanitize後の文字列＋日付）
+  - いずれも`PreparedJsonExport`を返すservice関数を直接呼び出すテストとする。
+- `tests/test_web.py`が担当する（HTTP契約。通常成功ケース1件に絞る）:
+  - 通常の成功ケース（PDF欠損等の異常がない、項目が1件以上あるpack）1件について、`TestClient`経由で次を確認する: HTTPステータス200、`Content-Type: application/json`、`Content-Disposition`ヘッダー、レスポンスbodyがservice関数の`content`と一致すること（HTTP層がbytesを変形せずそのまま受け渡していることの確認）。
+  - JSON export成功時のevent記録（`ExportEventRecordingTest`内の該当テスト）。
+  - 空pack・PDF不在・pages不正等のJSON生成詳細（exact bytesの内容そのもの）は`test_web.py`側では検証しない。これらは`test_export_service.py`側の責務とし、`test_web.py`は「HTTP層が正しく受け渡しているか」だけを見る。
+  - 既存`ExportJsonContractTest`の3テストのうち、`test_json_export_empty_pack_returns_200`・`test_json_export_missing_pdf_and_invalid_pages_returns_200`は`test_export_service.py`へ移し、`test_web.py`からは削除する（4.1参照）。`test_json_export_exact_body_bytes_with_fixed_clock`はHTTP契約の代表1件として`test_web.py`に残す。
 
 ## Risks / Trade-offs
 
@@ -74,5 +97,4 @@ PR3のテスト配置方針（route/TestClient経由の契約に限定して`tes
 
 ## Open Questions
 
-- service関数の戻り値の具体的な型（`tuple[bytes, str]`か小さい`dataclass`か、フィールド名を設計書§12.3の`PreparedPackExport`と揃えるか）は実装時に確定する。この判断はJSON専用スコープの範囲では仕様やタスク分解を変えないため、tasksの着手を妨げない。
-- `test_web.py`に残すexact body bytesテストの件数（1件に絞るか、既存3件をすべて残すか）は、tasks.md実装時に既存テストの重複度を見て確定する。
+なし。service関数の戻り値の型（決定1）と`test_web.py`に残すテストの粒度（決定5）は、レビューでの指摘を受けて本designで確定した。
