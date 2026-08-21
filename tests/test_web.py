@@ -2758,11 +2758,13 @@ class ExportJsonContractTest(unittest.TestCase):
         `tests/test_export_service.py`の`PrepareJsonExportTest`が担う。ここでは
         HTTP層（status・Content-Type・Content-Disposition・body）の受け渡しと、
         `_now_jst()`の戻り値がそのまま`exported_at`としてserviceへ渡ることだけを確認する。
+        `filename`は日本語を含む値にし、`Content-Disposition`のパーセントエンコード
+        （`quote()`によるweb.py固有の責務。design.md決定3）が働くことも確認する。
         """
         fixed_now = datetime(2026, 8, 19, 9, 30, tzinfo=ZoneInfo("Asia/Tokyo"))
         prepared = PreparedJsonExport(
             content=b'{"stub": "json-export-content"}',
-            filename="stub_pack_20260819.json",
+            filename="日本語資料名_20260819.json",
         )
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / "index.db"
@@ -2782,7 +2784,7 @@ class ExportJsonContractTest(unittest.TestCase):
             self.assertEqual(response.headers["content-type"], "application/json")
             self.assertEqual(
                 response.headers["content-disposition"],
-                "attachment; filename*=UTF-8''stub_pack_20260819.json",
+                "attachment; filename*=UTF-8''%E6%97%A5%E6%9C%AC%E8%AA%9E%E8%B3%87%E6%96%99%E5%90%8D_20260819.json",
             )
             self.assertEqual(response.content, prepared.content)
             self.assertEqual(prepare_mock.call_args.kwargs["exported_at"], fixed_now)
