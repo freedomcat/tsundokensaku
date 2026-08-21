@@ -82,7 +82,7 @@ PR3のテスト配置方針（route/TestClient経由の契約に限定して`tes
   - 通常の成功ケース（PDF欠損等の異常がない、項目が1件以上あるpack）1件について、`TestClient`経由で次を確認する: HTTPステータス200、`Content-Type: application/json`、`Content-Disposition`ヘッダー、レスポンスbodyがservice関数の`content`と一致すること（HTTP層がbytesを変形せずそのまま受け渡していることの確認）。
   - JSON export成功時のevent記録（`ExportEventRecordingTest`内の該当テスト）。
   - 空pack・PDF不在・pages不正等のJSON生成詳細（exact bytesの内容そのもの）は`test_web.py`側では検証しない。これらは`test_export_service.py`側の責務とし、`test_web.py`は「HTTP層が正しく受け渡しているか」だけを見る。
-  - 既存`ExportJsonContractTest`の3テストのうち、`test_json_export_empty_pack_returns_200`・`test_json_export_missing_pdf_and_invalid_pages_returns_200`は`test_export_service.py`へ移し、`test_web.py`からは削除する（4.1参照）。`test_json_export_exact_body_bytes_with_fixed_clock`はHTTP契約の代表1件として`test_web.py`に残す。
+  - 既存`ExportJsonContractTest`の3テストのうち、`test_json_export_empty_pack_returns_200`・`test_json_export_missing_pdf_and_invalid_pages_returns_200`は`test_export_service.py`へ移し、`test_web.py`からは削除する（4.1参照）。残る1件（HTTP契約の代表）は、実装時にレビュー指摘を受けて`export_service.prepare_json_export`をスタブの`PreparedJsonExport`へ差し替える形へ改め、`test_json_export_returns_service_content_via_http_response`に改名した。JSON文字列の完全一致比較は行わず、レスポンスbodyがservice戻り値の`content`と一致すること、`_now_jst()`の戻り値がそのまま`exported_at`としてserviceへ渡ることのみを確認する。スタブの`filename`は日本語を含む値にし、`Content-Disposition`のパーセントエンコード（`quote()`によるweb.py固有の責務。決定3）が働くことも同テストで確認する。
 
 ## Risks / Trade-offs
 

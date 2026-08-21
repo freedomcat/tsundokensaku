@@ -1,9 +1,11 @@
 import os
 import tempfile
 import unittest
+from datetime import datetime
 from io import BytesIO
 from pathlib import Path
 from unittest.mock import patch
+from zoneinfo import ZoneInfo
 import json
 import zipfile
 
@@ -12,12 +14,13 @@ from pypdf import PdfWriter
 from tsundokensaku import export_service
 from tsundokensaku import pdf_export
 from tsundokensaku.pdf_export import PdfSourceNotFoundError
-from tsundokensaku.database import PackItemRecord, connect, initialize, upsert_book
+from tsundokensaku.database import PackItemRecord, PackRecord, connect, initialize, upsert_book
 from tsundokensaku.export_stats import ItemStats
 from tsundokensaku.export_service import (
     build_export_preview_payload,
     build_export_preview_payload_for_profile,
     build_export_preview_warnings,
+    prepare_json_export,
 )
 from tsundokensaku.token_estimate import TextStats
 from tsundokensaku.web import api_create_pack, api_export_pack, api_replace_pack_items
@@ -950,3 +953,110 @@ class PreviewChapterLoaderPdfSourceBoundaryTest(unittest.TestCase):
                     export_service.build_pack_export_preview(
                         created["id"], profile_name="chapter", db_path=db_path, books_dir=books_dir
                     )
+
+
+class PrepareJsonExportTest(unittest.TestCase):
+    """R8 PR4: JSON export準備（`prepare_json_export`）の生成契約。
+
+    PR2で`tests/test_web.py`の`ExportJsonContractTest`がTestClient経由で
+    固定していたJSON構造のexact値・空pack・PDF不在・pages不正でも生成
+    される契約を、service関数を直接呼び出す形でここに引き継ぐ
+    （design.md決定5）。HTTP契約（status/header）は`test_web.py`が担う。
+    """
+
+    def _pack(self, *, pack_id: int = 1, name: str = "資料") -> PackRecord:
+        return PackRecord(
+            id=pack_id,
+            name=name,
+            note="",
+            created_at="2026-07-11T00:00:00.000Z",
+            updated_at="2026-07-11T00:00:00.000Z",
+        )
+
+    def _item(
+        self,
+        item_id: int,
+        *,
+        pdf_path: str = "a.pdf",
+        title: str = "本",
+        pages: str = "1-2",
+        collapsed: bool = False,
+        position: int = 0,
+        added_at: str = "2026-07-11T00:00:00.000Z",
+    ) -> PackItemRecord:
+        return PackItemRecord(
+            id=item_id,
+            pdf_path=pdf_path,
+            title=title,
+            pages=pages,
+            collapsed=collapsed,
+            position=position,
+            added_at=added_at,
+            updated_at=added_at,
+        )
+
+    def test_exact_structure_with_fixed_clock(self) -> None:
+        # R8 PR2 characterization test（設計書§19.2-5）由来。UTF-8日本語、
+        # key順、indent 2、LF、末尾改行なしを、service関数直接呼び出しで固定する。
+        exported_at = datetime(2026, 8, 19, 9, 30, tzinfo=ZoneInfo("Asia/Tokyo"))
+        pack = self._pack(name="日本語資料名")
+        items = [self._item(1, pdf_path="a.pdf", title="本A", pages="1-2", added_at="2026-08-19T00:00:00.000Z")]
+
+        prepared = prepare_json_export(pack, items, exported_at=exported_at)
+
+        expected_content = (
+            "{\n"
+            '  "version": 3,\n'
+            '  "name": "日本語資料名",\n'
+            '  "items": [\n'
+            "    {\n"
+            '      "pdf_path": "a.pdf",\n'
+            '      "title": "本A",\n'
+            '      "pages": "1-2",\n'
+            '      "collapsed": false,\n'
+            '      "addedAt": "2026-08-19T00:00:00.000Z",\n'
+            '      "position": 0\n'
+            "    }\n"
+            "  ]\n"
+            "}"
+        )
+        self.assertEqual(prepared.content, expected_content.encode("utf-8"))
+        self.assertFalse(prepared.content.endswith(b"\n"))
+        self.assertEqual(prepared.filename, "日本語資料名_20260819.json")
+
+    def test_empty_pack_returns_items_empty_list(self) -> None:
+        exported_at = datetime(2026, 8, 19, 9, 30, tzinfo=ZoneInfo("Asia/Tokyo"))
+        prepared = prepare_json_export(self._pack(name="空資料"), [], exported_at=exported_at)
+
+        body = json.loads(prepared.content)
+        self.assertEqual(body["items"], [])
+        self.assertEqual(prepared.filename, "空資料_20260819.json")
+
+    def test_missing_pdf_and_invalid_pages_included_without_validation(self) -> None:
+        # JSON exportは検証を行わず、PDF不在・pages不正な項目もそのまま
+        # 出力する現状の性質を維持する（design.md決定4）。
+        exported_at = datetime(2026, 8, 19, 9, 30, tzinfo=ZoneInfo("Asia/Tokyo"))
+        items = [
+            self._item(1, pdf_path="missing.pdf", title="消えた本", pages="1-3"),
+            self._item(2, pdf_path="b.pdf", title="本B", pages=""),
+        ]
+
+        prepared = prepare_json_export(self._pack(), items, exported_at=exported_at)
+
+        body = json.loads(prepared.content)
+        self.assertEqual(len(body["items"]), 2)
+        self.assertEqual(body["items"][0]["pdf_path"], "missing.pdf")
+        self.assertEqual(body["items"][1]["pages"], "")
+
+    def test_filename_sanitizes_pack_name_and_appends_exported_date(self) -> None:
+        exported_at = datetime(2026, 1, 2, 3, 4, tzinfo=ZoneInfo("Asia/Tokyo"))
+        prepared = prepare_json_export(self._pack(name="資料/名前:テスト"), [], exported_at=exported_at)
+
+        self.assertEqual(prepared.filename, "資料_名前_テスト_20260102.json")
+
+    def test_does_not_call_datetime_now(self) -> None:
+        # design.md決定2: exported_atは呼び出し元が渡した値のみを使い、
+        # 関数内部でdatetime.now()相当を呼ばない。
+        first = prepare_json_export(self._pack(), [], exported_at=datetime(2020, 1, 1))
+        second = prepare_json_export(self._pack(), [], exported_at=datetime(2020, 1, 1))
+        self.assertEqual(first, second)
