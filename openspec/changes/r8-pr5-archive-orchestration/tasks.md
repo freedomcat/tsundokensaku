@@ -5,7 +5,7 @@
 
 ## 2. `export_service.py`へのarchive生成関数の追加
 
-- [ ] 2.1 戻り値の型を確定する（design.md Open Questions 1）。JSON export（PR4の`PreparedJsonExport`）との命名関係を含めて決めたうえで実装する。
+- [ ] 2.1 `PreparedArchiveExport`（`content: bytes`, `filename: str`の`dataclass`。design.md決定7）を定義する。
 - [ ] 2.2 空pack検証を`ValueError("資料が空です")`、pages未指定検証（position順で最初の1件のみ）を`ValueError(f"{item.title}: ページを指定してください")`で表現する（design.md決定1）。
 - [ ] 2.3 統計収集の分岐（`profile.chunk_limit()`が`None`でなければ`collect_item_stats`、そうでなければプレースホルダー統計）をそのまま移す。
 - [ ] 2.4 `chapter_loader`・`RenderContext.resolve_pdf`を、`pdf_export_service.resolve_pdf_source`を直接使う形に変える（`_resolve_pdf_file_or_404`を経由しない。design.md決定2）。

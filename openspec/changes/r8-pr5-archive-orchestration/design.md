@@ -9,12 +9,13 @@
 
 「ZIPを作る作業」の内部に埋め込まれていた、「これは404/400としてWebに見せる」という判断を、資料の入り口（`web.py`）だけに集める。ZIPを作る作業そのもの（PDFのページを切り出す・目次を作る・ZIPにまとめる、といった一連の処理）は、「PDFが見つからない」「ページ指定がない」という**事実だけ**を報告する形に変え、Webの応答形式を一切知らない状態にする。これにより、ZIPを作る作業を`export_service.py`（Webと無関係な場所）へ移せるようにする。
 
-## レビューで判断が必要な点（2件）
+## レビューで確認済みの判断点
 
-1. **失敗の事実をどう表現するか**（Decisions 1）: 「資料が空」「ページ指定がない」は`ValueError`、「PDFが見つからない」はPR3で新設済みの`PdfSourceNotFoundError`をそのまま使う設計とした。この選択が妥当か。
-2. **archive生成の戻り値の型**（Open Questions 1）: PR4で作った`PreparedJsonExport`と同じ名前の系列にするか、archive専用の別の型にするかは今回確定していない。
+1. **失敗の事実をどう表現するか**（Decisions 1）: 「資料が空」「ページ指定がない」は`ValueError`、「PDFが見つからない」はPR3で新設済みの`PdfSourceNotFoundError`をそのまま使う。利用者に返るステータス・メッセージを維持できる設計として、レビューで妥当と確認済み。
+2. **archive生成の戻り値の型**（Decisions 7）: `PreparedArchiveExport`（archive専用の型、フィールド構成はPR4の`PreparedJsonExport`と同じ）として確定。外部契約ではなく内部APIの命名に関する事項であり、この場で確定してよいとレビューで確認済み。
+3. **callback非HTTP化の範囲**（Decisions 2）: archive経路のcallbackだけを非HTTP化し、既存wrapper関数の削除・整理は別PRに切り出す方針。レビューで妥当と確認済み、以後は確定した設計判断として扱う。
 
-`web.py`内の既存wrapper関数（`_resolve_pdf_file_or_404`・`render_pdf_export`）を削除しないこと、および`tests/test_web.py`にZIPの中身そのものを確認するテストを残さないことは、レビュー指摘を受けて本designで確定済み（Decisions 2・6参照）。
+本designに残る未決定事項はない（Open Questions参照）。
 
 ---
 
@@ -55,7 +56,6 @@ def _resolve_pdf_file_or_404(pdf_path: str, books_dir: Path) -> Path:
 - PR2で固定した400/404の文言・検証順序・ZIP logical contentを、移動の前後で一致させる。
 
 **Non-Goals（proposal.mdのNon-goalsに加え、design-level境界）:**
-- archive生成の戻り値の具体的な型名・フィールド名は本designで確定しない（Open Questions 1）。
 - `web.py`内の`_resolve_pdf_file_or_404`・`render_pdf_export`（wrapper関数自体）の削除・整理は行わない。archive経路のcallbackだけを、これらのwrapperを経由しない非HTTP関数の直接呼び出しに置き換える。
 
 ## Decisions
@@ -112,6 +112,19 @@ PR3・PR4のテスト配置方針（route/TestClient経由の契約に限定し�
   - event記録順序（`ExportEventRecordingTest`内の該当テスト、変更なし）
   - 既存`ExportArchiveBackwardCompatibilityTest`・`ExportProfileParameterTest`のうち、ZIPのentry名・順・展開bytesそのものを検証しているテストは`tests/test_export_service.py`へ移す。HTTPステータス・ヘッダーのみを見ているテストは`tests/test_web.py`に残す。
 
+### 7. archive生成の戻り値の型を`PreparedArchiveExport`に確定する
+
+レビューで、この型名は外部契約ではなく内部APIの命名に関する事項であり、実装時に確定して問題ないと確認された。PR4の`PreparedJsonExport`とは別の、archive専用の型として次を採用する。
+
+```python
+@dataclass(frozen=True)
+class PreparedArchiveExport:
+    content: bytes
+    filename: str
+```
+
+フィールド構成（`content: bytes`、`filename: str`）はPR4の`PreparedJsonExport`と同じにし、命名だけをJSON専用／archive専用で分ける。JSON/ZIP共通型（設計書§12.3の`PreparedPackExport`候補）への統合はPR5では行わない（PR4のdesign.mdと同じ判断を踏襲する）。
+
 ## Risks / Trade-offs
 
 - [PDF解決・生成の順序や接続ライフサイクルを移動時にうっかり変えてしまう] → 既存テストの期待値をそのまま移動先のテストへ引き継ぎ、移動前後で同一の期待値を使う。
@@ -125,6 +138,4 @@ PR3・PR4のテスト配置方針（route/TestClient経由の契約に限定し�
 
 ## Open Questions
 
-1. archive生成の戻り値の具体的な型（PR4の`PreparedJsonExport`と同系列の名前にするか、`PreparedArchiveExport`等の別名にするか、フィールド構成）は実装時に確定する。
-
-`web.py`内の既存wrapper関数の扱い（削除しない）、`tests/test_web.py`に残すテストの範囲（ZIPの中身は確認しない）は、レビュー指摘を受けて本designで確定済み（Decisions 2・6）。
+なし。archive生成の戻り値の型（決定7）、`web.py`内の既存wrapper関数の扱い（決定2）、`tests/test_web.py`に残すテストの範囲（決定6）は、いずれもレビューで確認・確定した。
