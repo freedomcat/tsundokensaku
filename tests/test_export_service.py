@@ -14,12 +14,14 @@ from pypdf import PdfWriter
 from tsundokensaku import export_service
 from tsundokensaku import pdf_export
 from tsundokensaku.pdf_export import PdfSourceNotFoundError
-from tsundokensaku.database import PackItemRecord, PackRecord, connect, initialize, upsert_book
+from tsundokensaku.database import PackItemRecord, PackRecord, PageRecord, connect, initialize, replace_pages, upsert_book
+from tsundokensaku.export_profiles import PROFILES
 from tsundokensaku.export_stats import ItemStats
 from tsundokensaku.export_service import (
     build_export_preview_payload,
     build_export_preview_payload_for_profile,
     build_export_preview_warnings,
+    prepare_archive_export,
     prepare_json_export,
 )
 from tsundokensaku.token_estimate import TextStats
@@ -1060,3 +1062,382 @@ class PrepareJsonExportTest(unittest.TestCase):
         first = prepare_json_export(self._pack(), [], exported_at=datetime(2020, 1, 1))
         second = prepare_json_export(self._pack(), [], exported_at=datetime(2020, 1, 1))
         self.assertEqual(first, second)
+
+
+class PrepareArchiveExportTest(unittest.TestCase):
+    """R8 PR5: archive（ZIP）export準備（`prepare_archive_export`）の生成契約。
+
+    PR2で`tests/test_web.py`が固定していたZIPのexact logical content
+    （entry名・順・展開bytes、fixed clock注入下のmanifest日時）、空pack・
+    pages未指定時の`ValueError`文言、PDF不在時の`PdfSourceNotFoundError`
+    伝播、統計収集の分岐を、service関数を直接呼び出す形でここに引き継ぐ
+    （design.md決定6）。HTTP契約（status/header）は`test_web.py`が担う。
+    """
+
+    def _pack(self, *, pack_id: int = 1, name: str = "資料") -> PackRecord:
+        return PackRecord(
+            id=pack_id,
+            name=name,
+            note="",
+            created_at="2026-07-11T00:00:00.000Z",
+            updated_at="2026-07-11T00:00:00.000Z",
+        )
+
+    def _item(
+        self,
+        item_id: int,
+        *,
+        pdf_path: str = "a.pdf",
+        title: str = "本",
+        pages: str = "1-2",
+        collapsed: bool = False,
+        position: int = 0,
+        added_at: str = "2026-07-11T00:00:00.000Z",
+    ) -> PackItemRecord:
+        return PackItemRecord(
+            id=item_id,
+            pdf_path=pdf_path,
+            title=title,
+            pages=pages,
+            collapsed=collapsed,
+            position=position,
+            added_at=added_at,
+            updated_at=added_at,
+        )
+
+    def _make_pdf(self, path: Path, page_heights: list[int]) -> None:
+        # 各ページの高さを変えておくと、出力後のページから元のページ番号を
+        # 復元でき、「どのページが選択されたか」を内容レベルで検証できる
+        writer = PdfWriter()
+        for height in page_heights:
+            writer.add_blank_page(width=72, height=height)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("wb") as handle:
+            writer.write(handle)
+
+    def _page_numbers_in_pdf(self, pdf_bytes: bytes) -> list[int]:
+        # _make_pdf の height=100+page_number という規則から元のページ番号を逆算する
+        from pypdf import PdfReader
+
+        reader = PdfReader(BytesIO(pdf_bytes))
+        return [int(page.mediabox.height) - 100 for page in reader.pages]
+
+    def _render_markdown(self, *, books_dir: Path, db_path: Path, exported_at: datetime):
+        from tsundokensaku import pdf_text_service
+
+        return lambda candidate, pages: pdf_text_service.render_markdown_export(
+            candidate, pages, books_dir=books_dir, db_path=db_path, exported_at=exported_at,
+        )
+
+    def test_empty_items_raises_value_error(self) -> None:
+        exported_at = datetime(2026, 8, 19, 9, 30, tzinfo=ZoneInfo("Asia/Tokyo"))
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            books_dir = root / "books"
+            with self.assertRaises(ValueError) as ctx:
+                prepare_archive_export(
+                    self._pack(name="空資料"),
+                    [],
+                    format="pdf",
+                    profile=PROFILES["standard"],
+                    exported_at=exported_at,
+                    db_path=root / "index.db",
+                    books_dir=books_dir,
+                    render_markdown=self._render_markdown(
+                        books_dir=books_dir, db_path=root / "index.db", exported_at=exported_at
+                    ),
+                )
+            self.assertEqual(str(ctx.exception), "資料が空です")
+
+    def test_missing_pages_reports_first_position_only(self) -> None:
+        # positionが最も小さい項目が2件目でも、position順で最初の1件だけを報告する
+        exported_at = datetime(2026, 8, 19, 9, 30, tzinfo=ZoneInfo("Asia/Tokyo"))
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            books_dir = root / "books"
+            self._make_pdf(books_dir / "a.pdf", [100 + n for n in range(1, 4)])
+            items = [
+                self._item(1, pdf_path="a.pdf", title="本A", pages="", position=0),
+                self._item(2, pdf_path="a.pdf", title="本B", pages="", position=1),
+            ]
+            with self.assertRaises(ValueError) as ctx:
+                prepare_archive_export(
+                    self._pack(),
+                    items,
+                    format="pdf",
+                    profile=PROFILES["standard"],
+                    exported_at=exported_at,
+                    db_path=root / "index.db",
+                    books_dir=books_dir,
+                    render_markdown=self._render_markdown(
+                        books_dir=books_dir, db_path=root / "index.db", exported_at=exported_at
+                    ),
+                )
+            self.assertEqual(str(ctx.exception), "本A: ページを指定してください")
+
+    def test_missing_pdf_raises_pdf_source_not_found_error_uncaught(self) -> None:
+        exported_at = datetime(2026, 8, 19, 9, 30, tzinfo=ZoneInfo("Asia/Tokyo"))
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            books_dir = root / "books"
+            books_dir.mkdir(parents=True)
+            items = [self._item(1, pdf_path="does-not-exist.pdf", title="消えた本", pages="1")]
+            with self.assertRaises(PdfSourceNotFoundError):
+                prepare_archive_export(
+                    self._pack(),
+                    items,
+                    format="pdf",
+                    profile=PROFILES["standard"],
+                    exported_at=exported_at,
+                    db_path=root / "index.db",
+                    books_dir=books_dir,
+                    render_markdown=self._render_markdown(
+                        books_dir=books_dir, db_path=root / "index.db", exported_at=exported_at
+                    ),
+                )
+
+    def test_standard_profile_does_not_call_collect_item_stats(self) -> None:
+        exported_at = datetime(2026, 8, 19, 9, 30, tzinfo=ZoneInfo("Asia/Tokyo"))
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            books_dir = root / "books"
+            self._make_pdf(books_dir / "a.pdf", [72, 72])
+            items = [self._item(1, pdf_path="a.pdf", title="本A", pages="1-2")]
+            with patch(
+                "tsundokensaku.export_service.collect_item_stats", side_effect=export_service.collect_item_stats
+            ) as spy:
+                prepared = prepare_archive_export(
+                    self._pack(),
+                    items,
+                    format="pdf",
+                    profile=PROFILES["standard"],
+                    exported_at=exported_at,
+                    db_path=root / "index.db",
+                    books_dir=books_dir,
+                    render_markdown=self._render_markdown(
+                        books_dir=books_dir, db_path=root / "index.db", exported_at=exported_at
+                    ),
+                )
+            spy.assert_not_called()
+            self.assertIsNotNone(prepared.content)
+
+    def test_chat_and_chapter_profiles_call_collect_item_stats(self) -> None:
+        exported_at = datetime(2026, 8, 19, 9, 30, tzinfo=ZoneInfo("Asia/Tokyo"))
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            books_dir = root / "books"
+            self._make_pdf(books_dir / "a.pdf", [72, 72])
+            items = [self._item(1, pdf_path="a.pdf", title="本A", pages="1-2")]
+
+            for profile_name in ("chat", "chapter"):
+                profile = PROFILES[profile_name]
+                with patch(
+                    "tsundokensaku.export_service.collect_item_stats",
+                    side_effect=export_service.collect_item_stats,
+                ) as spy:
+                    prepare_archive_export(
+                        self._pack(),
+                        items,
+                        format=profile.primary_format or "pdf",
+                        profile=profile,
+                        exported_at=exported_at,
+                        db_path=root / "index.db",
+                        books_dir=books_dir,
+                        render_markdown=self._render_markdown(
+                            books_dir=books_dir, db_path=root / "index.db", exported_at=exported_at
+                        ),
+                    )
+                spy.assert_called_once()
+
+    def test_pdf_archive_zip_structure_with_duplicate_pdf_and_multi_range(self) -> None:
+        # B-2後方互換性ゴールデンテスト（tests/test_web.pyのExportArchiveBackwardCompatibilityTestから移設）
+        exported_at = datetime(2026, 8, 19, 9, 30, tzinfo=ZoneInfo("Asia/Tokyo"))
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            books_dir = root / "books"
+            # ページ1〜10。高さ = 100+ページ番号
+            self._make_pdf(books_dir / "a.pdf", [100 + n for n in range(1, 11)])
+            self._make_pdf(books_dir / "b.pdf", [100 + n for n in range(1, 4)])
+            items = [
+                # 同一PDF(a.pdf)を離れた範囲で2項目 + 複数区間のページ範囲
+                self._item(1, pdf_path="a.pdf", title="本Aの前半", pages="1-3", position=0),
+                self._item(2, pdf_path="b.pdf", title="本B", pages="2", position=1),
+                self._item(3, pdf_path="a.pdf", title="本Aの後半", pages="6,8-10", position=2),
+            ]
+
+            prepared = prepare_archive_export(
+                self._pack(name="後方互換確認資料"),
+                items,
+                format="pdf",
+                profile=PROFILES["standard"],
+                exported_at=exported_at,
+                db_path=root / "index.db",
+                books_dir=books_dir,
+                render_markdown=self._render_markdown(
+                    books_dir=books_dir, db_path=root / "index.db", exported_at=exported_at
+                ),
+            )
+
+            self.assertEqual(prepared.filename, "後方互換確認資料_20260819.zip")
+            with zipfile.ZipFile(BytesIO(prepared.content)) as archive:
+                names = archive.namelist()
+                # エントリ名・エントリ順（=position順）
+                self.assertEqual(
+                    names,
+                    [
+                        "manifest.md",
+                        "01_本Aの前半_p1-3.pdf",
+                        "02_本B_p2.pdf",
+                        "03_本Aの後半_p6_8-10.pdf",
+                    ],
+                )
+
+                # 各PDFの実際の内容（選択されたページ番号そのもの）
+                self.assertEqual(self._page_numbers_in_pdf(archive.read(names[1])), [1, 2, 3])
+                self.assertEqual(self._page_numbers_in_pdf(archive.read(names[2])), [2])
+                self.assertEqual(self._page_numbers_in_pdf(archive.read(names[3])), [6, 8, 9, 10])
+
+                # manifest.md の内容
+                manifest = archive.read("manifest.md").decode("utf-8")
+                self.assertIn("# 後方互換確認資料（資料一式）", manifest)
+                self.assertIn("- 収録: 3冊", manifest)
+                self.assertIn("1. 本Aの前半 — p.1-3 （01_本Aの前半_p1-3.pdf）", manifest)
+                self.assertIn("2. 本B — p.2 （02_本B_p2.pdf）", manifest)
+                self.assertIn("3. 本Aの後半 — p.6,8-10 （03_本Aの後半_p6_8-10.pdf）", manifest)
+
+    def test_markdown_archive_matches_indexed_source_text(self) -> None:
+        # B-2後方互換性ゴールデンテスト（tests/test_web.pyのExportArchiveBackwardCompatibilityTestから移設）
+        exported_at = datetime(2026, 8, 19, 9, 30, tzinfo=ZoneInfo("Asia/Tokyo"))
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            books_dir = root / "books"
+            db_path = root / "index.db"
+            pdf_path = books_dir / "a.pdf"
+            self._make_pdf(pdf_path, [100 + n for n in range(1, 4)])
+
+            connection = connect(db_path)
+            initialize(connection)
+            book_id = upsert_book(
+                connection,
+                path=pdf_path,
+                title="本A",
+                size_bytes=pdf_path.stat().st_size,
+                modified_at=pdf_path.stat().st_mtime,
+            )
+            replace_pages(
+                connection,
+                book_id=book_id,
+                title="本A",
+                pages=[
+                    PageRecord(page_number=1, text="第1ページの本文"),
+                    PageRecord(page_number=2, text="第2ページの本文"),
+                    PageRecord(page_number=3, text="第3ページの本文"),
+                ],
+            )
+            connection.commit()
+            connection.close()
+
+            items = [self._item(1, pdf_path="a.pdf", title="本A", pages="1,3")]
+
+            prepared = prepare_archive_export(
+                self._pack(name="MD資料"),
+                items,
+                format="md",
+                profile=PROFILES["standard"],
+                exported_at=exported_at,
+                db_path=db_path,
+                books_dir=books_dir,
+                render_markdown=self._render_markdown(books_dir=books_dir, db_path=db_path, exported_at=exported_at),
+            )
+
+            with zipfile.ZipFile(BytesIO(prepared.content)) as archive:
+                names = archive.namelist()
+                self.assertEqual(names, ["manifest.md", "01_本A_p1_3.md"])
+
+                content = archive.read("01_本A_p1_3.md").decode("utf-8")
+                self.assertIn("# 本A（抜粋）", content)
+                self.assertIn("- 元ファイル: a.pdf", content)
+                self.assertIn("## p.1", content)
+                self.assertIn("第1ページの本文", content)
+                self.assertIn("## p.3", content)
+                self.assertIn("第3ページの本文", content)
+                # 選択範囲外の2ページ目の本文は含まれない
+                self.assertNotIn("第2ページの本文", content)
+
+    def test_standard_archive_uses_exported_at_for_filename_and_manifest(self) -> None:
+        exported_at = datetime(2026, 8, 19, 9, 30, tzinfo=ZoneInfo("Asia/Tokyo"))
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            books_dir = root / "books"
+            self._make_pdf(books_dir / "a.pdf", [72, 72])
+            items = [self._item(1, pdf_path="a.pdf", title="本A", pages="1-2")]
+
+            prepared = prepare_archive_export(
+                self._pack(name="固定時計資料"),
+                items,
+                format="pdf",
+                profile=PROFILES["standard"],
+                exported_at=exported_at,
+                db_path=root / "index.db",
+                books_dir=books_dir,
+                render_markdown=self._render_markdown(
+                    books_dir=books_dir, db_path=root / "index.db", exported_at=exported_at
+                ),
+            )
+
+            self.assertEqual(prepared.filename, "固定時計資料_20260819.zip")
+            with zipfile.ZipFile(BytesIO(prepared.content)) as archive:
+                manifest = archive.read("manifest.md").decode("utf-8")
+                self.assertIn("- 書き出し日時: 2026-08-19 09:30", manifest)
+
+    def test_chat_archive_uses_exported_at_for_filename_and_manifest(self) -> None:
+        exported_at = datetime(2026, 8, 19, 9, 30, tzinfo=ZoneInfo("Asia/Tokyo"))
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            books_dir = root / "books"
+            self._make_pdf(books_dir / "a.pdf", [72, 72])
+            items = [self._item(1, pdf_path="a.pdf", title="本A", pages="1-2")]
+
+            prepared = prepare_archive_export(
+                self._pack(name="対比資料"),
+                items,
+                format="md",
+                profile=PROFILES["chat"],
+                exported_at=exported_at,
+                db_path=root / "index.db",
+                books_dir=books_dir,
+                render_markdown=self._render_markdown(
+                    books_dir=books_dir, db_path=root / "index.db", exported_at=exported_at
+                ),
+            )
+
+            self.assertEqual(prepared.filename, "対比資料_chat_20260819.zip")
+            with zipfile.ZipFile(BytesIO(prepared.content)) as archive:
+                manifest = archive.read("manifest.md").decode("utf-8")
+                self.assertIn("2026-08-19 09:30", manifest)
+
+    def test_chapter_archive_uses_exported_at_for_filename_and_manifest(self) -> None:
+        exported_at = datetime(2026, 8, 19, 9, 30, tzinfo=ZoneInfo("Asia/Tokyo"))
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            books_dir = root / "books"
+            self._make_pdf(books_dir / "a.pdf", [72, 72])
+            items = [self._item(1, pdf_path="a.pdf", title="本A", pages="1-2")]
+
+            prepared = prepare_archive_export(
+                self._pack(name="章分割資料"),
+                items,
+                format="pdf",
+                profile=PROFILES["chapter"],
+                exported_at=exported_at,
+                db_path=root / "index.db",
+                books_dir=books_dir,
+                render_markdown=self._render_markdown(
+                    books_dir=books_dir, db_path=root / "index.db", exported_at=exported_at
+                ),
+            )
+
+            self.assertEqual(prepared.filename, "章分割資料_chapter_20260819.zip")
+            with zipfile.ZipFile(BytesIO(prepared.content)) as archive:
+                manifest = archive.read("manifest.md").decode("utf-8")
+                self.assertIn("2026-08-19 09:30", manifest)

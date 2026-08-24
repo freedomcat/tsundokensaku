@@ -45,8 +45,8 @@ from tsundokensaku.database import (
     update_pack,
 )
 from tsundokensaku.database import initialize
-from tsundokensaku.export_profiles import ExportProfile, RenderContext
-from tsundokensaku.export_stats import ItemStats, collect_item_stats, summarize_item_stats
+from tsundokensaku.export_profiles import ExportProfile
+from tsundokensaku.export_stats import collect_item_stats, summarize_item_stats
 from tsundokensaku.indexer import find_pdfs
 from tsundokensaku.metadata import (
     BookMetadata,
@@ -69,17 +69,8 @@ from tsundokensaku import search_view
 from tsundokensaku.pdf_export import PdfSourceNotFoundError, parse_page_selection
 from tsundokensaku.pdf_outline import get_page_count, list_chapters
 from tsundokensaku.pdf_thumbnail import render_thumbnail_detail, render_thumbnails
-from tsundokensaku.token_estimate import TextStats, estimate_tokens
-from tsundokensaku.zip_export import (
-    PackExportEntry,
-    PlanManifestChunk,
-    PlanManifestFragment,
-    build_entry_filename,
-    build_pack_zip,
-    build_pack_zip_filename,
-    build_pack_zip_with_manifest,
-    render_plan_manifest,
-)
+from tsundokensaku.token_estimate import estimate_tokens
+from tsundokensaku.zip_export import build_entry_filename, build_pack_zip_filename
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -803,120 +794,33 @@ def _export_pack_json(pack, items: list) -> Response:
     )
 
 
-def _placeholder_item_stats_for_export(item) -> ItemStats:
-    """StandardProfile.plan() へ渡す最小限のItemStats。
-
-    standard は chunk_limit=None のため item_weight は使われず、plan() は
-    1項目=1チャンクの構造（position順）を作るだけに使う。実際のページ数・
-    本文検証・レンダリングは render_chunk 内で既存の render_pdf_export /
-    render_markdown_export が行うため、ここでは重複計算しない
-    （collect_item_stats の寛容なエラー処理をそのまま使うと、不正な
-    ページ範囲の詳細なエラーメッセージが失われ後方互換性が壊れるため
-    採用していない）。
-    """
-    return ItemStats(
-        item=item,
-        page_numbers=[],
-        stats=TextStats(cjk_chars=0, other_chars=0),
-        unindexed_pages=0,
-        missing_pdf=False,
-    )
-
-
 def _export_pack_archive(pack, items: list, *, format: str, profile: ExportProfile) -> Response:
-    if not items:
-        raise HTTPException(status_code=400, detail="資料が空です")
-
-    # 全項目の事前検証
-    for item in items:
-        if not item.pages.strip():
-            raise HTTPException(status_code=400, detail=f"{item.title}: ページを指定してください")
-
     books_dir = get_books_dir()
     db_path = get_db_path()
     exported_at = _now_jst()
 
-    # 実統計を必要とするプロファイル（chunk_limit が None 以外）なら collect_item_stats、そうでなければプレースホルダ
-    if profile.chunk_limit() is not None:
-        connection = _pack_connection()
-        try:
-            item_stats = collect_item_stats(connection, items, books_dir=books_dir)
-        finally:
-            connection.close()
-    else:
-        item_stats = [_placeholder_item_stats_for_export(item) for item in items]
-
-    chapter_loader = None
-    if profile.needs_chapter_loader:
-        chapter_loader = lambda pdf_path: list_chapters(_resolve_pdf_file_or_404(str(pdf_path), books_dir))
-
-    plan = profile.plan(item_stats, chapter_loader=chapter_loader)
-    ctx = RenderContext(
-        pack_name=pack.name,
-        exported_at=exported_at,
-        format=format,
-        resolve_pdf=lambda pdf_path: _resolve_pdf_file_or_404(pdf_path, books_dir),
-        render_pdf=render_pdf_export,
-        render_markdown=lambda candidate, pages: render_markdown_export(
-            candidate, pages, books_dir=books_dir, db_path=db_path
-        ),
-        total_chunks=len(plan.chunks),
-    )
-
-    entries: list[PackExportEntry] = []
-    manifest_chunks: list[tuple[str, list[tuple[str, str]]] | PlanManifestChunk] = []
-    for chunk in plan.chunks:
-        filename = profile.chunk_filename(chunk, pack_name=pack.name, format=format)
-        primary_fragment = chunk.fragments[0]
-        entries.append(
-            PackExportEntry(
-                index=chunk.index,
-                title=primary_fragment.item.title,
-                page_label=primary_fragment.page_spec,
-                filename=filename,
-                content=profile.render_chunk(chunk, ctx),
-            )
-        )
-        if profile.manifest_uses_fragment_labels:
-            manifest_chunks.append(
-                PlanManifestChunk(
-                    filename=filename,
-                    fragments=[
-                        PlanManifestFragment(
-                            title=fragment.item.title,
-                            pages=fragment.page_spec,
-                            label=fragment.label,
-                        )
-                        for fragment in chunk.fragments
-                    ],
-                )
-            )
-        else:
-            manifest_chunks.append((filename, [(fragment.item.title, fragment.page_spec) for fragment in chunk.fragments]))
-
-    if not profile.uses_plan_output:
-        # 現行 manifest（PackExportEntry 前提、1項目=1エントリ）をそのまま使い
-        # バイト互換を守る（設計書 10.3）
-        zip_bytes = build_pack_zip(pack_name=pack.name, entries=entries, exported_at=exported_at)
-    else:
-        # 複数項目チャンク（chat の分冊・chapter の結合）でも項目内訳が
-        # 失われないよう、ExportPlan から組み立てた manifest を使う。
-        # plan の警告（item_exceeds_limit 等）もここに記載する（設計書 14）
-        manifest = render_plan_manifest(
-            pack_name=pack.name,
+    try:
+        prepared = export_service.prepare_archive_export(
+            pack,
+            items,
+            format=format,
+            profile=profile,
             exported_at=exported_at,
-            profile_name=profile.name,
-            chunks=manifest_chunks,
-            header_lines=profile.manifest_header_lines(plan),
-            warnings=[warning.message for warning in plan.warnings],
+            db_path=db_path,
+            books_dir=books_dir,
+            render_markdown=lambda candidate, pages: render_markdown_export(
+                candidate, pages, books_dir=books_dir, db_path=db_path
+            ),
         )
-        zip_bytes = build_pack_zip_with_manifest(entries=entries, manifest=manifest)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except PdfSourceNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="PDF not found") from exc
 
-    zip_filename = profile.archive_filename(pack_name=pack.name, exported_at=exported_at)
     return Response(
-        content=zip_bytes,
+        content=prepared.content,
         media_type="application/zip",
-        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(zip_filename)}"},
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(prepared.filename)}"},
     )
 
 
