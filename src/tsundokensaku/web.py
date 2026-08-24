@@ -808,8 +808,8 @@ def _export_pack_archive(pack, items: list, *, format: str, profile: ExportProfi
             exported_at=exported_at,
             db_path=db_path,
             books_dir=books_dir,
-            render_markdown=lambda candidate, pages: render_markdown_export(
-                candidate, pages, books_dir=books_dir, db_path=db_path
+            render_markdown=lambda candidate, pages: pdf_text_service.render_markdown_export(
+                candidate, pages, books_dir=books_dir, db_path=db_path, exported_at=_now_jst()
             ),
         )
     except ValueError as exc:

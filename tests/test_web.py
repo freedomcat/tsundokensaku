@@ -2793,8 +2793,8 @@ class ExportJsonContractTest(unittest.TestCase):
 class ExportArchiveContractTest(unittest.TestCase):
     """R8 PR5: archive exportは`export_service.prepare_archive_export`へ移動済み。
 
-    ここではHTTP契約（`TestClient`を介さない直接呼び出しでの、status・
-    Content-Type・Content-Disposition・レスポンスbodyの受け渡し）のみを、
+    ここではHTTP契約（`TestClient`経由のstatus・Content-Type・
+    Content-Disposition・レスポンスbodyの受け渡し）のみを、
     通常の成功ケース1件で固定する（design.md決定5）。ZIPのexact logical
     contentの生成契約は`tests/test_export_service.py`の
     `PrepareArchiveExportTest`が担う（design.md決定6）。
