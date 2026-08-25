@@ -1,8 +1,8 @@
-# R8: エクスポート業務ロジックの詳細設計 — PR1〜PR4実装済み・PR5以降未着手
+# R8: エクスポート業務ロジックの詳細設計 — 完了（PR1〜PR6実装済み）
 
 [中心ファイル責務棚卸し](../central-file-refactoring-inventory.md) / [ROADMAP](../../ROADMAP.md) / [R7-4詳細設計](r7-4-http-orchestration.md)
 
-状態: PR1（詳細設計）・PR2（現行契約のcharacterization test、2026-08-19）・PR3（previewとrequest policyの分離、2026-08-20、PR #37）・PR4（JSON export準備の分離、2026-08-21、PR #41）が完了した。`export_service.py`の新設、request policy（`resolve_external_profile`/`resolve_export_format`）・preview warning/projection・preview DB orchestrationの移動、`/api/packs/stats`と共有する基礎集計（`export_stats.PackItemStatsSummary`/`summarize_item_stats`）の整理、previewのPDF解決の非HTTP化（既存`pdf_export.PdfSourceNotFoundError`の再利用、`pdf_export.resolve_pdf_source`の新設）、JSON export準備（`items`組み立て・bytes化・filename決定を`export_service.prepare_json_export`が返す`PreparedJsonExport`へ分離、`web.py`はHTTP Response変換のみに縮小）は実装済みである。PR5（archiveオーケストレーションの分離）以降のcharacterization test追加・関数移動・HTTP adapter整理は未着手である。本書の型名・関数名のうち「候補」「要判断」と記したもののうち、PR3・PR4で確定・実装されたものは実コードに存在する。PR5以降に関わる候補・要判断事項は、契約固定PRの結果を見て実装前に確定する方針を維持する。
+状態: PR1（詳細設計）・PR2（現行契約のcharacterization test、2026-08-19）・PR3（previewとrequest policyの分離、2026-08-20、PR #37）・PR4（JSON export準備の分離、2026-08-21、PR #41）・PR5（archiveオーケストレーションの分離、2026-08-24、PR #45）・PR6（成功履歴とHTTP adapterの仕上げ、2026-08-25、PR #48）がすべて完了し、R8は完了した。`export_service.py`の新設、request policy（`resolve_external_profile`/`resolve_export_format`）・preview warning/projection・preview DB orchestrationの移動、`/api/packs/stats`と共有する基礎集計（`export_stats.PackItemStatsSummary`/`summarize_item_stats`）の整理、previewのPDF解決の非HTTP化（既存`pdf_export.PdfSourceNotFoundError`の再利用、`pdf_export.resolve_pdf_source`の新設）、JSON export準備（`items`組み立て・bytes化・filename決定を`export_service.prepare_json_export`が返す`PreparedJsonExport`へ分離、`web.py`はHTTP Response変換のみに縮小）、archiveオーケストレーション（`prepare_archive_export`への分離、`resolve_pdf`/`chapter_loader`/`render_pdf`/`render_markdown`callbackの非HTTP化）、成功履歴のベストエフォート記録（`record_export_event_best_effort`への分離）は実装済みである。本書の型名・関数名のうち「候補」「要判断」と記したものは、各PRで確定・実装されたものが実コードに存在する。
 
 ## 1. 背景
 
@@ -616,7 +616,7 @@ JSONのkey順・indent・末尾改行はJSONの意味論では不要で、現在
 - 完了条件: R8対象の非HTTP進行がserviceに集まり、webはadapter、R8だけを完了に更新できる。
 - リスク: Responseより前に記録する順序変更、例外握りつぶし範囲の縮小、D7との責務重複。
 
-PR5はR7-4の非HTTP rendererだけでなく、`resolve_pdf`相当の非HTTP契約の確定・実装にも依存する。R7-4を待つ間もPR1〜PR4は各先行条件の範囲で進められるが、R8全体を完了扱いにしない。
+PR5はR7-4の非HTTP rendererだけでなく、`resolve_pdf`相当の非HTTP契約の確定・実装にも依存していた。R7-4完了後にPR5・PR6を実施し、R8全体は完了した（2026-08-25）。
 
 ## 23. 移行中の互換性方針
 
@@ -692,4 +692,4 @@ PR5はR7-4の非HTTP rendererだけでなく、`resolve_pdf`相当の非HTTP契�
 - read/生成/eventの接続・transaction・失敗順が§16どおりである。
 - characterization test、service test、HTTP test、Python全件、Playwright全件が成功する。
 - 循環importがなく、R5/R7/D7の進捗を誤って変更しない。
-- 実装完了時だけROADMAPと棚卸しのR8を完了へ更新する。本設計PR時点では未完了のままとする。
+- 実装完了時にROADMAPのR8を完了へ更新する。PR1〜PR6が完了し、ROADMAPのR8親項目とPR1〜PR6を完了へ更新した（2026-08-25）。
