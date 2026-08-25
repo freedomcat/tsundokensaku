@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -197,6 +198,39 @@ def _open_pack_connection(db_path: Path):
     connection = database.connect(db_path)
     database.ensure_pack_schema(connection)
     return connection
+
+
+def record_export_event_best_effort(
+    *,
+    db_path: Path,
+    pack_id: int | None,
+    pack_name: str,
+    profile: str,
+    format: str,
+    items: list[PackItemRecord],
+) -> None:
+    """書き出し成功後の履歴記録をベストエフォートで試みる。FastAPI非依存。
+
+    `_open_pack_connection(db_path)`（schema保証込み）で別接続を開いて
+    `database.record_export_event`を呼び、接続をcloseする。
+    接続生成・schema保証・記録・close、いずれの段階で例外が起きても外へ
+    伝播させず、ログ出力のみ行う（呼び出し元のレスポンスを壊さない）。
+    """
+    try:
+        connection = _open_pack_connection(db_path)
+        try:
+            database.record_export_event(
+                connection,
+                pack_id=pack_id,
+                pack_name=pack_name,
+                profile=profile,
+                format=format,
+                items=items,
+            )
+        finally:
+            connection.close()
+    except Exception:
+        logging.exception("export_events の記録に失敗しました（エクスポート本体は正常）")
 
 
 def build_pack_export_preview(
