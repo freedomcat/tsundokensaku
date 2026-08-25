@@ -76,7 +76,14 @@ def record_export_event_best_effort(
 
 記録処理が`export_service.py`側へ移ると、これらのpatch対象（`tsundokensaku.web.record_export_event`・`tsundokensaku.web.connect`）はもう記録処理の実行経路に乗らなくなる（PR5で`tsundokensaku.web.collect_item_stats`のpatchが効かなくなったのと同型の問題）。
 
-**現時点の判断:** `export_service.py`は`from tsundokensaku import database`という形でモジュールごとimportしており（`database.record_export_event(...)`という属性参照で呼ぶ）、`from tsundokensaku.database import record_export_event`のような個別関数importはしていない。そのため`patch("tsundokensaku.database.record_export_event", ...)`・`patch("tsundokensaku.database.connect", ...)`とすれば、web.py・export_service.pyのどちらの呼び出し経路であってもpatchが効く。この方式で接続順序spyテストを`tests/test_export_service.py`（`record_export_event_best_effort`を直接呼ぶ形）へ移設する。
+**現時点の判断（レビュー指摘により訂正）:** 当初`patch("tsundokensaku.database.record_export_event", ...)`・`patch("tsundokensaku.database.connect", ...)`に統一する案を検討したが、`web.py`は`from tsundokensaku.database import connect`のように`connect`・`record_export_event`を個別関数importしている（`tsundokensaku.web`名前空間へ束縛済み）。`patch("tsundokensaku.database.connect", ...)`は`tsundokensaku.database`モジュール側の属性を差し替えるだけで、既にimport済みの`tsundokensaku.web.connect`という別の名前束縛には影響しない。そのため、この案ではpack読取側の接続（web.py経由）を観測できず、成り立たない。
+
+代わりに、serviceの責務とroute全体の時系列契約を混ぜず、以下のようにテストを分ける。
+
+- `tests/test_export_service.py`: `database.connect`・`database.record_export_event`をpatchし（`export_service.py`は`from tsundokensaku import database`でモジュールごとimportしているため、この形でpatchが効く）、`record_export_event_best_effort`を直接呼び出して、event helper単体の「接続→記録→close」「記録失敗を外へ伝播させない」を確認する。
+- `tests/test_web.py`: `patch("tsundokensaku.web.connect", ...)`でpack読取側の接続を観測しつつ、`export_service.record_export_event_best_effort`をモックして、read接続のclose後・Response構築成功後にhelperが指示されることを確認する。
+
+この方式で、接続順序spyテスト（`test_read_connection_closes_before_event_connection_opens`相当）は`tests/test_web.py`側（`web.connect`観測＋`record_export_event_best_effort`モック）と`tests/test_export_service.py`側（helper単体の接続→記録→close）に分割移設する。
 
 `tests/test_web.py`には、「Response構築成功後にhelperが呼ばれること」「Response構築前（＝出力生成が失敗した経路）ではhelperが呼ばれないこと」を、PR4の`test_json_export_returns_service_content_via_http_response`と同様に`export_service.record_export_event_best_effort`をモックして確認するHTTP契約テストを残す。
 
@@ -126,14 +133,14 @@ def record_export_event_best_effort(
 
 PR3〜PR5のテスト配置方針（route/TestClient経由の契約に限定して`test_web.py`に残す）を踏襲する。
 
-- `tests/test_export_service.py`が担当する（詳細な記録契約）:
+- `tests/test_export_service.py`が担当する（詳細な記録契約。`database.connect`・`database.record_export_event`をpatch）:
   - `record_export_event_best_effort`を直接呼び出し、`database.record_export_event`が正しい引数で呼ばれること
   - `database.record_export_event`が例外を送出しても、`record_export_event_best_effort`が例外を外へ伝播させないこと
   - 接続の生成・close順序（`database.connect`→`database.record_export_event`→close）
 - `tests/test_web.py`が担当する（HTTP契約。前掲(3)を踏まえた移設後の構成）:
   - `TestClient`経由の200 status・レスポンスbody（`ExportJsonContractTest`・`ExportArchiveContractTest`と同様、`export_service`側をスタブに差し替えてHTTP層の受け渡しだけを見る）
   - Response構築成功後に`export_service.record_export_event_best_effort`が呼ばれること、失敗経路（空pack・pages未指定・PDF不在等）では呼ばれないこと
-  - pack読取接続とevent記録の呼び出し順序（前掲(3)の方針で`tsundokensaku.database.record_export_event`／`tsundokensaku.database.connect`をpatchする形に更新）
+  - pack読取接続とevent記録指示の呼び出し順序（前掲(3)の方針で`patch("tsundokensaku.web.connect", ...)`によりpack読取側を観測しつつ、`export_service.record_export_event_best_effort`をモックしてread接続close後に呼ばれることを確認する形に更新）
   - `profile`未指定時に`"standard"`として記録されること、chapterプロファイルで元item snapshotが記録されること等、既存の`items_json`内容確認テストはHTTP経由の統合テストとして残す（`record_export_event`本体の契約はPR6のスコープ外であり、`database.py`側の変更を伴わないため、統合テストとして残すことに問題はない）
 
 ## Risks / Trade-offs
@@ -141,7 +148,7 @@ PR3〜PR5のテスト配置方針（route/TestClient経由の契約に限定し�
 - [成功履歴記録をResponse構築より前に呼んでしまう] → 既存テスト（`test_read_connection_closes_before_event_connection_opens`相当）の期待値をそのまま移動先へ引き継ぎ、呼び出し順序を固定する。
 - [記録失敗時にexport本体を失敗させてしまう] → `record_export_event_best_effort`内の`try/except Exception`が確実に全ての例外を捕捉することをテストで確認する。
 - [pack/items読取・振り分けの移動要否判断を誤ると、後続のR8完了判定に影響する] → 前掲(1)の判断根拠を明記し、レビューで確定させる。
-- [既存テストのpatch対象文字列変更に伴い、意図せずテストの検証範囲が緩くなる] → 前掲(3)のとおり、`tsundokensaku.database`側のシンボルをpatchする方式に統一し、web.py・export_service.pyどちらの呼び出し経路でも検証が効くことを確認する。
+- [既存テストのpatch対象文字列変更に伴い、意図せずテストの検証範囲が緩くなる] → `web.py`は`connect`・`record_export_event`を個別関数importしているため、`tsundokensaku.database`側のシンボルをpatchしてもpack読取側（web.py経由）の呼び出しは観測できない。前掲(3)のとおり、`tests/test_web.py`は`patch("tsundokensaku.web.connect", ...)`でpack読取側を観測しつつ`export_service.record_export_event_best_effort`をモックする方式、`tests/test_export_service.py`は`database.connect`・`database.record_export_event`をpatchする方式、とserviceの責務・route全体の時系列契約を分けて検証し、検証範囲が緩まないことを確認する。
 
 ## Migration Plan
 

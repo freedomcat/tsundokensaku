@@ -1,6 +1,6 @@
 ## 0. 前提: レビューで確定させる事項
 
-- [ ] 0.1 design.md「実装前に確定が必要な事項」(1)〜(3)をレビューし、暫定判断（pack/items読取・振り分けはweb.pyに残す／helper関数名は`record_export_event_best_effort`／テストpatch対象は`tsundokensaku.database`側）を確定する。レビューで異なる結論になった場合はdesign.mdを更新してから1.以降に進む。
+- [ ] 0.1 design.md「実装前に確定が必要な事項」(1)〜(3)をレビューし、暫定判断（pack/items読取・振り分けはweb.pyに残す／helper関数名は`record_export_event_best_effort`／テストpatch対象は`tests/test_export_service.py`側で`tsundokensaku.database`のシンボル、`tests/test_web.py`側で`tsundokensaku.web.connect`＋`export_service.record_export_event_best_effort`モックに分ける）を確定する。レビューで異なる結論になった場合はdesign.mdを更新してから1.以降に進む。
 
 ## 1. 準備
 
@@ -24,7 +24,7 @@
 ## 4. テスト配置の変更
 
 - [ ] 4.1 1.2の対応表に基づき、`record_export_event_best_effort`の直接呼び出しテスト（正常記録、記録失敗の例外非伝播、接続生成・close順序）を`tests/test_export_service.py`へ追加する。
-- [ ] 4.2 `tests/test_web.py`の`test_read_connection_closes_before_event_connection_opens`・`test_record_failure_does_not_break_export`を、0.1で確定したpatch対象（`tsundokensaku.database.record_export_event`・`tsundokensaku.database.connect`、またはservice関数自体のモック）に合わせて書き換えるか、service側テストへ移設する。
+- [ ] 4.2 `tests/test_web.py`の`test_read_connection_closes_before_event_connection_opens`・`test_record_failure_does_not_break_export`を、0.1で確定した方針（`tests/test_web.py`側は`patch("tsundokensaku.web.connect", ...)`でpack読取側を観測しつつ`export_service.record_export_event_best_effort`をモック、記録処理そのものの契約は`tests/test_export_service.py`側で`tsundokensaku.database.connect`・`tsundokensaku.database.record_export_event`をpatch）に合わせて書き換えるか、service側テストへ移設する。
 - [ ] 4.3 `tests/test_web.py`に、PR4の`test_json_export_returns_service_content_via_http_response`と同様の「Response構築成功後に`export_service.record_export_event_best_effort`が呼ばれること」を確認するHTTP契約テストを追加する。
 - [ ] 4.4 `ExportEventRecordingTest`のうち、`items_json`内容・schema・再実行時の去重なし・profile未指定時の記録名等、`record_export_event`本体の契約を確認しているテストは、変更せずそのまま`tests/test_web.py`（または該当する統合テスト）に残すことを確認する。
 
