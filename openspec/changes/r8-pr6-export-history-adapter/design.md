@@ -42,13 +42,30 @@ def record_export_event_best_effort(
 ) -> None:
     """書き出し成功後の履歴記録をベストエフォートで試みる。FastAPI非依存。
 
-    別接続を開いて`database.record_export_event`を呼び、成功・失敗に関わらず
-    接続をcloseする。記録に失敗しても例外を外へ伝播させず、ログ出力のみ行う
+    `_open_pack_connection(db_path)`（schema保証込み）で別接続を開いて
+    `database.record_export_event`を呼び、成功・失敗に関わらず接続をcloseする。
+    記録に失敗しても例外を外へ伝播させず、ログ出力のみ行う
     （呼び出し元のレスポンスを壊さない）。
     """
+    connection = _open_pack_connection(db_path)
+    try:
+        database.record_export_event(
+            connection,
+            pack_id=pack_id,
+            pack_name=pack_name,
+            profile=profile,
+            format=format,
+            items=items,
+        )
+    except Exception:
+        logging.exception("export_events の記録に失敗しました（エクスポート本体は正常）")
+    finally:
+        connection.close()
 ```
 
 `db_path`を引数として受け取り、`web.py`側は`get_db_path()`の結果をそのまま渡す（PR3〜PR5で確立した「時刻・パス解決はweb.py側で行い、値として渡す」パターンを踏襲する）。
+
+接続生成には`database.connect(db_path)`を直接使わず、既存の`export_service._open_pack_connection(db_path)`（`connect()`後に`ensure_pack_schema(connection)`を実行する）を再利用する。現行の`web._pack_connection()`はpack読取・event記録どちらの接続でもこのschema保証を行っており、`database.connect(db_path)`へ単純に置き換えるとevent用接続のschema保証が欠落する。schema保証自体が失敗した場合も、helper内の`try/except Exception`が捕捉するため、既存のベストエフォート契約（event記録の失敗がexport成功を壊さない）は変わらない。
 
 ### (3) 既存テストの移動方法・patch対象
 
@@ -103,7 +120,7 @@ def record_export_event_best_effort(
 
 ### 4. DB接続ライフサイクルを維持する
 
-詳細設計書§16.1・§19.2-8が固定する「pack読取接続は出力生成前にclose、eventは出力生成/Response構築成功後の別接続」という順序を、helper関数内に処理を移してもそのまま保つ。
+詳細設計書§16.1・§19.2-8が固定する「pack読取接続は出力生成前にclose、eventは出力生成/Response構築成功後の別接続」という順序を、helper関数内に処理を移してもそのまま保つ。event用接続の生成には`database.connect(db_path)`を直接使わず、既存の`export_service._open_pack_connection(db_path)`（schema保証込み）を再利用し、現行`web._pack_connection()`が行っているschema保証を欠落させない。
 
 ### 5. テスト配置
 
