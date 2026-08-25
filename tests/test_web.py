@@ -4477,9 +4477,21 @@ class ExportEventRecordingTest(unittest.TestCase):
         """design.md決定3・5: Response構築成功後に、export_service.record_export_event_best_effort
 
         が正しい引数（db_path・pack_id・pack_name・profile・format・items）で1回だけ呼ばれる。
-        `record_export_event_best_effort`自体の接続生成・記録・close・例外非伝播の契約は
-        `tests/test_export_service.py`の`RecordExportEventBestEffortTest`が担う。
+        `_export_pack_archive`をResponseを返すスタブへ差し替えてResponse構築をspyし、
+        `["response_constructed", "record_export_event_best_effort"]`の順になることも固定する。
+        これにより、将来helper呼び出しがResponse構築より前に移動する変更を検出できる
+        （design.md決定3）。`record_export_event_best_effort`自体の接続生成・記録・close・
+        例外非伝播の契約は`tests/test_export_service.py`の`RecordExportEventBestEffortTest`が担う。
         """
+        events: list[str] = []
+
+        def spy_export_pack_archive(*args, **kwargs):
+            events.append("response_constructed")
+            return web.Response(content=b"stub", media_type="application/zip")
+
+        def spy_record_export_event_best_effort(**kwargs):
+            events.append("record_export_event_best_effort")
+
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             db_path = root / "index.db"
@@ -4494,12 +4506,17 @@ class ExportEventRecordingTest(unittest.TestCase):
                 items = [{"pdf_path": "a.pdf", "title": "本A", "pages": "1-2", "collapsed": False, "position": 0}]
                 self._payload(api_replace_pack_items(created["id"], {"items": items}))
 
-                with patch(
-                    "tsundokensaku.web.export_service.record_export_event_best_effort"
-                ) as mock_record:
+                with (
+                    patch("tsundokensaku.web._export_pack_archive", side_effect=spy_export_pack_archive),
+                    patch(
+                        "tsundokensaku.web.export_service.record_export_event_best_effort",
+                        side_effect=spy_record_export_event_best_effort,
+                    ) as mock_record,
+                ):
                     response = api_export_pack(created["id"], profile="chapter", format="pdf")
                     self.assertEqual(response.status_code, 200)
 
+        self.assertEqual(events, ["response_constructed", "record_export_event_best_effort"])
         mock_record.assert_called_once()
         kwargs = mock_record.call_args.kwargs
         self.assertEqual(kwargs["db_path"], db_path)
