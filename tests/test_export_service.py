@@ -4,7 +4,7 @@ import unittest
 from datetime import datetime
 from io import BytesIO
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 from zoneinfo import ZoneInfo
 import json
 import zipfile
@@ -1441,3 +1441,130 @@ class PrepareArchiveExportTest(unittest.TestCase):
             with zipfile.ZipFile(BytesIO(prepared.content)) as archive:
                 manifest = archive.read("manifest.md").decode("utf-8")
                 self.assertIn("2026-08-19 09:30", manifest)
+
+
+class RecordExportEventBestEffortTest(unittest.TestCase):
+    """R8 PR6: 成功履歴のベストエフォート記録helper（design.md決定1・2・4）。
+
+    web.pyから移した「別接続を開いてrecord_export_eventを呼び、失敗しても
+    exportのレスポンスを壊さない」という進行制御を、FastAPI非依存のhelper
+    として直接検証する。HTTP経由の統合契約（Response構築成功後にのみ
+    呼ばれること、pack読取接続との順序）はtest_web.pyが担う。
+    """
+
+    def _items(self) -> list[PackItemRecord]:
+        return [
+            PackItemRecord(
+                id=1,
+                pdf_path="a.pdf",
+                title="本A",
+                pages="1-2",
+                collapsed=False,
+                position=0,
+                added_at="2026-07-11T00:00:00.000Z",
+                updated_at="2026-07-11T00:00:00.000Z",
+            )
+        ]
+
+    def test_records_via_database_record_export_event_with_correct_arguments(self) -> None:
+        connection = MagicMock()
+        items = self._items()
+
+        with (
+            patch("tsundokensaku.database.connect", return_value=connection) as mock_connect,
+            patch("tsundokensaku.database.record_export_event") as mock_record,
+        ):
+            export_service.record_export_event_best_effort(
+                db_path=Path("dummy.db"),
+                pack_id=42,
+                pack_name="資料名",
+                profile="chapter",
+                format="pdf",
+                items=items,
+            )
+
+        mock_connect.assert_called_once_with(Path("dummy.db"))
+        mock_record.assert_called_once_with(
+            connection,
+            pack_id=42,
+            pack_name="資料名",
+            profile="chapter",
+            format="pdf",
+            items=items,
+        )
+        connection.close.assert_called_once()
+
+    def test_connect_record_close_happen_in_order(self) -> None:
+        events: list[str] = []
+        connection = MagicMock()
+        connection.close.side_effect = lambda: events.append("close")
+
+        def fake_connect(db_path):
+            events.append("connect")
+            return connection
+
+        def fake_record(conn, **kwargs):
+            events.append("record_export_event")
+
+        with (
+            patch("tsundokensaku.database.connect", side_effect=fake_connect),
+            patch("tsundokensaku.database.record_export_event", side_effect=fake_record),
+        ):
+            export_service.record_export_event_best_effort(
+                db_path=Path("dummy.db"),
+                pack_id=1,
+                pack_name="資料",
+                profile="standard",
+                format="pdf",
+                items=self._items(),
+            )
+
+        self.assertEqual(events, ["connect", "record_export_event", "close"])
+
+    def test_record_failure_does_not_propagate_and_still_closes(self) -> None:
+        connection = MagicMock()
+
+        with (
+            patch("tsundokensaku.database.connect", return_value=connection),
+            patch("tsundokensaku.database.record_export_event", side_effect=RuntimeError("DB失敗")),
+        ):
+            export_service.record_export_event_best_effort(
+                db_path=Path("dummy.db"),
+                pack_id=1,
+                pack_name="資料",
+                profile="standard",
+                format="pdf",
+                items=self._items(),
+            )
+
+        connection.close.assert_called_once()
+
+    def test_close_failure_does_not_propagate(self) -> None:
+        connection = MagicMock()
+        connection.close.side_effect = RuntimeError("close失敗")
+
+        with (
+            patch("tsundokensaku.database.connect", return_value=connection),
+            patch("tsundokensaku.database.record_export_event") as mock_record,
+        ):
+            export_service.record_export_event_best_effort(
+                db_path=Path("dummy.db"),
+                pack_id=1,
+                pack_name="資料",
+                profile="standard",
+                format="pdf",
+                items=self._items(),
+            )
+
+        mock_record.assert_called_once()
+
+    def test_connect_failure_does_not_propagate(self) -> None:
+        with patch("tsundokensaku.database.connect", side_effect=RuntimeError("接続失敗")):
+            export_service.record_export_event_best_effort(
+                db_path=Path("dummy.db"),
+                pack_id=1,
+                pack_name="資料",
+                profile="standard",
+                format="pdf",
+                items=self._items(),
+            )

@@ -4338,27 +4338,6 @@ class ExportEventRecordingTest(unittest.TestCase):
 
             self.assertEqual(after, before)
 
-    def test_record_failure_does_not_break_export(self) -> None:
-        """record_export_event の失敗はエクスポートのレスポンスに影響しない（ベストエフォート）。"""
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            db_path = root / "index.db"
-            books_dir = root / "books"
-            self._make_pdf(books_dir / "a.pdf")
-
-            with (
-                patch("tsundokensaku.web.get_db_path", return_value=db_path),
-                patch("tsundokensaku.web.get_books_dir", return_value=books_dir),
-                patch("tsundokensaku.web.record_export_event", side_effect=RuntimeError("DB失敗")),
-            ):
-                created = self._payload(api_create_pack({"name": "エラー耐性テスト"}))
-                items = [{"pdf_path": "a.pdf", "title": "本A", "pages": "1-2", "collapsed": False, "position": 0}]
-                self._payload(api_replace_pack_items(created["id"], {"items": items}))
-
-                # record_export_event が例外を出しても 200 が返ること
-                response = api_export_pack(created["id"], format="pdf")
-            self.assertEqual(response.status_code, 200)
-
     def test_profile_unspecified_records_as_standard(self) -> None:
         """profile 未指定でも export_events には 'standard' が記録される（設計書 §5）。"""
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -4438,13 +4417,14 @@ class ExportEventRecordingTest(unittest.TestCase):
             self.assertEqual(self._count_events(db_path), 2)
 
     def test_read_connection_closes_before_event_connection_opens(self) -> None:
-        # R8 PR2 characterization test（設計書§19.2-8 / design.md決定3）:
-        # pack読み取り接続はレスポンス生成前にcloseされ、eventは生成成功後の
-        # 別接続で記録される。connect/close/record_export_eventの呼び出し順を
-        # spyで直接固定する。
+        # R8 PR6 characterization test（design.md決定3・5）:
+        # pack読み取り接続はレスポンス生成前にcloseされ、成功履歴の記録指示
+        # （export_service.record_export_event_best_effort呼び出し）はその後
+        # に行われる。record_export_event_best_effort内部の接続生成・記録・
+        # closeの順序はtest_export_service.py側で検証するため、ここではpack
+        # 読取接続のclose/opens/helper呼び出しの順序だけをspyで固定する。
         events: list[str] = []
         original_connect = web.connect
-        original_record = web.record_export_event
 
         class _ConnectionCloseSpy:
             # sqlite3.Connection の close はインスタンス属性として
@@ -4463,9 +4443,8 @@ class ExportEventRecordingTest(unittest.TestCase):
             events.append("connect")
             return _ConnectionCloseSpy(original_connect(db_path))
 
-        def spy_record(*args, **kwargs):
-            events.append("record_export_event")
-            return original_record(*args, **kwargs)
+        def spy_record_export_event_best_effort(**kwargs):
+            events.append("record_export_event_best_effort")
 
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -4483,14 +4462,70 @@ class ExportEventRecordingTest(unittest.TestCase):
 
                 with (
                     patch("tsundokensaku.web.connect", side_effect=spy_connect),
-                    patch("tsundokensaku.web.record_export_event", side_effect=spy_record),
+                    patch(
+                        "tsundokensaku.web.export_service.record_export_event_best_effort",
+                        side_effect=spy_record_export_event_best_effort,
+                    ),
                 ):
                     response = api_export_pack(created["id"], format="pdf")
                     self.assertEqual(response.status_code, 200)
 
-        # pack読み取り接続の connect/close が、event記録用の2つ目の
-        # connect/record_export_event/close より必ず先行する
-        self.assertEqual(events, ["connect", "close", "connect", "record_export_event", "close"])
+        # pack読み取り接続のconnect/closeが、event記録指示より必ず先行する
+        self.assertEqual(events, ["connect", "close", "record_export_event_best_effort"])
+
+    def test_record_export_event_best_effort_called_after_response_with_correct_arguments(self) -> None:
+        """design.md決定3・5: Response構築成功後に、export_service.record_export_event_best_effort
+
+        が正しい引数（db_path・pack_id・pack_name・profile・format・items）で1回だけ呼ばれる。
+        `_export_pack_archive`をResponseを返すスタブへ差し替えてResponse構築をspyし、
+        `["response_constructed", "record_export_event_best_effort"]`の順になることも固定する。
+        これにより、将来helper呼び出しがResponse構築より前に移動する変更を検出できる
+        （design.md決定3）。`record_export_event_best_effort`自体の接続生成・記録・close・
+        例外非伝播の契約は`tests/test_export_service.py`の`RecordExportEventBestEffortTest`が担う。
+        """
+        events: list[str] = []
+
+        def spy_export_pack_archive(*args, **kwargs):
+            events.append("response_constructed")
+            return web.Response(content=b"stub", media_type="application/zip")
+
+        def spy_record_export_event_best_effort(**kwargs):
+            events.append("record_export_event_best_effort")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            db_path = root / "index.db"
+            books_dir = root / "books"
+            self._make_pdf(books_dir / "a.pdf")
+
+            with (
+                patch("tsundokensaku.web.get_db_path", return_value=db_path),
+                patch("tsundokensaku.web.get_books_dir", return_value=books_dir),
+            ):
+                created = self._payload(api_create_pack({"name": "helper呼び出しテスト"}))
+                items = [{"pdf_path": "a.pdf", "title": "本A", "pages": "1-2", "collapsed": False, "position": 0}]
+                self._payload(api_replace_pack_items(created["id"], {"items": items}))
+
+                with (
+                    patch("tsundokensaku.web._export_pack_archive", side_effect=spy_export_pack_archive),
+                    patch(
+                        "tsundokensaku.web.export_service.record_export_event_best_effort",
+                        side_effect=spy_record_export_event_best_effort,
+                    ) as mock_record,
+                ):
+                    response = api_export_pack(created["id"], profile="chapter", format="pdf")
+                    self.assertEqual(response.status_code, 200)
+
+        self.assertEqual(events, ["response_constructed", "record_export_event_best_effort"])
+        mock_record.assert_called_once()
+        kwargs = mock_record.call_args.kwargs
+        self.assertEqual(kwargs["db_path"], db_path)
+        self.assertEqual(kwargs["pack_id"], created["id"])
+        self.assertEqual(kwargs["pack_name"], "helper呼び出しテスト")
+        self.assertEqual(kwargs["profile"], "chapter")
+        self.assertEqual(kwargs["format"], "pdf")
+        self.assertEqual(len(kwargs["items"]), 1)
+        self.assertEqual(kwargs["items"][0].pdf_path, "a.pdf")
 
     def test_preview_never_records_event(self) -> None:
         # R8 PR2 characterization test（設計書§19.2-9後半）:
