@@ -43,33 +43,32 @@ def record_export_event_best_effort(
     """書き出し成功後の履歴記録をベストエフォートで試みる。FastAPI非依存。
 
     `_open_pack_connection(db_path)`（schema保証込み）で別接続を開いて
-    `database.record_export_event`を呼び、成功・失敗に関わらず接続をcloseする。
-    接続生成・schema保証・記録のいずれの段階で例外が起きても外へ伝播させず、
-    ログ出力のみ行う（呼び出し元のレスポンスを壊さない）。
+    `database.record_export_event`を呼び、接続をcloseする。
+    接続生成・schema保証・記録・close、いずれの段階で例外が起きても外へ
+    伝播させず、ログ出力のみ行う（呼び出し元のレスポンスを壊さない）。
     """
-    connection = None
     try:
         connection = _open_pack_connection(db_path)
-        database.record_export_event(
-            connection,
-            pack_id=pack_id,
-            pack_name=pack_name,
-            profile=profile,
-            format=format,
-            items=items,
-        )
+        try:
+            database.record_export_event(
+                connection,
+                pack_id=pack_id,
+                pack_name=pack_name,
+                profile=profile,
+                format=format,
+                items=items,
+            )
+        finally:
+            connection.close()
     except Exception:
         logging.exception("export_events の記録に失敗しました（エクスポート本体は正常）")
-    finally:
-        if connection is not None:
-            connection.close()
 ```
 
 `db_path`を引数として受け取り、`web.py`側は`get_db_path()`の結果をそのまま渡す（PR3〜PR5で確立した「時刻・パス解決はweb.py側で行い、値として渡す」パターンを踏襲する）。
 
 接続生成には`database.connect(db_path)`を直接使わず、既存の`export_service._open_pack_connection(db_path)`（`connect()`後に`ensure_pack_schema(connection)`を実行する）を再利用する。現行の`web._pack_connection()`はpack読取・event記録どちらの接続でもこのschema保証を行っており、`database.connect(db_path)`へ単純に置き換えるとevent用接続のschema保証が欠落する。
 
-`_open_pack_connection(db_path)`の呼び出し自体を`try`ブロックの内側に置き、接続生成・schema保証・記録呼び出しのいずれの段階の例外も同じ`except Exception`で捕捉する。`connection`は`try`の前に`None`で初期化し、`finally`では接続が実際に開けた場合（`connection is not None`）のみcloseする。こうすることで、接続生成やschema保証の段階で例外が起きてもexport成功を壊さない、という既存のベストエフォート契約を維持する。
+外側の`try/except Exception`が関数全体（接続生成・schema保証・記録・close）を囲み、内側の`try/finally`は「recordを呼んだらconnectionを必ずcloseする」という後始末だけを担う。この構造なら、`connection.close()`自体が例外を送出した場合（内側`finally`内の例外）も、内側`try`ブロックの例外として外側の`except Exception`まで伝播して捕捉される。`finally`節の中に`except`を置く形（旧案）では、close失敗がベストエフォートの範囲から漏れ、exportのレスポンスを壊しうるため採用しない。
 
 ### (3) 既存テストの移動方法・patch対象
 
