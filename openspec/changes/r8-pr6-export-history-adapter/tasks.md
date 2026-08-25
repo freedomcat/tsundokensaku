@@ -10,8 +10,8 @@
 ## 2. `export_service.py`への成功履歴記録helperの追加
 
 - [ ] 2.1 `record_export_event_best_effort`（design.md決定2のシグネチャ、または0.1で確定した名称・シグネチャ）を定義する。
-- [ ] 2.2 関数内で`_open_pack_connection(db_path)`（schema保証込み。`database.connect(db_path)`を直接使わない）により別接続を開き、`database.record_export_event`を呼び、`finally`で接続をcloseする。
-- [ ] 2.3 `try/except Exception`で記録失敗を捕捉し、`logging.exception(...)`でログ出力のみ行い、例外を外へ伝播させない（design.md決定1）。`export_service.py`に`logging`のimportを追加する。
+- [ ] 2.2 `connection = None`で初期化した上で、`try`ブロック内で`_open_pack_connection(db_path)`（schema保証込み。`database.connect(db_path)`を直接使わない）により別接続を開き、`database.record_export_event`を呼ぶ。`finally`では`connection is not None`の場合のみ接続をcloseする。
+- [ ] 2.3 `try/except Exception`は接続生成（`_open_pack_connection`呼び出し）から`database.record_export_event`呼び出しまでを囲み、いずれの段階の例外も捕捉して`logging.exception(...)`でログ出力のみ行い、例外を外へ伝播させない（design.md決定1）。`export_service.py`に`logging`のimportを追加する。
 - [ ] 2.4 関数のdocstringに、ベストエフォートである旨・呼び出し元がResponse構築後に呼ぶ前提であることを明記する。
 
 ## 3. `web.py`の更新
